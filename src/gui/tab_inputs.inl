@@ -433,9 +433,8 @@ if (ImGui::BeginTabItem("Inputs")) {
                 if (ImGui::Button("Open Keyboard Layout")) { s_keyboardLayoutOpen = true; }
                 ImGui::SameLine();
                 HelpMarker("Shows a visual keyboard. Keys with a configured rebind are outlined.\n"
-                           "Outlined keys show the physical label, then a second line like \"B & C\" meaning:\n"
-                           "  - B = what it types (text/VK output)\n"
-                           "  - C = what game keybind it triggers (scan/VK)\n"
+                           "Each key shows the output scan code (large text) and the game keybind hotkey below it.\n"
+                           "Physical key labels are hidden in this view.\n"
                            "Right-click a key to configure rebinds.\n"
                            "This is a visualization only.");
 
@@ -481,9 +480,12 @@ if (ImGui::BeginTabItem("Inputs")) {
                 if (ImGui::BeginPopupModal("Keyboard Layout", &s_keyboardLayoutOpen, ImGuiWindowFlags_NoScrollbar)) {
                     MarkRebindBindingActive();
 
+                    const bool anyPopupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
                     const bool anyRebindBindUiActive = (s_rebindFromKeyToBind != -1) || (s_rebindOutputVKToBind != -1) ||
                                                       (s_rebindTextOverrideVKToBind != -1) || (s_rebindOutputScanToBind != -1) ||
-                                                      (s_layoutBindTarget != LayoutBindTarget::None) || (s_layoutUnicodeEditIndex != -1);
+                                                      (s_layoutBindTarget != LayoutBindTarget::None) || (s_layoutUnicodeEditIndex != -1) ||
+                                                      ImGui::IsPopupOpen("Rebind Config##layout") || ImGui::IsPopupOpen("Triggers Custom##layout") ||
+                                                      anyPopupOpen;
 
                     if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !anyRebindBindUiActive) {
                         s_keyboardLayoutOpen = false;
@@ -495,11 +497,13 @@ if (ImGui::BeginTabItem("Inputs")) {
                         ImGui::TextUnformatted("Scale:");
                         ImGui::SameLine();
                         ImGui::SetNextItemWidth(220.0f);
-                        if (ImGui::SliderFloat("##keyboardLayoutScalePct", &scalePct, 60.0f, 160.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+                        if (ImGui::SliderFloat("##keyboardLayoutScalePct", &scalePct, 60.0f, 300.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
                             s_keyboardLayoutScale = scalePct / 100.0f;
                         }
                         ImGui::SameLine();
                         HelpMarker("Visual scale for the keyboard layout preview only.");
+
+                        ImGui::TextDisabled("Tip: Right-click a key to configure it.");
 
                         ImGui::Spacing();
                         ImGui::Separator();
@@ -648,6 +652,15 @@ if (ImGui::BeginTabItem("Inputs")) {
                         ImGui::OpenPopup(rebindPopupId);
                     };
 
+                    auto normalizeMouseButtonLabel = [](std::string s) -> std::string {
+                        if (s == "MOUSE1") return "MB1";
+                        if (s == "MOUSE2") return "MB2";
+                        if (s == "MOUSE3") return "MB3";
+                        if (s == "MOUSE4") return "MB4";
+                        if (s == "MOUSE5") return "MB5";
+                        return s;
+                    };
+
                     auto drawKeyCell = [&](DWORD vk, const char* label, const ImVec2& pMin, const ImVec2& pMax, const KeyRebind* rb) {
                         const bool hovered = ImGui::IsItemHovered();
                         const bool active = ImGui::IsItemActive();
@@ -733,7 +746,7 @@ if (ImGui::BeginTabItem("Inputs")) {
                         const ImVec2 kMid = ImVec2(kMax.x, kMin.y + (kMax.y - kMin.y) * split);
                         dl->AddRectFilled(kMin, kMid, theme.top, rounding, ImDrawFlags_RoundCornersTop);
 
-                        dl->AddLine(ImVec2(kMin.x + 2, kMin.y + 2), ImVec2(kMax.x - 2, kMin.y + 2), IM_COL32(255, 255, 255, 35), 1.0f);
+                        dl->AddLine(ImVec2(kMin.x + 2, kMin.y + 1), ImVec2(kMax.x - 2, kMin.y + 1), IM_COL32(255, 255, 255, 18), 1.0f);
 
                         dl->AddRect(kMin, kMax, theme.border, rounding, 0, 1.0f);
 
@@ -747,71 +760,119 @@ if (ImGui::BeginTabItem("Inputs")) {
                         const float padX = 6.0f * keyboardScale;
                         const float padY = 4.0f * keyboardScale;
 
-                        ImFont* fLabel = ImGui::GetFont();
-                        float labelFontSize = ImGui::GetFontSize();
-                        ImVec2 labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, label);
-                        const float maxLabelW = size.x - padX * 2.0f;
-                        if (maxLabelW > 8.0f && labelSz.x > maxLabelW) {
-                            float scale = maxLabelW / (labelSz.x + 0.001f);
-                            if (scale < 0.60f) scale = 0.60f;
-                            if (scale > 1.0f) scale = 1.0f;
-                            labelFontSize = ImGui::GetFontSize() * scale;
-                            labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, label);
+                        const bool hasConfigured = (rb && rb->fromKey != 0 && rb->toKey != 0);
+                        const bool isNoOp = [&]() -> bool {
+                            if (!hasConfigured) return false;
+                            if (rb->toKey != vk) return false;
+                            if (rb->customOutputVK != 0 && rb->customOutputVK != rb->toKey) return false;
+                            if (rb->customOutputUnicode != 0) return false;
+                            if (rb->customOutputScanCode != 0) return false;
+                            return true;
+                        }();
+                        const bool showRebindInfo = hasConfigured && !isNoOp;
+
+                        DWORD triggerVK = showRebindInfo ? rb->toKey : vk;
+                        if (triggerVK == 0) triggerVK = vk;
+                        DWORD outScan = (rb && showRebindInfo && rb->useCustomOutput && rb->customOutputScanCode != 0) ? rb->customOutputScanCode
+                                                                                                                          : getScanCodeWithExtendedFlag(triggerVK);
+                        if (outScan != 0 && (outScan & 0xFF00) == 0) {
+                            DWORD derived = getScanCodeWithExtendedFlag(triggerVK);
+                            if ((derived & 0xFF00) != 0 && ((derived & 0xFF) == (outScan & 0xFF))) { outScan = derived; }
                         }
-                        ImVec2 labelPos = ImVec2(kMin.x + (size.x - labelSz.x) * 0.5f, kMin.y + padY);
-                        if (labelPos.x < kMin.x + padX) labelPos.x = kMin.x + padX;
-                        dl->AddText(fLabel, labelFontSize, labelPos, theme.text, label);
 
-                        if (rb && rb->fromKey != 0 && rb->toKey != 0) {
-                            const bool isNoOp = [&]() -> bool {
-                                if (rb->toKey != vk) return false;
-                                if (rb->customOutputVK != 0 && rb->customOutputVK != rb->toKey) return false;
-                                if (rb->customOutputUnicode != 0) return false;
-                                if (rb->customOutputScanCode != 0) return false;
-                                return true;
-                            }();
+                        const std::string primaryText = showRebindInfo
+                                                             ? ((rb->useCustomOutput && rb->customOutputUnicode != 0)
+                                                                    ? codepointToDisplay((uint32_t)rb->customOutputUnicode)
+                                                     : normalizeMouseButtonLabel(
+                                                        VkToString((rb->useCustomOutput && rb->customOutputVK != 0)
+                                                                 ? rb->customOutputVK
+                                                                 : vk)))
+                                                             : std::string(label);
+                           const std::string secondaryText = showRebindInfo ? normalizeMouseButtonLabel(scanCodeToDisplayName(outScan, triggerVK))
+                                                       : std::string();
 
-                            if (!isNoOp) {
-                                DWORD triggerVK = rb->toKey;
-                                DWORD typesVK = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : triggerVK;
-                                DWORD outScan = (rb->useCustomOutput && rb->customOutputScanCode != 0) ? rb->customOutputScanCode
-                                                                                                        : getScanCodeWithExtendedFlag(triggerVK);
-                                if (outScan != 0 && (outScan & 0xFF00) == 0) {
-                                    DWORD derived = getScanCodeWithExtendedFlag(triggerVK);
-                                    if ((derived & 0xFF00) != 0 && ((derived & 0xFF) == (outScan & 0xFF))) { outScan = derived; }
-                                }
+                        ImFont* fLabel = g_keyboardLayoutPrimaryFont ? g_keyboardLayoutPrimaryFont : ImGui::GetFont();
+                        auto snapPxText = [](float v) -> float { return floorf(v + 0.5f); };
+                        auto snapFontSize = [](float v) -> float {
+                            float s = floorf(v + 0.5f);
+                            if (s < 8.0f) s = 8.0f;
+                            return s;
+                        };
 
-                                const std::string typesOut = (rb->useCustomOutput && rb->customOutputUnicode != 0)
-                                                                 ? codepointToDisplay((uint32_t)rb->customOutputUnicode)
-                                                                 : VkToString(typesVK);
-                                const std::string triggersOut = scanCodeToDisplayName(outScan, triggerVK);
-                                const std::string summary = typesOut + " & " + triggersOut;
+                        const float textAvailW = size.x - padX * 2.0f;
+                        const float textAvailH = size.y - padY * 2.0f;
+                        float layoutTextBoost = 0.85f + 0.35f * s_keyboardLayoutScale;
+                        if (layoutTextBoost < 0.85f) layoutTextBoost = 0.85f;
+                        if (layoutTextBoost > 1.85f) layoutTextBoost = 1.85f;
 
-                                const float minHForSecondLine = ImGui::GetFontSize() * 2.05f;
-                                if (size.y >= minHForSecondLine) {
-                                    ImFont* f = ImGui::GetFont();
-                                    float fs = ImGui::GetFontSize() * 0.72f;
-                                    ImVec2 ssz = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, summary.c_str());
-                                    const float maxW = size.x - padX * 2.0f;
-                                    if (maxW > 8.0f && ssz.x > maxW) {
-                                        float scale = maxW / (ssz.x + 0.001f);
-                                        if (scale < 0.55f) scale = 0.55f;
-                                        if (scale > 1.0f) scale = 1.0f;
-                                        fs *= scale;
-                                        ssz = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, summary.c_str());
-                                    }
+                        float labelFontSize = fLabel->FontSize * layoutTextBoost;
+                        ImVec2 labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, primaryText.c_str());
 
-                                    float y = labelPos.y + labelSz.y + 1.0f * keyboardScale;
-                                    const float maxY = kMax.y - padY - ssz.y;
-                                    if (y > maxY) y = maxY;
-                                    if (y < kMin.y + padY) y = kMin.y + padY;
-                                    float x = kMin.x + (size.x - ssz.x) * 0.5f;
-                                    if (x < kMin.x + padX) x = kMin.x + padX;
+                        if (textAvailW > 8.0f) {
+                            float scaleW = textAvailW / (labelSz.x + 0.001f);
+                            if (scaleW < 0.60f) scaleW = 0.60f;
+                            if (scaleW > 1.00f) scaleW = 1.00f;
+                            labelFontSize = snapFontSize(fLabel->FontSize * layoutTextBoost * scaleW);
+                            labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, primaryText.c_str());
+                        }
 
-                                    const ImU32 infoCol = rb->enabled ? IM_COL32(245, 245, 245, 235) : IM_COL32(255, 220, 170, 235);
-                                    dl->AddText(f, fs, ImVec2(x, y), infoCol, summary.c_str());
+                        if (!showRebindInfo) {
+                            const float maxByHeight = textAvailH * 0.98f;
+                            if (maxByHeight > 0.0f && labelFontSize > maxByHeight) {
+                                labelFontSize = snapFontSize(maxByHeight);
+                                labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, primaryText.c_str());
+                            }
+
+                            float x = snapPxText(kMin.x + (size.x - labelSz.x) * 0.5f);
+                            float y = snapPxText(kMin.y + (size.y - labelSz.y) * 0.5f);
+                            if (x < kMin.x + padX) x = snapPxText(kMin.x + padX);
+                            if (y < kMin.y + padY) y = snapPxText(kMin.y + padY);
+                            dl->AddText(fLabel, labelFontSize, ImVec2(x, y), theme.text, primaryText.c_str());
+                        } else {
+                            ImFont* f = g_keyboardLayoutPrimaryFont ? g_keyboardLayoutPrimaryFont : ImGui::GetFont();
+                            ImFont* fSecondary = g_keyboardLayoutSecondaryFont ? g_keyboardLayoutSecondaryFont : f;
+
+                            float primaryFs = labelFontSize;
+                            ImVec2 primarySz = f->CalcTextSizeA(primaryFs, FLT_MAX, 0.0f, primaryText.c_str());
+
+                            float secondaryFs = fSecondary->FontSize * layoutTextBoost;
+                            ImVec2 secondarySz = fSecondary->CalcTextSizeA(secondaryFs, FLT_MAX, 0.0f, secondaryText.c_str());
+                            if (textAvailW > 8.0f) {
+                                float secScaleW = textAvailW / (secondarySz.x + 0.001f);
+                                if (secScaleW < 0.55f) secScaleW = 0.55f;
+                                if (secScaleW > 1.00f) secScaleW = 1.00f;
+                                secondaryFs = snapFontSize(fSecondary->FontSize * layoutTextBoost * secScaleW);
+                                secondarySz = fSecondary->CalcTextSizeA(secondaryFs, FLT_MAX, 0.0f, secondaryText.c_str());
+                            }
+
+                            float lineGap = snapPxText(1.0f * keyboardScale);
+                            if (lineGap < 1.0f) lineGap = 1.0f;
+
+                            float totalH = primarySz.y + lineGap + secondarySz.y;
+                            if (textAvailH > 0.0f && totalH > textAvailH) {
+                                float fit = textAvailH / (totalH + 0.001f);
+                                if (fit < 1.0f) {
+                                    primaryFs = snapFontSize(primaryFs * fit);
+                                    secondaryFs = snapFontSize(secondaryFs * fit);
+                                    primarySz = f->CalcTextSizeA(primaryFs, FLT_MAX, 0.0f, primaryText.c_str());
+                                    secondarySz = fSecondary->CalcTextSizeA(secondaryFs, FLT_MAX, 0.0f, secondaryText.c_str());
+                                    totalH = primarySz.y + lineGap + secondarySz.y;
                                 }
                             }
+
+                            float startY = snapPxText(kMin.y + padY + (textAvailH - totalH) * 0.5f);
+                            if (startY < kMin.y + padY) startY = snapPxText(kMin.y + padY);
+
+                            float x1 = snapPxText(kMin.x + (size.x - primarySz.x) * 0.5f);
+                            if (x1 < kMin.x + padX) x1 = snapPxText(kMin.x + padX);
+                            dl->AddText(f, primaryFs, ImVec2(x1, startY), theme.text, primaryText.c_str());
+
+                            float y2 = snapPxText(startY + primarySz.y + lineGap);
+                            float x2 = snapPxText(kMin.x + (size.x - secondarySz.x) * 0.5f);
+                            if (x2 < kMin.x + padX) x2 = snapPxText(kMin.x + padX);
+
+                            const ImU32 infoCol = (rb && !rb->enabled) ? IM_COL32(255, 220, 170, 235) : IM_COL32(245, 245, 245, 235);
+                            dl->AddText(fSecondary, secondaryFs, ImVec2(x2, y2), infoCol, secondaryText.c_str());
                         }
 
                         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
@@ -886,8 +947,19 @@ if (ImGui::BeginTabItem("Inputs")) {
 
                             if (ImGui::IsItemHovered()) {
                                 ImGui::BeginTooltip();
-                                ImGui::Text("%s (%u)", VkToString(kc.vk).c_str(), (unsigned)kc.vk);
-                                if (!(rb && rb->fromKey != 0 && rb->toKey != 0)) {
+                                if (rb && rb->fromKey != 0 && rb->toKey != 0) {
+                                    DWORD triggerVkTip = rb->toKey != 0 ? rb->toKey : kc.vk;
+                                    DWORD triggerScanTip = getScanCodeWithExtendedFlag(triggerVkTip);
+                                    DWORD outputVkTip = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : triggerVkTip;
+                                    const std::string typesTip = (rb->useCustomOutput && rb->customOutputUnicode != 0)
+                                                                     ? codepointToDisplay((uint32_t)rb->customOutputUnicode)
+                                                                     : normalizeMouseButtonLabel(VkToString(outputVkTip));
+                                    const std::string triggersTip =
+                                        normalizeMouseButtonLabel(scanCodeToDisplayName(triggerScanTip, triggerVkTip));
+                                    ImGui::Text("Types: %s", typesTip.c_str());
+                                    ImGui::Text("Triggers: %s", triggersTip.c_str());
+                                } else {
+                                    ImGui::Text("%s (%u)", VkToString(kc.vk).c_str(), (unsigned)kc.vk);
                                     ImGui::TextUnformatted("Right-click to configure rebinds.");
                                 }
                                 ImGui::EndTooltip();
@@ -920,8 +992,18 @@ if (ImGui::BeginTabItem("Inputs")) {
 
                         if (ImGui::IsItemHovered()) {
                             ImGui::BeginTooltip();
-                            ImGui::Text("%s (%u)", VkToString(vk).c_str(), (unsigned)vk);
-                            if (!(rb && rb->fromKey != 0 && rb->toKey != 0)) {
+                            if (rb && rb->fromKey != 0 && rb->toKey != 0) {
+                                DWORD triggerVkTip = rb->toKey != 0 ? rb->toKey : vk;
+                                DWORD triggerScanTip = getScanCodeWithExtendedFlag(triggerVkTip);
+                                DWORD outputVkTip = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : triggerVkTip;
+                                const std::string typesTip = (rb->useCustomOutput && rb->customOutputUnicode != 0)
+                                                                 ? codepointToDisplay((uint32_t)rb->customOutputUnicode)
+                                                                 : normalizeMouseButtonLabel(VkToString(outputVkTip));
+                                const std::string triggersTip = normalizeMouseButtonLabel(scanCodeToDisplayName(triggerScanTip, triggerVkTip));
+                                ImGui::Text("Types: %s", typesTip.c_str());
+                                ImGui::Text("Triggers: %s", triggersTip.c_str());
+                            } else {
+                                ImGui::Text("%s (%u)", VkToString(vk).c_str(), (unsigned)vk);
                                 ImGui::TextUnformatted("Right-click to configure rebinds.");
                             }
                             ImGui::EndTooltip();
@@ -1028,8 +1110,19 @@ if (ImGui::BeginTabItem("Inputs")) {
 
                             if (ImGui::IsItemHovered()) {
                                 ImGui::BeginTooltip();
-                                ImGui::Text("Input: %s (%u)", VkToString(vk).c_str(), (unsigned)vk);
-                                if (!(rb && rb->fromKey != 0 && rb->toKey != 0)) {
+                                if (rb && rb->fromKey != 0 && rb->toKey != 0) {
+                                    DWORD triggerVkTip = rb->toKey != 0 ? rb->toKey : vk;
+                                    DWORD triggerScanTip = getScanCodeWithExtendedFlag(triggerVkTip);
+                                    DWORD outputVkTip = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : triggerVkTip;
+                                    const std::string typesTip = (rb->useCustomOutput && rb->customOutputUnicode != 0)
+                                                                     ? codepointToDisplay((uint32_t)rb->customOutputUnicode)
+                                                                     : normalizeMouseButtonLabel(VkToString(outputVkTip));
+                                    const std::string triggersTip =
+                                        normalizeMouseButtonLabel(scanCodeToDisplayName(triggerScanTip, triggerVkTip));
+                                    ImGui::Text("Types: %s", typesTip.c_str());
+                                    ImGui::Text("Triggers: %s", triggersTip.c_str());
+                                } else {
+                                    ImGui::Text("Input: %s (%u)", VkToString(vk).c_str(), (unsigned)vk);
                                     ImGui::TextUnformatted("Right-click to configure rebinds.");
                                 }
                                 ImGui::EndTooltip();
@@ -1065,33 +1158,41 @@ if (ImGui::BeginTabItem("Inputs")) {
                         ImGui::SetCursorScreenPos(leftMin);
                         ImGui::InvisibleButton("##mouse_left", ImVec2(leftMax.x - leftMin.x, leftMax.y - leftMin.y),
                                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-                        drawMouseSegment(VK_LBUTTON, "M1", leftMin, leftMax, bodyR * 0.75f, ImDrawFlags_RoundCornersTopLeft);
+                        drawMouseSegment(VK_LBUTTON, "MB1", leftMin, leftMax, bodyR * 0.75f, ImDrawFlags_RoundCornersTopLeft);
 
                         ImGui::SetCursorScreenPos(rightMin);
                         ImGui::InvisibleButton("##mouse_right", ImVec2(rightMax.x - rightMin.x, rightMax.y - rightMin.y),
                                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-                        drawMouseSegment(VK_RBUTTON, "M2", rightMin, rightMax, bodyR * 0.75f, ImDrawFlags_RoundCornersTopRight);
+                        drawMouseSegment(VK_RBUTTON, "MB2", rightMin, rightMax, bodyR * 0.75f, ImDrawFlags_RoundCornersTopRight);
 
                         ImGui::SetCursorScreenPos(wheelMin);
                         ImGui::InvisibleButton("##mouse_mid", ImVec2(wheelMax.x - wheelMin.x, wheelMax.y - wheelMin.y),
                                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-                        drawMouseSegment(VK_MBUTTON, "M3", wheelMin, wheelMax, 6.0f * keyboardScale, ImDrawFlags_RoundCornersAll);
+                        drawMouseSegment(VK_MBUTTON, "MB3", wheelMin, wheelMax, 6.0f * keyboardScale, ImDrawFlags_RoundCornersAll);
 
                         ImGui::SetCursorScreenPos(side1Min);
                         ImGui::InvisibleButton("##mouse_x1", ImVec2(side1Max.x - side1Min.x, side1Max.y - side1Min.y),
                                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-                        drawMouseSegment(VK_XBUTTON1, "M4", side1Min, side1Max, 6.0f * keyboardScale, ImDrawFlags_RoundCornersAll);
+                        drawMouseSegment(VK_XBUTTON1, "MB4", side1Min, side1Max, 6.0f * keyboardScale, ImDrawFlags_RoundCornersAll);
 
                         ImGui::SetCursorScreenPos(side2Min);
                         ImGui::InvisibleButton("##mouse_x2", ImVec2(side2Max.x - side2Min.x, side2Max.y - side2Min.y),
                                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-                        drawMouseSegment(VK_XBUTTON2, "M5", side2Min, side2Max, 6.0f * keyboardScale, ImDrawFlags_RoundCornersAll);
+                        drawMouseSegment(VK_XBUTTON2, "MB5", side2Min, side2Max, 6.0f * keyboardScale, ImDrawFlags_RoundCornersAll);
                     }
 
                     ImGui::SetNextWindowPos(ImGui::GetMousePos(), ImGuiCond_Appearing);
                     if (ImGui::BeginPopup("Rebind Config##layout")) {
                         // Also block global ESC-to-close-GUI while editing inside this popup.
                         MarkRebindBindingActive();
+
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                            s_layoutBindTarget = LayoutBindTarget::None;
+                            s_layoutBindIndex = -1;
+                            s_layoutUnicodeEditIndex = -1;
+                            s_layoutUnicodeEditText.clear();
+                            ImGui::CloseCurrentPopup();
+                        }
 
                         syncUnicodeEditBuffers();
 
@@ -1181,7 +1282,7 @@ if (ImGui::BeginTabItem("Inputs")) {
                         auto typesValueFor = [&](const KeyRebind* rb, DWORD originalVk) -> std::string {
                             if (!rb) return VkToString(originalVk);
                             if (rb->useCustomOutput && rb->customOutputUnicode != 0) return codepointToDisplay((uint32_t)rb->customOutputUnicode);
-                            DWORD textVk = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : rb->toKey;
+                            DWORD textVk = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : originalVk;
                             if (textVk == 0) textVk = originalVk;
                             return VkToString(textVk);
                         };
@@ -1271,9 +1372,9 @@ if (ImGui::BeginTabItem("Inputs")) {
                                             s_rebindUnicodeTextEdit[s_layoutBindIndex].clear();
                                         }
 
-                                        if (r.customOutputVK == r.toKey) {
+                                        if (r.customOutputVK == r.fromKey) {
                                             r.customOutputVK = 0;
-                                            if (r.customOutputScanCode == 0) r.useCustomOutput = false;
+                                            if (r.customOutputScanCode == 0 && r.customOutputUnicode == 0) r.useCustomOutput = false;
                                         }
                                         g_configIsDirty = true;
                                     } else if (s_layoutBindTarget == LayoutBindTarget::TriggersVk) {
@@ -1414,16 +1515,24 @@ if (ImGui::BeginTabItem("Inputs")) {
                             idx = (idx >= 0) ? idx : findBestRebindIndexForKey(s_layoutContextVk);
                             KeyRebind* r = (idx >= 0 && idx < (int)g_config.keyRebinds.rebinds.size()) ? &g_config.keyRebinds.rebinds[idx] : nullptr;
 
-                            DWORD curTriggerVk = r ? r->toKey : s_layoutContextVk;
-                            if (curTriggerVk == 0) curTriggerVk = s_layoutContextVk;
-                            DWORD curScan = (r && r->useCustomOutput && r->customOutputScanCode != 0) ? r->customOutputScanCode
-                                                                                                      : getScanCodeWithExtendedFlag(curTriggerVk);
-                            std::string preview = scanCodeToDisplayName(curScan, curTriggerVk);
+                            if (ImGui::Button("Custom##triggers_scan_custom", ImVec2(82, 0))) {
+                                ImGui::OpenPopup("Triggers Custom##layout");
+                            }
 
-                            ImGui::SetNextItemWidth(240.0f);
-                            if (ImGui::BeginCombo("##triggers_scan_combo", preview.c_str())) {
+                            if (ImGui::BeginPopup("Triggers Custom##layout")) {
+                                MarkRebindBindingActive();
+
+                                DWORD curTriggerVk = r ? r->toKey : s_layoutContextVk;
+                                if (curTriggerVk == 0) curTriggerVk = s_layoutContextVk;
+                                DWORD curScan = (r && r->useCustomOutput && r->customOutputScanCode != 0) ? r->customOutputScanCode
+                                                                                                          : getScanCodeWithExtendedFlag(curTriggerVk);
+                                std::string preview = scanCodeToDisplayName(curScan, curTriggerVk);
+
+                                ImGui::Text("Current: %s", preview.c_str());
+                                ImGui::Separator();
+
                                 bool isDefault = !(r && r->useCustomOutput && r->customOutputScanCode != 0);
-                                if (ImGui::Selectable("Default (Same as Types)", isDefault)) {
+                                if (ImGui::Selectable("Default", isDefault)) {
                                     idx = createRebindForKeyIfMissing(s_layoutContextVk);
                                     s_layoutContextPreferredIndex = idx;
                                     if (idx >= 0) {
@@ -1435,6 +1544,7 @@ if (ImGui::BeginTabItem("Inputs")) {
                                 }
                                 ImGui::Separator();
 
+                                ImGui::BeginChild("##triggers_custom_list", ImVec2(360.0f, 230.0f), true);
                                 for (const auto& it : s_knownScanCodes) {
                                     const DWORD scan = it.first;
                                     DWORD vkFromScan = MapVirtualKey(scan, MAPVK_VSC_TO_VK_EX);
@@ -1450,19 +1560,13 @@ if (ImGui::BeginTabItem("Inputs")) {
                                             auto& rr = g_config.keyRebinds.rebinds[idx];
                                             rr.useCustomOutput = true;
                                             rr.customOutputScanCode = scan;
-
-                                            DWORD mapped = MapVirtualKey(scan, MAPVK_VSC_TO_VK_EX);
-                                            if (mapped != 0) rr.toKey = mapped;
-
                                             g_configIsDirty = true;
                                         }
                                     }
                                 }
+                                ImGui::EndChild();
 
-                                ImGui::EndCombo();
-                            }
-                            if (ImGui::IsItemHovered()) {
-                                ImGui::SetTooltip("Select a scan code for the game keybind output (lParam).\nThis is an alternative to clicking 'Triggers' then pressing a key.");
+                                ImGui::EndPopup();
                             }
                         }
 
@@ -1518,7 +1622,7 @@ if (ImGui::BeginTabItem("Inputs")) {
                             if (r.useCustomOutput && r.customOutputUnicode != 0) {
                                 typesStr = codepointToDisplay((uint32_t)r.customOutputUnicode);
                             } else {
-                                DWORD textVk = (r.useCustomOutput && r.customOutputVK != 0) ? r.customOutputVK : r.toKey;
+                                DWORD textVk = (r.useCustomOutput && r.customOutputVK != 0) ? r.customOutputVK : r.fromKey;
                                 if (textVk == 0) textVk = r.fromKey;
                                 typesStr = VkToString(textVk);
                             }

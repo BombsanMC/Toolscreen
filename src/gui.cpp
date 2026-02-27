@@ -50,6 +50,9 @@ static constexpr float spinnerHoldInterval = 0.01f;
 
 static std::atomic<bool> s_isConfigSaving{ false };
 
+ImFont* g_keyboardLayoutPrimaryFont = nullptr;
+ImFont* g_keyboardLayoutSecondaryFont = nullptr;
+
 struct ImagePickerResult {
     bool completed = false;
     bool success = false;
@@ -2865,8 +2868,21 @@ void RenderSettingsGUI() {
 
     const int screenWidth = GetCachedScreenWidth();
     const int screenHeight = GetCachedScreenHeight();
+
+    int windowHeight = static_cast<int>(io.DisplaySize.y);
+    {
+        RECT clientRect{};
+        HWND hwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
+        if (GetWindowClientRectInScreen(hwnd, clientRect)) {
+            const int clientWidth = clientRect.right - clientRect.left;
+            const int clientHeight = clientRect.bottom - clientRect.top;
+            if (clientWidth > 0 && clientHeight > 0) {
+                windowHeight = clientHeight;
+            }
+        }
+    }
     float scaleFactor = 1.0f;
-    if (screenHeight > 1080) { scaleFactor = static_cast<float>(screenHeight) / 1080.0f; }
+    if (windowHeight > 1080) { scaleFactor = static_cast<float>(windowHeight) / 1080.0f; }
     scaleFactor = roundf(scaleFactor * 4.0f) / 4.0f;
     if (scaleFactor < 1.0f) { scaleFactor = 1.0f; }
 
@@ -2993,6 +3009,8 @@ void RenderSettingsGUI() {
 void HandleImGuiContextReset() {
     if (ImGui::GetCurrentContext()) {
         Log("Performing deferred full ImGui context reset.");
+        g_keyboardLayoutPrimaryFont = nullptr;
+        g_keyboardLayoutSecondaryFont = nullptr;
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
@@ -3033,8 +3051,34 @@ void InitializeImGuiContext(HWND hwnd) {
         }
         if (!baseFont) {
             Log("GUI: Failed to load configured font, using ImGui default font");
-            io.Fonts->AddFontDefault();
+            baseFont = io.Fonts->AddFontDefault();
         }
+
+        const float keyboardPrimarySize = baseFontSize * 2.80f;
+        const float keyboardSecondarySize = baseFontSize * 2.00f;
+        ImFontConfig keyFontCfg{};
+        keyFontCfg.OversampleH = 4;
+        keyFontCfg.OversampleV = 2;
+        keyFontCfg.PixelSnapH = true;
+
+        auto addKeyboardFontWithFallback = [&](float preferredSize) -> ImFont* {
+            const float kSteps[] = { 1.00f, 0.90f, 0.80f, 0.70f, 0.62f, 0.55f };
+            for (float s : kSteps) {
+                const float sz = preferredSize * s;
+                ImFont* f = io.Fonts->AddFontFromFileTTF(usePath.c_str(), sz, &keyFontCfg);
+                if (!f && usePath != ConfigDefaults::CONFIG_FONT_PATH) {
+                    f = io.Fonts->AddFontFromFileTTF(ConfigDefaults::CONFIG_FONT_PATH.c_str(), sz, &keyFontCfg);
+                }
+                if (f) return f;
+            }
+            return nullptr;
+        };
+
+        g_keyboardLayoutPrimaryFont = addKeyboardFontWithFallback(keyboardPrimarySize);
+        g_keyboardLayoutSecondaryFont = addKeyboardFontWithFallback(keyboardSecondarySize);
+
+        if (!g_keyboardLayoutPrimaryFont) g_keyboardLayoutPrimaryFont = baseFont;
+        if (!g_keyboardLayoutSecondaryFont) g_keyboardLayoutSecondaryFont = baseFont;
 
         ImGui::StyleColorsDark();
         LoadTheme();
@@ -3485,6 +3529,7 @@ void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC)) {
         if (screenHeight > 1080) { scaleFactor = static_cast<float>(screenHeight) / 1080.0f; }
         scaleFactor = roundf(scaleFactor * 4.0f) / 4.0f;
         if (scaleFactor < 1.0f) { scaleFactor = 1.0f; }
+        scaleFactor *= 1.25f;
 
         std::string fontPath = g_config.fontPath;
         const float baseFontSize = 16.0f * scaleFactor;
@@ -3506,8 +3551,34 @@ void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC)) {
         }
         if (!baseFont) {
             Log("GUI: Failed to load configured font, using ImGui default font");
-            io.Fonts->AddFontDefault();
+            baseFont = io.Fonts->AddFontDefault();
         }
+
+        const float keyboardPrimarySize = baseFontSize * 2.80f;
+        const float keyboardSecondarySize = baseFontSize * 2.00f;
+        ImFontConfig keyFontCfg{};
+        keyFontCfg.OversampleH = 4;
+        keyFontCfg.OversampleV = 2;
+        keyFontCfg.PixelSnapH = true;
+
+        auto addKeyboardFontWithFallback = [&](float preferredSize) -> ImFont* {
+            const float kSteps[] = { 1.00f, 0.90f, 0.80f, 0.70f, 0.62f, 0.55f };
+            for (float s : kSteps) {
+                const float sz = preferredSize * s;
+                ImFont* f = io.Fonts->AddFontFromFileTTF(usePath.c_str(), sz, &keyFontCfg);
+                if (!f && usePath != ConfigDefaults::CONFIG_FONT_PATH) {
+                    f = io.Fonts->AddFontFromFileTTF(ConfigDefaults::CONFIG_FONT_PATH.c_str(), sz, &keyFontCfg);
+                }
+                if (f) return f;
+            }
+            return nullptr;
+        };
+
+        g_keyboardLayoutPrimaryFont = addKeyboardFontWithFallback(keyboardPrimarySize);
+        g_keyboardLayoutSecondaryFont = addKeyboardFontWithFallback(keyboardSecondarySize);
+
+        if (!g_keyboardLayoutPrimaryFont) g_keyboardLayoutPrimaryFont = baseFont;
+        if (!g_keyboardLayoutSecondaryFont) g_keyboardLayoutSecondaryFont = baseFont;
 
         ImGui::StyleColorsDark();
         LoadTheme();

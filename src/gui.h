@@ -59,6 +59,9 @@ void RegisterBindingInputEvent(UINT uMsg, WPARAM wParam, LPARAM lParam);
 uint64_t GetLatestBindingInputSequence();
 bool ConsumeBindingInputEventSince(uint64_t& lastSeenSequence, DWORD& outVk, LPARAM& outLParam, bool& outIsMouseButton);
 
+extern ImFont* g_keyboardLayoutPrimaryFont;
+extern ImFont* g_keyboardLayoutSecondaryFont;
+
 enum class GradientAnimationType {
     None,
     Rotate,
