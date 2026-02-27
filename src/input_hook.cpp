@@ -1700,6 +1700,8 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     case WM_DISPLAYCHANGE:
         RequestScreenMetricsRecalculation();
         InvalidateImGuiCache();
+        // Force GUI to recenter after window resize so it renders at correct position
+        g_guiNeedsRecenter = true;
         break;
     default:
         break;
