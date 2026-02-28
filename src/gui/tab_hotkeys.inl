@@ -494,16 +494,19 @@ if (IsResolutionChangeSupported(g_gameVersion)) {
                 HelpMarker("Enable to set different sensitivity values for X and Y axes.");
 
                 if (sensHotkey.separateXY) {
+                    RawInputSensitivityNote();
                     ImGui::Text("X Sensitivity:");
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(150);
                     if (ImGui::SliderFloat("##sensX", &sensHotkey.sensitivityX, 0.001f, 10.0f, "%.3fx")) { g_configIsDirty = true; }
 
+                    RawInputSensitivityNote();
                     ImGui::Text("Y Sensitivity:");
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(150);
                     if (ImGui::SliderFloat("##sensY", &sensHotkey.sensitivityY, 0.001f, 10.0f, "%.3fx")) { g_configIsDirty = true; }
                 } else {
+                    RawInputSensitivityNote();
                     ImGui::Text("Sensitivity:");
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(150);

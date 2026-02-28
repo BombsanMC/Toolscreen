@@ -293,6 +293,7 @@ if (ImGui::BeginTabItem("General")) {
 
     ImGui::SeparatorText("Sensitivity");
 
+    RawInputSensitivityNote();
     ImGui::Text("Global:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(200);
@@ -303,6 +304,7 @@ if (ImGui::BeginTabItem("General")) {
     {
         ModeConfig* eyezoomMode = GetModeConfig("EyeZoom");
         if (eyezoomMode) {
+            RawInputSensitivityNote();
             ImGui::Text("EyeZoom:");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(200);

@@ -9,6 +9,7 @@ if (ImGui::BeginTabItem("Inputs")) {
 
             ImGui::SeparatorText("Mouse Settings");
 
+            RawInputSensitivityNote();
             ImGui::Text("Mouse Sensitivity:");
             ImGui::SetNextItemWidth(600);
             if (ImGui::SliderFloat("##mouseSensitivity", &g_config.mouseSensitivity, 0.001f, 10.0f, "%.3fx")) { g_configIsDirty = true; }

@@ -317,17 +317,20 @@ if (ImGui::BeginTabItem("Modes")) {
                         HelpMarker("Use different sensitivity values for horizontal (X) and vertical (Y) mouse movement.");
 
                         if (mode.separateXYSensitivity) {
+                            RawInputSensitivityNote();
                             ImGui::Text("X Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##FullscreenSensitivityX", &mode.modeSensitivityX, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
+                            RawInputSensitivityNote();
                             ImGui::Text("Y Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##FullscreenSensitivityY", &mode.modeSensitivityY, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
                         } else {
+                            RawInputSensitivityNote();
                             ImGui::Text("Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##FullscreenSensitivity", &mode.modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
@@ -928,17 +931,20 @@ if (ImGui::BeginTabItem("Modes")) {
                         HelpMarker("Use different sensitivity values for horizontal (X) and vertical (Y) mouse movement.");
 
                         if (mode.separateXYSensitivity) {
+                            RawInputSensitivityNote();
                             ImGui::Text("X Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##EyeZoomSensitivityX", &mode.modeSensitivityX, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
+                            RawInputSensitivityNote();
                             ImGui::Text("Y Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##EyeZoomSensitivityY", &mode.modeSensitivityY, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
                         } else {
+                            RawInputSensitivityNote();
                             ImGui::Text("Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##EyeZoomSensitivity", &mode.modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
@@ -1327,17 +1333,20 @@ if (ImGui::BeginTabItem("Modes")) {
                         HelpMarker("Use different sensitivity values for horizontal (X) and vertical (Y) mouse movement.");
 
                         if (mode.separateXYSensitivity) {
+                            RawInputSensitivityNote();
                             ImGui::Text("X Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##PreemptiveSensitivityX", &mode.modeSensitivityX, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
+                            RawInputSensitivityNote();
                             ImGui::Text("Y Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##PreemptiveSensitivityY", &mode.modeSensitivityY, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
                         } else {
+                            RawInputSensitivityNote();
                             ImGui::Text("Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##PreemptiveSensitivity", &mode.modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
@@ -1761,17 +1770,20 @@ if (ImGui::BeginTabItem("Modes")) {
                         HelpMarker("Use different sensitivity values for horizontal (X) and vertical (Y) mouse movement.");
 
                         if (mode.separateXYSensitivity) {
+                            RawInputSensitivityNote();
                             ImGui::Text("X Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##ThinSensitivityX", &mode.modeSensitivityX, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
+                            RawInputSensitivityNote();
                             ImGui::Text("Y Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##ThinSensitivityY", &mode.modeSensitivityY, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
                         } else {
+                            RawInputSensitivityNote();
                             ImGui::Text("Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##ThinSensitivity", &mode.modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
@@ -2182,17 +2194,20 @@ if (ImGui::BeginTabItem("Modes")) {
                         HelpMarker("Use different sensitivity values for horizontal (X) and vertical (Y) mouse movement.");
 
                         if (mode.separateXYSensitivity) {
+                            RawInputSensitivityNote();
                             ImGui::Text("X Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##WideSensitivityX", &mode.modeSensitivityX, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
+                            RawInputSensitivityNote();
                             ImGui::Text("Y Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##WideSensitivityY", &mode.modeSensitivityY, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
                         } else {
+                            RawInputSensitivityNote();
                             ImGui::Text("Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##WideSensitivity", &mode.modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
@@ -2885,17 +2900,20 @@ if (ImGui::BeginTabItem("Modes")) {
                         HelpMarker("Use different sensitivity values for horizontal (X) and vertical (Y) mouse movement.");
 
                         if (mode.separateXYSensitivity) {
+                            RawInputSensitivityNote();
                             ImGui::Text("X Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##ModeSensitivityX", &mode.modeSensitivityX, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
+                            RawInputSensitivityNote();
                             ImGui::Text("Y Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##ModeSensitivityY", &mode.modeSensitivityY, 0.001f, 10.0f, "%.3fx")) {
                                 g_configIsDirty = true;
                             }
                         } else {
+                            RawInputSensitivityNote();
                             ImGui::Text("Sensitivity:");
                             ImGui::SetNextItemWidth(200);
                             if (ImGui::SliderFloat("##ModeSensitivity", &mode.modeSensitivity, 0.001f, 10.0f, "%.3fx")) {

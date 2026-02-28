@@ -529,6 +529,10 @@ static void SliderCtrlClickTip() {
     ImGui::Spacing();
 }
 
+static void RawInputSensitivityNote() {
+    ImGui::TextDisabled("Note: Raw Input must always remain enabled in the game settings");
+}
+
 static bool ShouldForceSliderTextInputOnDoubleClick() {
     ImGuiIO& io = ImGui::GetIO();
     if (io.MouseClickedCount[ImGuiMouseButton_Left] != 2) { return false; }
