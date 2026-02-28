@@ -116,6 +116,103 @@ static DWORD NormalizeModifierVkFromConfig(DWORD vk, UINT scanCodeWithFlags = 0)
     }
 }
 
+static bool TryGetClientSize(HWND hWnd, int& outW, int& outH) {
+    outW = 0;
+    outH = 0;
+    if (!hWnd) { return false; }
+
+    RECT clientRect{};
+    if (!GetClientRect(hWnd, &clientRect)) { return false; }
+
+    const int clientW = clientRect.right - clientRect.left;
+    const int clientH = clientRect.bottom - clientRect.top;
+    if (clientW <= 0 || clientH <= 0) { return false; }
+
+    outW = clientW;
+    outH = clientH;
+    return true;
+}
+
+static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    bool shouldInvalidateScreenMetrics = false;
+    bool shouldRequestRecalc = false;
+    bool shouldInvalidateImGui = false;
+    bool shouldRecenterGui = false;
+    bool shouldResetGameTexture = false;
+    bool sizeMayHaveChanged = false;
+
+    switch (uMsg) {
+    case WM_MOVE:
+    case WM_MOVING:
+        shouldInvalidateScreenMetrics = true;
+        break;
+
+    case WM_SIZE:
+        shouldInvalidateScreenMetrics = true;
+        shouldInvalidateImGui = true;
+        shouldRequestRecalc = true;
+        sizeMayHaveChanged = (wParam != SIZE_MINIMIZED);
+        break;
+
+    case WM_SIZING:
+        // During live-resize, client metrics are often transient.
+        // Mark dirty only; WM_SIZE/WM_WINDOWPOSCHANGED will commit stable size.
+        shouldInvalidateScreenMetrics = true;
+        break;
+
+    case WM_WINDOWPOSCHANGED: {
+        if (lParam == 0) { break; }
+
+        const WINDOWPOS* pos = reinterpret_cast<const WINDOWPOS*>(lParam);
+        const bool sizeChanged = (pos->flags & SWP_NOSIZE) == 0;
+        const bool moveChanged = (pos->flags & SWP_NOMOVE) == 0;
+        if (!sizeChanged && !moveChanged) { break; }
+
+        if (sizeChanged) {
+            shouldInvalidateScreenMetrics = true;
+            shouldInvalidateImGui = true;
+            shouldRequestRecalc = true;
+            shouldResetGameTexture = true;
+            sizeMayHaveChanged = true;
+        } else {
+            shouldInvalidateScreenMetrics = true;
+        }
+        break;
+    }
+
+    case WM_DPICHANGED:
+    case WM_DISPLAYCHANGE:
+        shouldInvalidateScreenMetrics = true;
+        shouldInvalidateImGui = true;
+        shouldRequestRecalc = true;
+        sizeMayHaveChanged = true;
+        break;
+
+    default:
+        return;
+    }
+
+    bool clientSizeChanged = false;
+    if (sizeMayHaveChanged) {
+        const int prevW = GetCachedWindowWidth();
+        const int prevH = GetCachedWindowHeight();
+
+        int clientW = 0;
+        int clientH = 0;
+        if (TryGetClientSize(hWnd, clientW, clientH)) {
+            clientSizeChanged = (clientW != prevW) || (clientH != prevH);
+            UpdateCachedWindowMetricsFromSize(clientW, clientH);
+        }
+    }
+
+    if (shouldInvalidateScreenMetrics) { InvalidateCachedScreenMetrics(); }
+    if (shouldRequestRecalc) { RequestScreenMetricsRecalculation(); }
+    if (shouldInvalidateImGui) { InvalidateImGuiCache(); }
+    if (shouldResetGameTexture && clientSizeChanged) { g_cachedGameTextureId.store(UINT_MAX); }
+    if (clientSizeChanged) { shouldRecenterGui = true; }
+    if (shouldRecenterGui) { g_guiNeedsRecenter = true; }
+}
+
 InputHandlerResult HandleMouseMoveViewportOffset(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM& lParam) {
     if (uMsg != WM_MOUSEMOVE) { return { false, 0 }; }
     PROFILE_SCOPE("HandleMouseMoveViewportOffset");
@@ -196,57 +293,6 @@ void HandleCharLogging(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_CHAR && cfgSnap && cfgSnap->debug.showHotkeyDebug) {
         Log("WM_CHAR: " + std::to_string(wParam) + " " + std::to_string(lParam));
     }
-}
-
-InputHandlerResult HandleWindowPosChanged(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    if (uMsg != WM_WINDOWPOSCHANGED) { return { false, 0 }; }
-    PROFILE_SCOPE("HandleWindowPosChanged");
-
-    auto forwardToOriginal = [&]() -> InputHandlerResult {
-        if (g_originalWndProc) { return { true, CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, lParam) }; }
-        return { true, DefWindowProc(hWnd, uMsg, wParam, lParam) };
-    };
-
-    if (lParam == 0) {
-        Log("[RESIZE] Ignoring WM_WINDOWPOSCHANGED with null WINDOWPOS");
-        return forwardToOriginal();
-    }
-
-    WINDOWPOS* pos = reinterpret_cast<WINDOWPOS*>(lParam);
-    const int flags = pos->flags;
-    const bool sizeChanged = (flags & SWP_NOSIZE) == 0;
-    const bool moveChanged = (flags & SWP_NOMOVE) == 0;
-    if (!sizeChanged && !moveChanged) { return forwardToOriginal(); }
-
-    const int currentX = pos->x;
-    const int currentY = pos->y;
-    const int currentWidth = pos->cx;
-    const int currentHeight = pos->cy;
-
-    if (currentX == -32000 && currentY == -32000) {
-        Log("[RESIZE] Ignoring WM_WINDOWPOSCHANGED with minimized coordinates");
-        return forwardToOriginal();
-    }
-
-    Log("[RESIZE] External resize detected to " + std::to_string(currentWidth) + "x" + std::to_string(currentHeight) + " at (" +
-        std::to_string(currentX) + "," + std::to_string(currentY) + "), flags=" + std::to_string(flags));
-
-    if (sizeChanged) {
-        RECT clientRect{};
-        if (GetClientRect(hWnd, &clientRect)) {
-            const int clientW = clientRect.right - clientRect.left;
-            const int clientH = clientRect.bottom - clientRect.top;
-            if (clientW > 0 && clientH > 0) {
-                UpdateCachedWindowMetricsFromSize(clientW, clientH);
-            }
-        }
-        RequestScreenMetricsRecalculation();
-        g_cachedGameTextureId.store(UINT_MAX);
-    } else {
-        InvalidateCachedScreenMetrics();
-    }
-
-    return forwardToOriginal();
 }
 
 InputHandlerResult HandleAltF4(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -789,6 +835,7 @@ void ApplyKeyRepeatSettings();
 InputHandlerResult HandleActivate(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, const std::string& currentModeId) {
     if (uMsg != WM_ACTIVATE) { return { false, 0 }; }
     PROFILE_SCOPE("HandleActivate");
+    (void)currentModeId;
 
     if (wParam == WA_INACTIVE) {
         ImGuiInputQueue_EnqueueFocus(false);
@@ -811,32 +858,15 @@ InputHandlerResult HandleActivate(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
         ApplyWindowsMouseSpeed();
         ApplyKeyRepeatSettings();
 
-        int wmWidth = 0;
-        int wmHeight = 0;
-
-        RECT clientRect{};
-        if (GetClientRect(hWnd, &clientRect)) {
-            const int clientW = clientRect.right - clientRect.left;
-            const int clientH = clientRect.bottom - clientRect.top;
-            if (clientW > 0 && clientH > 0) {
-                wmWidth = clientW;
-                wmHeight = clientH;
-            }
+        int clientW = 0;
+        int clientH = 0;
+        if (TryGetClientSize(hWnd, clientW, clientH)) {
+            UpdateCachedWindowMetricsFromSize(clientW, clientH);
         }
 
-        if (wmWidth <= 0 || wmHeight <= 0) {
-            auto inputSnap = GetConfigSnapshot();
-            const ModeConfig* mode = inputSnap ? GetModeFromSnapshot(*inputSnap, currentModeId) : nullptr;
-            if (mode) {
-                wmWidth = mode->width;
-                wmHeight = mode->height;
-            } else {
-                Log("[WINDOW] WARNING: Current mode '" + currentModeId + "' not found in configuration!");
-                return { true, CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, lParam) };
-            }
-        }
-
-        PostMessage(hWnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(wmWidth, wmHeight));
+        RequestScreenMetricsRecalculation();
+        InvalidateImGuiCache();
+        g_guiNeedsRecenter = true;
     }
     return { false, 0 };
 }
@@ -2058,66 +2088,8 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
     RegisterBindingInputEvent(uMsg, wParam, lParam);
 
-    // This must run even in windowed mode (HandleNonFullscreenCheck returns early).
-    switch (uMsg) {
-    case WM_MOVE:
-    case WM_MOVING:
-        InvalidateCachedScreenMetrics();
-        break;
-    case WM_SIZE: {
-        bool clientSizeChanged = false;
-        const int prevW = GetCachedWindowWidth();
-        const int prevH = GetCachedWindowHeight();
-
-        // Do not trust WM_SIZE lParam as physical client size here because we may
-        // forward synthetic/enforced WM_SIZE values to the game proc.
-        // Always sample the real client rect from the window itself.
-        RECT clientRect{};
-        if (GetClientRect(hWnd, &clientRect)) {
-            const int clientW = clientRect.right - clientRect.left;
-            const int clientH = clientRect.bottom - clientRect.top;
-            if (clientW > 0 && clientH > 0) {
-                clientSizeChanged = (clientW != prevW) || (clientH != prevH);
-                UpdateCachedWindowMetricsFromSize(clientW, clientH);
-            }
-        }
-
-        RequestScreenMetricsRecalculation();
-        InvalidateImGuiCache();
-        // Only recenter when the real client size changed (ignore synthetic focus-time WM_SIZE).
-        if (clientSizeChanged) { g_guiNeedsRecenter = true; }
-        break;
-    }
-    case WM_SIZING:
-        RequestScreenMetricsRecalculation();
-        InvalidateImGuiCache();
-        // Force GUI to recenter after window resize so it renders at correct position
-        g_guiNeedsRecenter = true;
-        break;
-    case WM_WINDOWPOSCHANGED: {
-        bool sizeChanged = false;
-        if (lParam != 0) {
-            WINDOWPOS* pos = reinterpret_cast<WINDOWPOS*>(lParam);
-            sizeChanged = (pos->flags & SWP_NOSIZE) == 0;
-        }
-
-        // Focus/z-order changes also emit WM_WINDOWPOSCHANGED; ignore unless size changed.
-        if (sizeChanged) {
-            RequestScreenMetricsRecalculation();
-            InvalidateImGuiCache();
-            g_guiNeedsRecenter = true;
-        }
-        break;
-    }
-    case WM_DPICHANGED:
-    case WM_DISPLAYCHANGE:
-        RequestScreenMetricsRecalculation();
-        InvalidateImGuiCache();
-        g_guiNeedsRecenter = true;
-        break;
-    default:
-        break;
-    }
+    // Keep all window metrics/cache updates in one place to avoid split-brain resize state.
+    SyncWindowMetricsFromMessage(hWnd, uMsg, wParam, lParam);
 
     InputHandlerResult result;
 
@@ -2144,9 +2116,6 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     if (result.consumed) return result.result;
 
     HandleCharLogging(uMsg, wParam, lParam);
-
-    result = HandleWindowPosChanged(hWnd, uMsg, wParam, lParam);
-    if (result.consumed) return result.result;
 
     result = HandleAltF4(hWnd, uMsg, wParam, lParam);
     if (result.consumed) return result.result;
