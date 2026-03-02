@@ -722,6 +722,7 @@ void WindowOverlayConfigToToml(const WindowOverlayConfig& cfg, toml::table& out)
     out.insert("onlyOnMyScreen", cfg.onlyOnMyScreen);
     out.insert("fps", cfg.fps);
     out.insert("captureMethod", cfg.captureMethod);
+    out.insert("forceUpdate", cfg.forceUpdate);
     out.insert("enableInteraction", cfg.enableInteraction);
 
     toml::table borderTbl;
@@ -764,6 +765,7 @@ void WindowOverlayConfigFromToml(const toml::table& tbl, WindowOverlayConfig& cf
     cfg.onlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::IMAGE_ONLY_ON_MY_SCREEN);
     cfg.fps = GetOr(tbl, "fps", ConfigDefaults::WINDOW_OVERLAY_FPS);
     cfg.captureMethod = GetStringOr(tbl, "captureMethod", ConfigDefaults::WINDOW_OVERLAY_CAPTURE_METHOD);
+    cfg.forceUpdate = GetOr(tbl, "forceUpdate", ConfigDefaults::WINDOW_OVERLAY_FORCE_UPDATE);
     cfg.enableInteraction = GetOr(tbl, "enableInteraction", ConfigDefaults::WINDOW_OVERLAY_ENABLE_INTERACTION);
 
     if (cfg.captureMethod == "Auto" || cfg.captureMethod == "PrintWindow_FullContent" || cfg.captureMethod == "PrintWindow_ClientOnly" ||
@@ -1894,6 +1896,7 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                                        "onlyOnMyScreen",
                                                        "fps",
                                                        "captureMethod",
+                                                       "forceUpdate",
                                                        "enableInteraction",
                                                        "border" };
         std::vector<std::string> hotkeyKeys = { "keys", "mainMode", "secondaryMode", "altSecondaryModes", "conditions", "debounce" };

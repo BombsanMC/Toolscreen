@@ -235,6 +235,7 @@ struct WindowOverlayConfig {
     int fps = 30;
     int searchInterval = 1000;
     std::string captureMethod = "Windows 10+"; // Capture method: "Windows 10+" (default) or "BitBlt"
+    bool forceUpdate = false;
     bool enableInteraction = false;
     BorderConfig border;
 };

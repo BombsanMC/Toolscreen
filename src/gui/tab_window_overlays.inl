@@ -266,6 +266,13 @@ if (ImGui::BeginTabItem("Window Overlays")) {
                                   "  - Only recommended if Windows 10+ method doesn't work\n");
             }
 
+            if (ImGui::Checkbox("Force Update", &overlay.forceUpdate)) g_configIsDirty = true;
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("When enabled, Toolscreen sends redraw messages to the target window\n"
+                                  "on every capture frame (RedrawWindow + WM_PAINT + WM_CAPTURECHANGED).\n"
+                                  "Useful for windows that stop updating while in the background.");
+            }
+
             ImGui::SeparatorText("Interaction");
             if (ImGui::Checkbox("Enable Interaction", &overlay.enableInteraction)) g_configIsDirty = true;
             if (ImGui::IsItemHovered()) {

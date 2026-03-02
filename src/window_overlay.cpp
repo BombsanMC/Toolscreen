@@ -132,6 +132,17 @@ HWND FindWindowByTitleAndClass(const std::string& title, const std::string& clas
 
 std::atomic<bool> g_windowOverlaysInitialized{ false };
 
+static void ForceWindowOverlayRedraw(HWND targetHwnd) {
+    if (!targetHwnd || !IsWindow(targetHwnd)) { return; }
+
+    InvalidateRect(targetHwnd, NULL, FALSE);
+    RedrawWindow(targetHwnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+
+    constexpr UINT kForceUpdateMessageTimeoutMs = 16;
+    SendMessageTimeoutW(targetHwnd, WM_PAINT, 0, 0, SMTO_ABORTIFHUNG | SMTO_NORMAL, kForceUpdateMessageTimeoutMs, nullptr);
+    SendMessageTimeoutW(targetHwnd, WM_CAPTURECHANGED, 0, 0, SMTO_ABORTIFHUNG | SMTO_NORMAL, kForceUpdateMessageTimeoutMs, nullptr);
+}
+
 // NOTE: This is called from the window capture background thread
 // to avoid blocking the render thread during expensive window searching
 void InitializeWindowOverlays() {
@@ -364,6 +375,8 @@ bool CaptureWindowContent(WindowOverlayCacheEntry& entry, const WindowOverlayCon
 
     targetHwnd = entry.targetWindow.load(std::memory_order_relaxed);
     if (!targetHwnd || !IsWindow(targetHwnd)) { return false; }
+
+    if (config.forceUpdate) { ForceWindowOverlayRedraw(targetHwnd); }
 
     RECT clientRect;
     if (!GetClientRect(targetHwnd, &clientRect)) { return false; }

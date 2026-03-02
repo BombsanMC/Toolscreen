@@ -81,6 +81,7 @@ inline const std::string WINDOW_OVERLAY_MATCH_PRIORITY = "title";
 constexpr int WINDOW_OVERLAY_FPS = 30;
 constexpr int WINDOW_OVERLAY_SEARCH_INTERVAL = 1000;
 inline const std::string WINDOW_OVERLAY_CAPTURE_METHOD = "Windows 10+";
+constexpr bool WINDOW_OVERLAY_FORCE_UPDATE = false;
 constexpr bool WINDOW_OVERLAY_ENABLE_INTERACTION = false;
 
 constexpr int MODE_WIDTH = 0;

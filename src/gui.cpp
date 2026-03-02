@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cmath>
 #include <commdlg.h>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -34,6 +35,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <winhttp.h>
 #include <windowsx.h>
 
@@ -71,7 +73,17 @@ static std::map<std::string, std::chrono::steady_clock::time_point> g_imageError
 struct SupporterRoleEntry {
     std::string name;
     Color color = { 1.0f, 1.0f, 1.0f, 1.0f };
+    std::string imageUrl;
+    int tierIconWidth = 0;
+    int tierIconHeight = 0;
+    std::vector<unsigned char> tierIconPixels;
     std::vector<std::string> members;
+};
+
+struct SupporterTierTextureEntry {
+    GLuint textureId = 0;
+    int width = 0;
+    int height = 0;
 };
 
 static std::shared_mutex g_supportersMutex;
@@ -79,6 +91,9 @@ static std::vector<SupporterRoleEntry> g_supporterRoles;
 static std::atomic<bool> g_supportersLoaded{ false };
 static std::atomic<bool> g_supportersFetchEverFailed{ false };
 static std::atomic<bool> g_supportersFetchStarted{ false };
+static std::atomic<bool> g_supporterTierTexturesDirty{ false };
+static std::mutex g_supporterTierTexturesMutex;
+static std::unordered_map<std::string, SupporterTierTextureEntry> g_supporterTierTextures;
 
 static bool HttpGetToString(const std::wstring& url, std::string& outBody, std::string& outError) {
     URL_COMPONENTS urlComp{};
@@ -201,6 +216,7 @@ static bool ParseSupportersJson(const std::string& body, std::vector<SupporterRo
 
         SupporterRoleEntry role;
         role.name = roleJson.value("name", "");
+        role.imageUrl = roleJson.value("image", "");
 
         const std::string colorString = roleJson.value("color", "#FFFFFF");
         ParseColorString(colorString, role.color);
@@ -215,6 +231,147 @@ static bool ParseSupportersJson(const std::string& body, std::vector<SupporterRo
     }
 
     return true;
+}
+
+struct DecodedSupporterTierImage {
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> rgbaPixels;
+};
+
+static bool DecodeSupporterTierImage(const std::string& encodedBytes, DecodedSupporterTierImage& outImage, std::string& outError) {
+    outImage = {};
+    if (encodedBytes.empty()) {
+        outError = "Image response body is empty";
+        return false;
+    }
+
+    stbi_set_flip_vertically_on_load_thread(0);
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(encodedBytes.data()),
+                                                  static_cast<int>(encodedBytes.size()), &width, &height, &channels, 4);
+    if (!pixels || width <= 0 || height <= 0) {
+        outError = std::string("Failed to decode image: ") + (stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+        if (pixels) { stbi_image_free(pixels); }
+        return false;
+    }
+
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(4);
+    outImage.width = width;
+    outImage.height = height;
+    outImage.rgbaPixels.assign(pixels, pixels + pixelCount);
+    stbi_image_free(pixels);
+    return true;
+}
+
+static void PopulateSupporterTierImages(std::vector<SupporterRoleEntry>& roles) {
+    std::unordered_map<std::string, DecodedSupporterTierImage> decodeCache;
+
+    for (auto& role : roles) {
+        role.tierIconWidth = 0;
+        role.tierIconHeight = 0;
+        role.tierIconPixels.clear();
+
+        if (role.imageUrl.empty()) { continue; }
+
+        auto cached = decodeCache.find(role.imageUrl);
+        if (cached != decodeCache.end()) {
+            if (cached->second.width > 0 && cached->second.height > 0 && !cached->second.rgbaPixels.empty()) {
+                role.tierIconWidth = cached->second.width;
+                role.tierIconHeight = cached->second.height;
+                role.tierIconPixels = cached->second.rgbaPixels;
+            }
+            continue;
+        }
+
+        std::string imageBody;
+        std::string fetchError;
+        if (!HttpGetToString(Utf8ToWide(role.imageUrl), imageBody, fetchError)) {
+            Log("Supporters metadata: failed to fetch tier image '" + role.imageUrl + "': " + fetchError);
+            decodeCache.emplace(role.imageUrl, DecodedSupporterTierImage{});
+            continue;
+        }
+
+        DecodedSupporterTierImage decoded;
+        std::string decodeError;
+        if (!DecodeSupporterTierImage(imageBody, decoded, decodeError)) {
+            Log("Supporters metadata: failed to decode tier image '" + role.imageUrl + "': " + decodeError);
+            decodeCache.emplace(role.imageUrl, DecodedSupporterTierImage{});
+            continue;
+        }
+
+        auto inserted = decodeCache.emplace(role.imageUrl, std::move(decoded));
+        const DecodedSupporterTierImage& cachedDecoded = inserted.first->second;
+
+        role.tierIconWidth = cachedDecoded.width;
+        role.tierIconHeight = cachedDecoded.height;
+        role.tierIconPixels = cachedDecoded.rgbaPixels;
+    }
+}
+
+static bool EnsureSupporterTierTexture(const SupporterRoleEntry& role, GLuint& outTextureId, int& outWidth, int& outHeight) {
+    outTextureId = 0;
+    outWidth = 0;
+    outHeight = 0;
+
+    if (role.imageUrl.empty() || role.tierIconWidth <= 0 || role.tierIconHeight <= 0 || role.tierIconPixels.empty()) { return false; }
+
+    std::lock_guard<std::mutex> lock(g_supporterTierTexturesMutex);
+
+    auto it = g_supporterTierTextures.find(role.imageUrl);
+    if (it != g_supporterTierTextures.end() && it->second.textureId != 0) {
+        outTextureId = it->second.textureId;
+        outWidth = it->second.width;
+        outHeight = it->second.height;
+        return true;
+    }
+
+    if (wglGetCurrentContext() == nullptr) { return false; }
+
+    SupporterTierTextureEntry entry;
+    glGenTextures(1, &entry.textureId);
+    if (entry.textureId == 0) { return false; }
+
+    glBindTexture(GL_TEXTURE_2D, entry.textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, role.tierIconWidth, role.tierIconHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 role.tierIconPixels.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    entry.width = role.tierIconWidth;
+    entry.height = role.tierIconHeight;
+
+    g_supporterTierTextures[role.imageUrl] = entry;
+
+    outTextureId = entry.textureId;
+    outWidth = entry.width;
+    outHeight = entry.height;
+    return true;
+}
+
+static void ClearSupporterTierTextureCache() {
+    std::lock_guard<std::mutex> lock(g_supporterTierTexturesMutex);
+
+    if (wglGetCurrentContext() != nullptr) {
+        for (auto& it : g_supporterTierTextures) {
+            if (it.second.textureId != 0) {
+                glDeleteTextures(1, &it.second.textureId);
+                it.second.textureId = 0;
+            }
+        }
+    }
+
+    g_supporterTierTextures.clear();
 }
 
 void StartSupportersFetch() {
@@ -240,11 +397,14 @@ void StartSupportersFetch() {
                     std::vector<SupporterRoleEntry> parsedRoles;
                     std::string parseError;
                     if (ParseSupportersJson(body, parsedRoles, parseError)) {
+                        PopulateSupporterTierImages(parsedRoles);
+
                         {
                             std::unique_lock<std::shared_mutex> writeLock(g_supportersMutex);
                             g_supporterRoles = std::move(parsedRoles);
                         }
 
+                        g_supporterTierTexturesDirty.store(true, std::memory_order_release);
                         g_supportersLoaded.store(true, std::memory_order_release);
                         g_supportersFetchEverFailed.store(false, std::memory_order_release);
                         Log("Loaded supporters metadata.");
@@ -3040,6 +3200,7 @@ void RenderSettingsGUI() {
 void HandleImGuiContextReset() {
     if (ImGui::GetCurrentContext()) {
         Log("Performing deferred full ImGui context reset.");
+        ClearSupporterTierTextureCache();
         g_keyboardLayoutPrimaryFont = nullptr;
         g_keyboardLayoutSecondaryFont = nullptr;
         ImGui_ImplOpenGL3_Shutdown();
