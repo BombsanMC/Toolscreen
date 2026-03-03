@@ -96,11 +96,14 @@ static std::mutex g_supporterTierTexturesMutex;
 static std::unordered_map<std::string, SupporterTierTextureEntry> g_supporterTierTextures;
 
 static float ComputeGuiScaleFactorFromCachedWindowSize() {
+    int screenWidth = GetCachedWindowWidth();
     int screenHeight = GetCachedWindowHeight();
+    if (screenWidth < 1) screenWidth = 1;
     if (screenHeight < 1) screenHeight = 1;
 
-    float scaleFactor = 1.0f;
-    if (screenHeight > 1080) { scaleFactor = static_cast<float>(screenHeight) / 1080.0f; }
+    const float widthScale = static_cast<float>(screenWidth) / 1920.0f;
+    const float heightScale = static_cast<float>(screenHeight) / 1080.0f;
+    float scaleFactor = (std::min)(widthScale, heightScale);
     scaleFactor = roundf(scaleFactor * 4.0f) / 4.0f;
     if (scaleFactor < 1.0f) { scaleFactor = 1.0f; }
     return scaleFactor;

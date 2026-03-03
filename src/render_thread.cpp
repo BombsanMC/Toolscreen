@@ -236,9 +236,13 @@ static std::string g_eyeZoomFontPathCached = "";
 static float g_eyeZoomScaleFactor = 1.0f;
 static bool g_fontsValid = false;
 
-static float RT_ComputeGuiScaleFactorForHeight(int screenHeight) {
-    float scaleFactor = 1.0f;
-    if (screenHeight > 1080) { scaleFactor = static_cast<float>(screenHeight) / 1080.0f; }
+static float RT_ComputeGuiScaleFactorForWindowSize(int screenWidth, int screenHeight) {
+    if (screenWidth < 1) screenWidth = 1;
+    if (screenHeight < 1) screenHeight = 1;
+
+    const float widthScale = static_cast<float>(screenWidth) / 1920.0f;
+    const float heightScale = static_cast<float>(screenHeight) / 1080.0f;
+    float scaleFactor = (std::min)(widthScale, heightScale);
     scaleFactor = roundf(scaleFactor * 4.0f) / 4.0f;
     if (scaleFactor < 1.0f) { scaleFactor = 1.0f; }
     return scaleFactor;
@@ -331,8 +335,9 @@ static bool RT_TryInitializeImGui(HWND hwnd, const Config& cfg) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    const int screenWidth = GetCachedWindowWidth();
     const int screenHeight = GetCachedWindowHeight();
-    const float scaleFactor = RT_ComputeGuiScaleFactorForHeight(screenHeight);
+    const float scaleFactor = RT_ComputeGuiScaleFactorForWindowSize(screenWidth, screenHeight);
     g_eyeZoomScaleFactor = scaleFactor;
 
     {
@@ -2865,8 +2870,9 @@ static void RenderThreadFunc(void* gameGLContext) {
                 ImGuiIO& io = ImGui::GetIO();
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+                const int screenWidth = GetCachedWindowWidth();
                 const int screenHeight = GetCachedWindowHeight();
-                const float scaleFactor = RT_ComputeGuiScaleFactorForHeight(screenHeight);
+                const float scaleFactor = RT_ComputeGuiScaleFactorForWindowSize(screenWidth, screenHeight);
                 g_eyeZoomScaleFactor = scaleFactor;
 
                 auto fontCfg = GetConfigSnapshot();
@@ -3436,7 +3442,9 @@ static void RenderThreadFunc(void* gameGLContext) {
 
                 ImGui::SetCurrentContext(g_renderThreadImGuiContext);
 
-                const float runtimeScaleFactor = RT_ComputeGuiScaleFactorForHeight(GetCachedWindowHeight());
+                const int runtimeScreenWidth = GetCachedWindowWidth();
+                const int runtimeScreenHeight = GetCachedWindowHeight();
+                const float runtimeScaleFactor = RT_ComputeGuiScaleFactorForWindowSize(runtimeScreenWidth, runtimeScreenHeight);
                 const float scaleDelta = runtimeScaleFactor - g_eyeZoomScaleFactor;
                 const bool scaleChanged = (scaleDelta > 0.001f) || (scaleDelta < -0.001f);
                 if (scaleChanged) {
