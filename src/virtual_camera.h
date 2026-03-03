@@ -25,6 +25,8 @@ bool ShouldCaptureVirtualCameraFrame();
 
 bool EnsureVirtualCameraSize(uint32_t width, uint32_t height);
 
+bool GetVirtualCameraResolution(uint32_t& outWidth, uint32_t& outHeight);
+
 const char* GetVirtualCameraError();
 
 extern std::atomic<bool> g_virtualCameraActive;

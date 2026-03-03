@@ -321,6 +321,19 @@ bool EnsureVirtualCameraSize(uint32_t width, uint32_t height) {
     return true;
 }
 
+bool GetVirtualCameraResolution(uint32_t& outWidth, uint32_t& outHeight) {
+    std::lock_guard<std::mutex> lock(g_vcMutex);
+    if (!g_vcState.active) {
+        outWidth = 0;
+        outHeight = 0;
+        return false;
+    }
+
+    outWidth = g_vcState.width;
+    outHeight = g_vcState.height;
+    return true;
+}
+
 bool WriteVirtualCameraFrame(const uint8_t* rgba_data, uint32_t width, uint32_t height, uint64_t timestamp) {
     if (!g_virtualCameraActive.load(std::memory_order_acquire)) { return false; }
 

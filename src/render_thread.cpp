@@ -174,10 +174,13 @@ static GLuint g_vcReadbackPBO[2] = { 0, 0 };
 static GLuint g_vcReadbackFBO = 0;
 static GLsync g_vcFence = nullptr;           // GPU fence after compute dispatch
 static int g_vcWriteIdx = 0;
+static int g_vcReadbackIdx = 0;
 static int g_vcOutWidth = 0;
 static int g_vcOutHeight = 0;
 static bool g_vcComputePending = false;
 static bool g_vcReadbackPending = false;
+static int g_vcRequestedOutWidth = 0;
+static int g_vcRequestedOutHeight = 0;
 
 static GLuint g_vcCursorFBO = 0;
 static GLuint g_vcCursorTexture = 0;
@@ -1286,8 +1289,11 @@ static void CleanupRenderFBOs() {
     }
     g_vcOutWidth = 0;
     g_vcOutHeight = 0;
+    g_vcReadbackIdx = 0;
     g_vcComputePending = false;
     g_vcReadbackPending = false;
+    g_vcRequestedOutWidth = 0;
+    g_vcRequestedOutHeight = 0;
 
     if (g_vcCursorFBO != 0) {
         glDeleteFramebuffers(1, &g_vcCursorFBO);
@@ -1354,6 +1360,47 @@ static void EnsureVCScaleResources(int w, int h) {
     g_vcScaleHeight = h;
 }
 
+static GLuint PrepareVirtualCameraOutputTexture(GLuint srcTexture, int srcW, int srcH, int outW, int outH) {
+    if (srcTexture == 0 || srcW <= 0 || srcH <= 0 || outW <= 0 || outH <= 0) { return 0; }
+    if (srcW == outW && srcH == outH) { return srcTexture; }
+
+    EnsureVCScaleResources(outW, outH);
+    if (g_virtualCamCopyFBO == 0) glGenFramebuffers(1, &g_virtualCamCopyFBO);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_virtualCamCopyFBO);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTexture, 0);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_vcScaleFBO);
+    if (oglViewport)
+        oglViewport(0, 0, outW, outH);
+    else
+        glViewport(0, 0, outW, outH);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    float scaleX = static_cast<float>(outW) / static_cast<float>(srcW);
+    float scaleY = static_cast<float>(outH) / static_cast<float>(srcH);
+    float fitScale = (std::min)(scaleX, scaleY);
+
+    int fitW = static_cast<int>(static_cast<float>(srcW) * fitScale + 0.5f);
+    int fitH = static_cast<int>(static_cast<float>(srcH) * fitScale + 0.5f);
+    if (fitW < 1) fitW = 1;
+    if (fitH < 1) fitH = 1;
+    if (fitW > outW) fitW = outW;
+    if (fitH > outH) fitH = outH;
+
+    int dstX = (outW - fitW) / 2;
+    int dstY = (outH - fitH) / 2;
+
+    glBlitFramebuffer(0, 0, srcW, srcH, dstX, dstY, dstX + fitW, dstY + fitH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    return g_vcScaleTexture;
+}
+
 static void EnsureVCImageResources(int w, int h) {
     if (g_vcOutWidth == w && g_vcOutHeight == h && g_vcYImage[0] != 0) return;
 
@@ -1388,6 +1435,7 @@ static void EnsureVCImageResources(int w, int h) {
     g_vcOutWidth = w;
     g_vcOutHeight = h;
     g_vcWriteIdx = 0;
+    g_vcReadbackIdx = 0;
     g_vcComputePending = false;
     g_vcReadbackPending = false;
     if (g_vcFence) {
@@ -1398,8 +1446,12 @@ static void EnsureVCImageResources(int w, int h) {
 
 static void FlushVirtualCameraReadback() {
     if (!g_vcReadbackPending) return;
+    if (g_vcOutWidth <= 0 || g_vcOutHeight <= 0) {
+        g_vcReadbackPending = false;
+        return;
+    }
 
-    int readIdx = 1 - g_vcWriteIdx;
+    int readIdx = g_vcReadbackIdx;
     glBindBuffer(GL_PIXEL_PACK_BUFFER, g_vcReadbackPBO[readIdx]);
     void* data = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
     if (data) {
@@ -1412,6 +1464,25 @@ static void FlushVirtualCameraReadback() {
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     g_vcReadbackPending = false;
+}
+
+static void ResetVirtualCameraAsyncPipeline() {
+    if (g_vcFence) {
+        if (glIsSync(g_vcFence)) { glDeleteSync(g_vcFence); }
+        g_vcFence = nullptr;
+    }
+
+    g_vcComputePending = false;
+    g_vcReadbackPending = false;
+    g_vcWriteIdx = 0;
+    g_vcReadbackIdx = 0;
+
+    g_virtualCamPBOPending = false;
+    g_virtualCamPBOWidth = 0;
+    g_virtualCamPBOHeight = 0;
+
+    g_vcOutWidth = 0;
+    g_vcOutHeight = 0;
 }
 
 static void StartVirtualCameraComputeReadback(GLuint srcTexture, int texW, int texH, int outW, int outH) {
@@ -1438,6 +1509,7 @@ static void StartVirtualCameraComputeReadback(GLuint srcTexture, int texW, int t
             glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
             glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
+            g_vcReadbackIdx = readIdx;
             g_vcReadbackPending = true;
         } else if (result == GL_WAIT_FAILED) {
             if (glIsSync(g_vcFence)) { glDeleteSync(g_vcFence); }
@@ -1456,18 +1528,8 @@ static void StartVirtualCameraComputeReadback(GLuint srcTexture, int texW, int t
     g_vcWriteIdx = 1 - g_vcWriteIdx;
     int writeIdx = g_vcWriteIdx;
 
-    GLuint sampleTexture = srcTexture;
-    if (outW != texW || outH != texH) {
-        EnsureVCScaleResources(outW, outH);
-        if (g_virtualCamCopyFBO == 0) glGenFramebuffers(1, &g_virtualCamCopyFBO);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_virtualCamCopyFBO);
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTexture, 0);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_vcScaleFBO);
-        glBlitFramebuffer(0, 0, texW, texH, 0, 0, outW, outH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        sampleTexture = g_vcScaleTexture;
-    }
+    GLuint sampleTexture = PrepareVirtualCameraOutputTexture(srcTexture, texW, texH, outW, outH);
+    if (sampleTexture == 0) { return; }
 
     // Step 6: Dispatch compute shader with image2D bindings (no atomics, no SSBO clear)
     glUseProgram(g_vcComputeProgram);
@@ -1495,7 +1557,7 @@ static void StartVirtualCameraComputeReadback(GLuint srcTexture, int texW, int t
     g_vcComputePending = true;
 }
 
-static void StartVirtualCameraPBOReadback(GLuint obsTexture, int width, int height) {
+static void StartVirtualCameraPBOReadback(GLuint obsTexture, int width, int height, int outW, int outH) {
     if (g_virtualCamPBOPending && g_virtualCamPBO != 0) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, g_virtualCamPBO);
         void* data = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
@@ -1512,24 +1574,27 @@ static void StartVirtualCameraPBOReadback(GLuint obsTexture, int width, int heig
         g_virtualCamPBOPending = false;
     }
 
-    if (g_virtualCamPBOWidth != width || g_virtualCamPBOHeight != height || g_virtualCamPBO == 0) {
+    if (g_virtualCamPBOWidth != outW || g_virtualCamPBOHeight != outH || g_virtualCamPBO == 0) {
         if (g_virtualCamPBO != 0) { glDeleteBuffers(1, &g_virtualCamPBO); }
         glGenBuffers(1, &g_virtualCamPBO);
         glBindBuffer(GL_PIXEL_PACK_BUFFER, g_virtualCamPBO);
-        glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, nullptr, GL_STREAM_READ);
+        glBufferData(GL_PIXEL_PACK_BUFFER, outW * outH * 4, nullptr, GL_STREAM_READ);
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
-        g_virtualCamPBOWidth = width;
-        g_virtualCamPBOHeight = height;
+        g_virtualCamPBOWidth = outW;
+        g_virtualCamPBOHeight = outH;
 
         if (g_virtualCamCopyFBO == 0) { glGenFramebuffers(1, &g_virtualCamCopyFBO); }
     }
 
+    GLuint readTexture = PrepareVirtualCameraOutputTexture(obsTexture, width, height, outW, outH);
+    if (readTexture == 0) { return; }
+
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_virtualCamCopyFBO);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, obsTexture, 0);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, readTexture, 0);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, g_virtualCamPBO);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glReadPixels(0, 0, outW, outH, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
@@ -1540,15 +1605,29 @@ static void StartVirtualCameraAsyncReadback(GLuint obsTexture, int width, int he
     if (obsTexture == 0 || width <= 0 || height <= 0) return;
     if (!IsVirtualCameraActive()) return;
 
-    int outW, outH;
-    GetVirtualCamScaledSize(width, height, 1.0f, outW, outH);
-    if (!EnsureVirtualCameraSize(static_cast<uint32_t>(outW), static_cast<uint32_t>(outH))) return;
+    uint32_t vcWidth = 0;
+    uint32_t vcHeight = 0;
+    if (!GetVirtualCameraResolution(vcWidth, vcHeight) || vcWidth == 0 || vcHeight == 0) { return; }
+
+    int outW = static_cast<int>(vcWidth);
+    int outH = static_cast<int>(vcHeight);
+
+    if ((outW & 1) != 0) outW -= 1;
+    if ((outH & 1) != 0) outH -= 1;
+    if (outW <= 0 || outH <= 0) { return; }
+
+    if (outW != g_vcRequestedOutWidth || outH != g_vcRequestedOutHeight) {
+        ResetVirtualCameraAsyncPipeline();
+        g_vcRequestedOutWidth = outW;
+        g_vcRequestedOutHeight = outH;
+    }
+
     if (!ShouldCaptureVirtualCameraFrame()) return;
 
     if (g_vcUseCompute && g_vcComputeProgram != 0) {
         StartVirtualCameraComputeReadback(obsTexture, width, height, outW, outH);
     } else {
-        StartVirtualCameraPBOReadback(obsTexture, width, height);
+        StartVirtualCameraPBOReadback(obsTexture, width, height, outW, outH);
     }
 }
 
