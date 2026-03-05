@@ -30,6 +30,7 @@ extern int g_originalWindowsMouseSpeed;
 
 extern std::atomic<bool> g_isShuttingDown;
 extern WNDPROC g_originalWndProc;
+extern std::atomic<bool> g_gameWindowActive;
 
 extern PendingModeSwitch g_pendingModeSwitch;
 extern std::mutex g_pendingModeSwitchMutex;
@@ -63,6 +64,7 @@ static std::atomic<ULONGLONG> s_lastScreenMetricsRefreshMs{ 0 };
 static std::atomic<bool> s_startupMetricsResyncPending{ true };
 
 static void ComputeScreenMetricsForGameWindow(int& outW, int& outH) {
+    constexpr int kInactiveTransientClientMin = 32;
     outW = 0;
     outH = 0;
 
@@ -73,6 +75,9 @@ static void ComputeScreenMetricsForGameWindow(int& outW, int& outH) {
             const int clientW = clientRect.right - clientRect.left;
             const int clientH = clientRect.bottom - clientRect.top;
             if (clientW > 0 && clientH > 0) {
+                const bool windowActive = g_gameWindowActive.load(std::memory_order_relaxed);
+                const bool isInactiveTinySize = !windowActive && (clientW < kInactiveTransientClientMin || clientH < kInactiveTransientClientMin);
+                if (isInactiveTinySize) { return; }
                 outW = clientW;
                 outH = clientH;
                 return;
@@ -112,6 +117,11 @@ static bool RefreshCachedScreenMetricsIfNeeded(bool requestRecalcOnChange) {
         // This prevents stale monitor-sized values from being reused for relative-mode math.
         HWND hwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
         if (hwnd && IsWindow(hwnd)) {
+            if (!g_gameWindowActive.load(std::memory_order_relaxed)) {
+                // While inactive, transient tiny/invalid client sizes are expected during alt-tab.
+                // Keep last valid metrics to avoid collapsing mode geometry for OBS/virtual camera.
+                return false;
+            }
             int prevW = s_cachedScreenWidth.load(std::memory_order_relaxed);
             int prevH = s_cachedScreenHeight.load(std::memory_order_relaxed);
             if (prevW != 0 || prevH != 0) {
@@ -359,7 +369,12 @@ int GetCachedWindowHeight() {
 }
 
 void UpdateCachedWindowMetricsFromSize(int clientWidth, int clientHeight) {
+    constexpr int kInactiveTransientClientMin = 32;
     if (clientWidth <= 0 || clientHeight <= 0) { return; }
+    if (!g_gameWindowActive.load(std::memory_order_relaxed) &&
+        (clientWidth < kInactiveTransientClientMin || clientHeight < kInactiveTransientClientMin)) {
+        return;
+    }
 
     const int prevW = s_cachedScreenWidth.load(std::memory_order_relaxed);
     const int prevH = s_cachedScreenHeight.load(std::memory_order_relaxed);

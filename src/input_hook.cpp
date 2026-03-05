@@ -155,6 +155,7 @@ static bool TryGetClientSize(HWND hWnd, int& outW, int& outH) {
 }
 
 static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    constexpr int kInactiveTransientClientMin = 32;
     bool shouldInvalidateScreenMetrics = false;
     bool shouldRequestRecalc = false;
     bool shouldInvalidateImGui = false;
@@ -221,8 +222,12 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
         int clientW = 0;
         int clientH = 0;
         if (TryGetClientSize(hWnd, clientW, clientH)) {
-            clientSizeChanged = (clientW != prevW) || (clientH != prevH);
-            UpdateCachedWindowMetricsFromSize(clientW, clientH);
+            const bool windowActive = g_gameWindowActive.load(std::memory_order_relaxed);
+            const bool isInactiveTinySize = !windowActive && (clientW < kInactiveTransientClientMin || clientH < kInactiveTransientClientMin);
+            if (!isInactiveTinySize) {
+                clientSizeChanged = (clientW != prevW) || (clientH != prevH);
+                UpdateCachedWindowMetricsFromSize(clientW, clientH);
+            }
         }
     }
 

@@ -4260,6 +4260,8 @@ GLsync GetCompletedObsFence() {
 
 FrameRenderRequest BuildObsFrameRequest(const ObsFrameContext& ctx, bool isDualRenderingPath) {
     static uint64_t s_obsFrameNumber = 0;
+    static int s_lastValidObsFullW = 0;
+    static int s_lastValidObsFullH = 0;
 
     // Use config snapshot for thread-safe access
     auto obsCfgSnap = GetConfigSnapshot();
@@ -4270,8 +4272,14 @@ FrameRenderRequest BuildObsFrameRequest(const ObsFrameContext& ctx, bool isDualR
 
     int safeFullW = ctx.fullW;
     int safeFullH = ctx.fullH;
-    if (safeFullW <= 1 || safeFullH <= 1) {
-        if (ctx.windowW > 1 && ctx.windowH > 1) {
+    if (safeFullW > 1 && safeFullH > 1) {
+        s_lastValidObsFullW = safeFullW;
+        s_lastValidObsFullH = safeFullH;
+    } else {
+        if (s_lastValidObsFullW > 1 && s_lastValidObsFullH > 1) {
+            safeFullW = s_lastValidObsFullW;
+            safeFullH = s_lastValidObsFullH;
+        } else if (ctx.windowW > 1 && ctx.windowH > 1) {
             safeFullW = ctx.windowW;
             safeFullH = ctx.windowH;
         } else if (ctx.gameW > 1 && ctx.gameH > 1) {
