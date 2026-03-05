@@ -1441,6 +1441,10 @@ InputHandlerResult HandleMouseCoordinateTranslationPhase(HWND hWnd, UINT uMsg, W
         return { false, 0 };
     }
 
+    if (!IsCursorVisible() && !g_showGui.load(std::memory_order_acquire)) {
+        return { false, 0 };
+    }
+
     PROFILE_SCOPE("HandleMouseCoordinateTranslation");
 
     // Prefer live viewport geometry for correctness during/after resize.
