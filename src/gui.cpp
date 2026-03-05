@@ -697,7 +697,7 @@ static void HelpMarker(const char* desc) {
 }
 
 static void SliderCtrlClickTip() {
-    ImGui::TextDisabled("Tip: Double-click any slider to input a specific value.");
+    ImGui::TextDisabled("Tip: Right-click any slider to input a specific value.");
     ImGui::Spacing();
 }
 
@@ -705,9 +705,11 @@ static void RawInputSensitivityNote() {
     ImGui::TextDisabled("Note: Raw Input must always remain enabled in the game settings");
 }
 
-static bool ShouldForceSliderTextInputOnDoubleClick() {
+static bool ShouldForceSliderTextInputFromMouseShortcut(bool* shouldSpoofLeftClick) {
     ImGuiIO& io = ImGui::GetIO();
-    if (io.MouseClickedCount[ImGuiMouseButton_Left] != 2) { return false; }
+    const bool leftDoubleClick = io.MouseClickedCount[ImGuiMouseButton_Left] == 2;
+    const bool rightClick = io.MouseClicked[ImGuiMouseButton_Right];
+    if (!leftDoubleClick && !rightClick) { return false; }
     if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) { return false; }
 
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -715,34 +717,46 @@ static bool ShouldForceSliderTextInputOnDoubleClick() {
     const float height = ImGui::GetFrameHeight();
     const ImVec2 mouse = io.MousePos;
 
-    return mouse.x >= cursor.x && mouse.x <= (cursor.x + width) && mouse.y >= cursor.y && mouse.y <= (cursor.y + height);
+    const bool inSliderRect = mouse.x >= cursor.x && mouse.x <= (cursor.x + width) && mouse.y >= cursor.y && mouse.y <= (cursor.y + height);
+    if (!inSliderRect) { return false; }
+
+    if (shouldSpoofLeftClick) { *shouldSpoofLeftClick = rightClick && !io.MouseClicked[ImGuiMouseButton_Left]; }
+    return true;
 }
 
 static bool SliderFloatDoubleClickInput(const char* label, float* v, float v_min, float v_max, const char* format = "%.3f",
                                         ImGuiSliderFlags flags = 0) {
     ImGuiIO& io = ImGui::GetIO();
-    const bool forceTextInput = ShouldForceSliderTextInputOnDoubleClick();
+    bool spoofLeftClick = false;
+    const bool forceTextInput = ShouldForceSliderTextInputFromMouseShortcut(&spoofLeftClick);
     const bool prevCtrl = io.KeyCtrl;
+    const bool prevMouseClickedLeft = io.MouseClicked[ImGuiMouseButton_Left];
     if (forceTextInput) { io.KeyCtrl = true; }
+    if (spoofLeftClick) { io.MouseClicked[ImGuiMouseButton_Left] = true; }
 
     bool changed = ImGui::SliderScalar(label, ImGuiDataType_Float, v, &v_min, &v_max, format, flags);
 
     if (forceTextInput) { io.KeyCtrl = prevCtrl; }
-    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Double click to edit precisely"); }
+    if (spoofLeftClick) { io.MouseClicked[ImGuiMouseButton_Left] = prevMouseClickedLeft; }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Right click to edit precisely"); }
     return changed;
 }
 
 static bool SliderIntDoubleClickInput(const char* label, int* v, int v_min, int v_max, const char* format = "%d",
                                       ImGuiSliderFlags flags = 0) {
     ImGuiIO& io = ImGui::GetIO();
-    const bool forceTextInput = ShouldForceSliderTextInputOnDoubleClick();
+    bool spoofLeftClick = false;
+    const bool forceTextInput = ShouldForceSliderTextInputFromMouseShortcut(&spoofLeftClick);
     const bool prevCtrl = io.KeyCtrl;
+    const bool prevMouseClickedLeft = io.MouseClicked[ImGuiMouseButton_Left];
     if (forceTextInput) { io.KeyCtrl = true; }
+    if (spoofLeftClick) { io.MouseClicked[ImGuiMouseButton_Left] = true; }
 
     bool changed = ImGui::SliderScalar(label, ImGuiDataType_S32, v, &v_min, &v_max, format, flags);
 
     if (forceTextInput) { io.KeyCtrl = prevCtrl; }
-    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Double click to edit precisely"); }
+    if (spoofLeftClick) { io.MouseClicked[ImGuiMouseButton_Left] = prevMouseClickedLeft; }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Right click to edit precisely"); }
     return changed;
 }
 
