@@ -9,25 +9,25 @@
                 ImGui::SameLine();
                 HelpMarker(trc("appearance.tooltip.reset_themes"));
 
-                if (ImGui::Button("Dark")) {
+                if (ImGui::Button(trc("appearance.dark"))) {
                     ImGui::StyleColorsDark();
                     g_config.appearance.theme = "Dark";
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Light")) {
+                if (ImGui::Button(trc("appearance.light"))) {
                     ImGui::StyleColorsLight();
                     g_config.appearance.theme = "Light";
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Classic")) {
+                if (ImGui::Button(trc("appearance.classic"))) {
                     ImGui::StyleColorsClassic();
                     g_config.appearance.theme = "Classic";
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Dracula")) {
+                if (ImGui::Button(trc("appearance.dracula"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.16f, 0.16f, 0.21f, 1.00f);
@@ -59,7 +59,7 @@
                     SaveTheme();
                 }
 
-                if (ImGui::Button("Nord")) {
+                if (ImGui::Button(trc("appearance.nord"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.18f, 0.20f, 0.25f, 1.00f);
@@ -91,7 +91,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Solarized")) {
+                if (ImGui::Button(trc("appearance.solarized"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.00f, 0.17f, 0.21f, 1.00f);
@@ -123,7 +123,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Monokai")) {
+                if (ImGui::Button(trc("appearance.monokai"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.15f, 0.15f, 0.13f, 1.00f);
@@ -155,7 +155,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Catppuccin")) {
+                if (ImGui::Button(trc("appearance.catppuccin"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);
@@ -187,7 +187,7 @@
                     SaveTheme();
                 }
 
-                if (ImGui::Button("One Dark")) {
+                if (ImGui::Button(trc("appearance.one_dark"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.16f, 0.18f, 0.21f, 1.00f);
@@ -219,7 +219,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Gruvbox")) {
+                if (ImGui::Button(trc("appearance.gruvbox"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.16f, 0.15f, 0.13f, 1.00f);
@@ -251,7 +251,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Tokyo Night")) {
+                if (ImGui::Button(trc("appearance.tokyo_night"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.11f, 0.17f, 1.00f);
@@ -283,7 +283,7 @@
                     SaveTheme();
                 }
 
-                if (ImGui::Button("Purple")) {
+                if (ImGui::Button(trc("appearance.purple"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.08f, 0.14f, 1.00f);
@@ -311,7 +311,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Pink")) {
+                if (ImGui::Button(trc("appearance.pink"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.08f, 0.10f, 1.00f);
@@ -339,7 +339,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Blue")) {
+                if (ImGui::Button(trc("appearance.blue"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.10f, 0.14f, 1.00f);
@@ -367,7 +367,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Teal")) {
+                if (ImGui::Button(trc("appearance.teal"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.12f, 0.12f, 1.00f);
@@ -395,7 +395,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Red")) {
+                if (ImGui::Button(trc("appearance.red"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.08f, 0.08f, 1.00f);
@@ -423,7 +423,7 @@
                     SaveTheme();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Green")) {
+                if (ImGui::Button(trc("appearance.green"))) {
                     ImGuiStyle& style = ImGui::GetStyle();
                     ImGui::StyleColorsDark();
                     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.12f, 0.08f, 1.00f);
