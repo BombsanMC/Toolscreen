@@ -148,12 +148,12 @@ static bool RT_IsSampleableTexture2D(GLuint texture, int* outW = nullptr, int* o
     GLint prevTexture = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
 
-    glBindTexture(GL_TEXTURE_2D, texture);
+    BindTextureDirect(GL_TEXTURE_2D, texture);
     GLint texW = 0;
     GLint texH = 0;
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &texW);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &texH);
-    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTexture));
+    BindTextureDirect(GL_TEXTURE_2D, static_cast<GLuint>(prevTexture));
 
     if (outW) *outW = texW;
     if (outH) *outH = texH;
@@ -1023,7 +1023,7 @@ static void RT_RenderCursorForObs(int fullW, int fullH, int viewportX, int viewp
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, cursorData->texture);
+    BindTextureDirect(GL_TEXTURE_2D, cursorData->texture);
     glUniform1i(rt_imageRenderShaderLocs.imageTexture, 0);
     glUniform1i(rt_imageRenderShaderLocs.enableColorKey, false);
     glUniform1f(rt_imageRenderShaderLocs.opacity, 1.0f);
@@ -1046,13 +1046,13 @@ static void RT_RenderCursorForObs(int fullW, int fullH, int viewportX, int viewp
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
     if (cursorData->hasInvertedPixels && cursorData->invertMaskTexture != 0) {
-        glBindTexture(GL_TEXTURE_2D, cursorData->invertMaskTexture);
+        BindTextureDirect(GL_TEXTURE_2D, cursorData->invertMaskTexture);
         glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
 }
 
 // Render a border around an element using the render thread's shaders
@@ -1154,7 +1154,7 @@ static void RT_RenderBackground(bool isImage, GLuint bgTexture, float bgR, float
     if (isImage && bgTexture != 0) {
         glUseProgram(rt_backgroundProgram);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, bgTexture);
+        BindTextureDirect(GL_TEXTURE_2D, bgTexture);
         glUniform1i(rt_backgroundShaderLocs.backgroundTexture, 0);
         glUniform1f(rt_backgroundShaderLocs.opacity, opacity);
     } else {
@@ -1194,7 +1194,7 @@ static void InitRenderFBOs(int width, int height) {
         if (fbo.stencilRbo == 0) { glGenRenderbuffers(1, &fbo.stencilRbo); }
 
         if (fbo.width != width || fbo.height != height) {
-            glBindTexture(GL_TEXTURE_2D, fbo.texture);
+            BindTextureDirect(GL_TEXTURE_2D, fbo.texture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1254,7 +1254,7 @@ static void InitRenderFBOs(int width, int height) {
 
         if (fbo.width != width || fbo.height != height) {
             obsResized = true;
-            glBindTexture(GL_TEXTURE_2D, fbo.texture);
+            BindTextureDirect(GL_TEXTURE_2D, fbo.texture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1457,13 +1457,13 @@ static void EnsureVCScaleResources(int w, int h) {
     if (g_vcScaleTexture != 0) glDeleteTextures(1, &g_vcScaleTexture);
     glGenTextures(1, &g_vcScaleTexture);
     RT_SetCalibrationExcludeTexture(RCES_VC_SCALE, g_vcScaleTexture);
-    glBindTexture(GL_TEXTURE_2D, g_vcScaleTexture);
+    BindTextureDirect(GL_TEXTURE_2D, g_vcScaleTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
 
     glBindFramebuffer(GL_FRAMEBUFFER, g_vcScaleFBO);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_vcScaleTexture, 0);
@@ -1527,20 +1527,20 @@ static void EnsureVCImageResources(int w, int h) {
         if (g_vcYImage[i] != 0) glDeleteTextures(1, &g_vcYImage[i]);
         glGenTextures(1, &g_vcYImage[i]);
         RT_SetCalibrationExcludeTexture(static_cast<RenderCalibrationExcludeSlot>(RCES_VC_Y_0 + i), g_vcYImage[i]);
-        glBindTexture(GL_TEXTURE_2D, g_vcYImage[i]);
+        BindTextureDirect(GL_TEXTURE_2D, g_vcYImage[i]);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8UI, w, h);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
 
         if (g_vcUVImage[i] != 0) glDeleteTextures(1, &g_vcUVImage[i]);
         glGenTextures(1, &g_vcUVImage[i]);
         RT_SetCalibrationExcludeTexture(static_cast<RenderCalibrationExcludeSlot>(RCES_VC_UV_0 + i), g_vcUVImage[i]);
-        glBindTexture(GL_TEXTURE_2D, g_vcUVImage[i]);
+        BindTextureDirect(GL_TEXTURE_2D, g_vcUVImage[i]);
         glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8UI, w, h / 2);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
 
         if (g_vcReadbackPBO[i] != 0) glDeleteBuffers(1, &g_vcReadbackPBO[i]);
         glGenBuffers(1, &g_vcReadbackPBO[i]);
@@ -1656,7 +1656,7 @@ static void StartVirtualCameraComputeReadback(GLuint srcTexture, int texW, int t
     glUseProgram(g_vcComputeProgram);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, sampleTexture);
+    BindTextureDirect(GL_TEXTURE_2D, sampleTexture);
     glUniform1i(g_vcLocRgbaTexture, 0);
     glUniform1ui(g_vcLocWidth, outW);
     glUniform1ui(g_vcLocHeight, outH);
@@ -1672,7 +1672,7 @@ static void StartVirtualCameraComputeReadback(GLuint srcTexture, int texW, int t
     g_vcFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     glFlush();
 
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
     glUseProgram(0);
 
     g_vcComputePending = true;
@@ -1763,7 +1763,7 @@ static void RT_RenderGameTexture(GLuint gameTexture, int x, int y, int w, int h,
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, gameTexture);
+    BindTextureDirect(GL_TEXTURE_2D, gameTexture);
 
     glUseProgram(rt_backgroundProgram);
     glUniform1f(rt_backgroundShaderLocs.opacity, 1.0f);
@@ -1882,7 +1882,7 @@ static void RT_RenderEyeZoom(GLuint gameTexture, int requestViewportX, int fullW
 
             glGenTextures(1, &rt_eyeZoomSnapshotTexture);
             RT_SetCalibrationExcludeTexture(RCES_EYEZOOM_SNAPSHOT, rt_eyeZoomSnapshotTexture);
-            glBindTexture(GL_TEXTURE_2D, rt_eyeZoomSnapshotTexture);
+            BindTextureDirect(GL_TEXTURE_2D, rt_eyeZoomSnapshotTexture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, zoomOutputWidth, zoomOutputHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2101,7 +2101,7 @@ static void RT_RenderEyeZoom(GLuint gameTexture, int requestViewportX, int fullW
             float ny1 = (ovBottom_gl / (float)fullH) * 2.0f - 1.0f;
             float ny2 = (ovTop_gl / (float)fullH) * 2.0f - 1.0f;
 
-            glBindTexture(GL_TEXTURE_2D, overlayTexId);
+            BindTextureDirect(GL_TEXTURE_2D, overlayTexId);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glUniform1f(rt_imageRenderShaderLocs.opacity, ov.opacity);
@@ -2278,7 +2278,7 @@ static void RT_RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, con
         }
         glUniform1f(rt_backgroundShaderLocs.opacity, effectiveOpacity);
 
-        glBindTexture(GL_TEXTURE_2D, renderData.texture);
+        BindTextureDirect(GL_TEXTURE_2D, renderData.texture);
 
         if (renderData.cacheValid) {
             glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(renderData.vertices), renderData.vertices);
@@ -2644,7 +2644,7 @@ static void RT_RenderImages(const std::vector<ImageConfig>& activeImages, int fu
         }
 
         glUseProgram(rt_imageRenderProgram);
-        glBindTexture(GL_TEXTURE_2D, texId);
+        BindTextureDirect(GL_TEXTURE_2D, texId);
 
         if (!rtInst.filterInitialized || rtInst.lastPixelatedScaling != conf.pixelatedScaling) {
             if (conf.pixelatedScaling) {
@@ -2758,13 +2758,13 @@ static void RT_RenderWindowOverlays(const std::vector<const WindowOverlayConfig*
             if (renderData != entry.lastUploadedRenderData) {
                 if (entry.glTextureId == 0) {
                     glGenTextures(1, &entry.glTextureId);
-                    glBindTexture(GL_TEXTURE_2D, entry.glTextureId);
+                    BindTextureDirect(GL_TEXTURE_2D, entry.glTextureId);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     entry.filterInitialized = false;
                 }
 
-                glBindTexture(GL_TEXTURE_2D, entry.glTextureId);
+                BindTextureDirect(GL_TEXTURE_2D, entry.glTextureId);
 
                 if (entry.glTextureWidth != renderData->width || entry.glTextureHeight != renderData->height) {
                     entry.glTextureWidth = renderData->width;
@@ -2844,7 +2844,7 @@ static void RT_RenderWindowOverlays(const std::vector<const WindowOverlayConfig*
         }
 
         glUseProgram(rt_imageRenderProgram);
-        glBindTexture(GL_TEXTURE_2D, entry.glTextureId);
+        BindTextureDirect(GL_TEXTURE_2D, entry.glTextureId);
 
         if (!entry.filterInitialized || entry.lastPixelatedScaling != conf->pixelatedScaling) {
             if (conf->pixelatedScaling) {
@@ -3353,7 +3353,7 @@ static void RenderThreadFunc(void* gameGLContext) {
                             glBindVertexArray(renderVAO);
                             glBindBuffer(GL_ARRAY_BUFFER, renderVBO);
                             glActiveTexture(GL_TEXTURE0);
-                            glBindTexture(GL_TEXTURE_2D, bgTex);
+                            BindTextureDirect(GL_TEXTURE_2D, bgTex);
                             glUniform1i(rt_backgroundShaderLocs.backgroundTexture, 0);
                             glUniform1f(rt_backgroundShaderLocs.opacity, 1.0f);
 
@@ -4006,13 +4006,13 @@ static void RenderThreadFunc(void* gameGLContext) {
 
                         glGenTextures(1, &g_vcCursorTexture);
                         RT_SetCalibrationExcludeTexture(RCES_VC_CURSOR, g_vcCursorTexture);
-                        glBindTexture(GL_TEXTURE_2D, g_vcCursorTexture);
+                        BindTextureDirect(GL_TEXTURE_2D, g_vcCursorTexture);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, vcW, vcH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                        glBindTexture(GL_TEXTURE_2D, 0);
+                        BindTextureDirect(GL_TEXTURE_2D, 0);
 
                         glBindFramebuffer(GL_FRAMEBUFFER, g_vcCursorFBO);
                         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_vcCursorTexture, 0);
@@ -4712,5 +4712,6 @@ FrameRenderRequest BuildObsFrameRequest(const ObsFrameContext& ctx, bool isDualR
 
     return req;
 }
+
 
 

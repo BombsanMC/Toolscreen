@@ -169,11 +169,11 @@ static void MT_LogSharedContextHealthOnce() {
 
         GLboolean isTex = glIsTexture(tex);
         GLint w = 0, h = 0, ifmt = 0;
-        glBindTexture(GL_TEXTURE_2D, tex);
+        BindTextureDirect(GL_TEXTURE_2D, tex);
         glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
         glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
         glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &ifmt);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
 
         LogCategory("init", "Mirror Capture Thread: shared copy tex[" + std::to_string(i) + "] id=" + std::to_string(tex) +
                                 " glIsTexture=" + std::to_string((int)isTex) + " size=" + std::to_string(w) + "x" +
@@ -700,14 +700,14 @@ void InitCaptureTexture(int width, int height) {
 
     glGenTextures(2, g_copyTextures);
     for (int i = 0; i < 2; i++) {
-        glBindTexture(GL_TEXTURE_2D, g_copyTextures[i]);
+        BindTextureDirect(GL_TEXTURE_2D, g_copyTextures[i]);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
 
     g_copyTextureWriteIndex.store(0);
     g_copyTextureReadIndex.store(-1);
@@ -786,7 +786,7 @@ void SubmitFrameCapture(GLuint gameTexture, int width, int height) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFBO);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFBO);
         glActiveTexture(prevActiveTexture);
-        glBindTexture(GL_TEXTURE_2D, prevTexture2D);
+        BindTextureDirect(GL_TEXTURE_2D, prevTexture2D);
 
         if (prevDither)
             glEnable(GL_DITHER);
@@ -822,10 +822,10 @@ void SubmitFrameCapture(GLuint gameTexture, int width, int height) {
         g_safeReadTextureValid.store(false, std::memory_order_release);
 
         for (int i = 0; i < 2; i++) {
-            glBindTexture(GL_TEXTURE_2D, g_copyTextures[i]);
+            BindTextureDirect(GL_TEXTURE_2D, g_copyTextures[i]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         }
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
 
         // Use fence + flush instead of glFinish() to avoid blocking the game thread.
         // cause visible hitches on some GPU/driver combinations (especially iGPUs).
@@ -1009,7 +1009,7 @@ static bool RenderMirrorToBackBuffer(MirrorInstance* inst, const ThreadedMirrorC
     glClear(GL_COLOR_BUFFER_BIT);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, validCopyTexture);
+    BindTextureDirect(GL_TEXTURE_2D, validCopyTexture);
 
     bool useRawOutput = inst->desiredRawOutput.load(std::memory_order_acquire);
     bool useColorPassthrough = conf.colorPassthrough;
@@ -1110,7 +1110,7 @@ static bool RenderMirrorToBackBuffer(MirrorInstance* inst, const ThreadedMirrorC
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            glBindTexture(GL_TEXTURE_2D, inst->fboTextureBack);
+            BindTextureDirect(GL_TEXTURE_2D, inst->fboTextureBack);
             glUseProgram(mt_backgroundProgram);
             glUniform1i(mt_backgroundShaderLocs.backgroundTexture, 0);
             glUniform1f(mt_backgroundShaderLocs.opacity, 1.0f);
@@ -1128,7 +1128,7 @@ static bool RenderMirrorToBackBuffer(MirrorInstance* inst, const ThreadedMirrorC
             glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            glBindTexture(GL_TEXTURE_2D, inst->fboTextureBack);
+            BindTextureDirect(GL_TEXTURE_2D, inst->fboTextureBack);
             glUseProgram(mt_backgroundProgram);
             glUniform1i(mt_backgroundShaderLocs.backgroundTexture, 0);
             glUniform1f(mt_backgroundShaderLocs.opacity, 1.0f);
@@ -1145,7 +1145,7 @@ static bool RenderMirrorToBackBuffer(MirrorInstance* inst, const ThreadedMirrorC
             glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            glBindTexture(GL_TEXTURE_2D, inst->fboTextureBack);
+            BindTextureDirect(GL_TEXTURE_2D, inst->fboTextureBack);
             if (useColorPassthrough) {
                 glUseProgram(mt_renderPassthroughProgram);
                 glUniform1i(mt_renderPassthroughShaderLocs.borderWidth, conf.dynamicBorderThickness);
@@ -1392,10 +1392,10 @@ static void MirrorCaptureThreadFunc(void* unused) {
                         if ((++s_diagCounter % 300) == 0) {
                             GLboolean isTex = glIsTexture(validTexture);
                             GLint tw = 0, th = 0;
-                            glBindTexture(GL_TEXTURE_2D, validTexture);
+                            BindTextureDirect(GL_TEXTURE_2D, validTexture);
                             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
                             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
-                            glBindTexture(GL_TEXTURE_2D, 0);
+                            BindTextureDirect(GL_TEXTURE_2D, 0);
                             LogCategory("texture_ops",
                                         "Mirror Capture Thread: Using copy texture idx=" + std::to_string(readIndex) +
                                             " id=" + std::to_string(validTexture) + " glIsTexture=" + std::to_string((int)isTex) +
@@ -1491,21 +1491,21 @@ static void MirrorCaptureThreadFunc(void* unused) {
                         inst->fbo_h = requiredFboH;
                         inst->forceUpdateFrames = 3;
 
-                        glBindTexture(GL_TEXTURE_2D, inst->fboTexture);
+                        BindTextureDirect(GL_TEXTURE_2D, inst->fboTexture);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, inst->fbo_w, inst->fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-                        glBindTexture(GL_TEXTURE_2D, inst->fboTextureBack);
+                        BindTextureDirect(GL_TEXTURE_2D, inst->fboTextureBack);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, inst->fbo_w, inst->fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-                        glBindTexture(GL_TEXTURE_2D, 0);
+                        BindTextureDirect(GL_TEXTURE_2D, 0);
                     }
 
                     float finalScaleX = conf.outputSeparateScale ? conf.outputScaleX : conf.outputScale;
@@ -1515,13 +1515,13 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
                     if (inst->final_w_back != requiredFinalW || inst->final_h_back != requiredFinalH) {
 
-                        glBindTexture(GL_TEXTURE_2D, inst->finalTextureBack);
+                        BindTextureDirect(GL_TEXTURE_2D, inst->finalTextureBack);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, requiredFinalW, requiredFinalH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                        glBindTexture(GL_TEXTURE_2D, 0);
+                        BindTextureDirect(GL_TEXTURE_2D, 0);
 
                         inst->final_w_back = requiredFinalW;
                         inst->final_h_back = requiredFinalH;
@@ -1622,13 +1622,13 @@ static void MirrorCaptureThreadFunc(void* unused) {
                     if ((fb.contentDownsampleFbo == 0) || (fb.contentDownsampleTex == 0) || (fb.contentDownW != detW) || (fb.contentDownH != detH)) {
                         if (fb.contentDownsampleFbo == 0) { glGenFramebuffers(1, &fb.contentDownsampleFbo); }
                         if (fb.contentDownsampleTex == 0) { glGenTextures(1, &fb.contentDownsampleTex); }
-                        glBindTexture(GL_TEXTURE_2D, fb.contentDownsampleTex);
+                        BindTextureDirect(GL_TEXTURE_2D, fb.contentDownsampleTex);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, detW, detH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                        glBindTexture(GL_TEXTURE_2D, 0);
+                        BindTextureDirect(GL_TEXTURE_2D, 0);
 
                         glBindFramebuffer(GL_FRAMEBUFFER, fb.contentDownsampleFbo);
                         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.contentDownsampleTex, 0);
@@ -2184,5 +2184,6 @@ void InvalidateMirrorTextureCaches(const std::vector<std::string>& mirrorNames) 
         inst.forceUpdateFrames = 3;
     }
 }
+
 
 

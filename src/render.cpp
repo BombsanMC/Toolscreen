@@ -868,10 +868,10 @@ void RestoreGLState(const GLState& s) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.draw_fb);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s.t0);
+    BindTextureDirect(GL_TEXTURE_2D, s.t0);
     if (s.at != GL_TEXTURE0) {
         glActiveTexture(s.at);
-        glBindTexture(GL_TEXTURE_2D, s.t);
+        BindTextureDirect(GL_TEXTURE_2D, s.t);
     } else {
         glActiveTexture(s.at);
     }
@@ -1090,7 +1090,7 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
                 for (int i = 0; i < imgData.frameCount; i++) {
                     GLuint t;
                     glGenTextures(1, &t);
-                    glBindTexture(GL_TEXTURE_2D, t);
+                    BindTextureDirect(GL_TEXTURE_2D, t);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1115,7 +1115,7 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
 
                 GLuint t;
                 glGenTextures(1, &t);
-                glBindTexture(GL_TEXTURE_2D, t);
+                BindTextureDirect(GL_TEXTURE_2D, t);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1184,7 +1184,7 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
                 for (int i = 0; i < imgData.frameCount; i++) {
                     GLuint t;
                     glGenTextures(1, &t);
-                    glBindTexture(GL_TEXTURE_2D, t);
+                    BindTextureDirect(GL_TEXTURE_2D, t);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1211,7 +1211,7 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
                 inst.isAnimated = false;
 
                 glGenTextures(1, &inst.textureId);
-                glBindTexture(GL_TEXTURE_2D, inst.textureId);
+                BindTextureDirect(GL_TEXTURE_2D, inst.textureId);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1328,7 +1328,7 @@ void InitializeGPUResources() {
     LogCategory("init", "Restoring original OpenGL state...");
     glUseProgram(last_program);
     glActiveTexture(last_active_texture);
-    glBindTexture(GL_TEXTURE_2D, last_texture);
+    BindTextureDirect(GL_TEXTURE_2D, last_texture);
     glBindVertexArray(last_vertex_array);
     glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
     glBindFramebuffer(GL_FRAMEBUFFER, last_framebuffer);
@@ -1368,7 +1368,7 @@ void CreateMirrorGPUResources(const MirrorConfig& conf) {
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
+        BindTextureDirect(GL_TEXTURE_2D, texture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
@@ -1416,7 +1416,7 @@ void CreateMirrorGPUResources(const MirrorConfig& conf) {
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, last_framebuffer);
-    glBindTexture(GL_TEXTURE_2D, last_texture);
+    BindTextureDirect(GL_TEXTURE_2D, last_texture);
 }
 
 // MirrorRenderData struct is now defined in render.h for sharing with render_thread.cpp
@@ -1535,7 +1535,7 @@ void handleEyeZoomMode(const GLState& s, float opacity, int animatedViewportX) {
             if (s_eyeZoomSnapshotFBO != 0) { glDeleteFramebuffers(1, &s_eyeZoomSnapshotFBO); }
 
             glGenTextures(1, &s_eyeZoomSnapshotTexture);
-            glBindTexture(GL_TEXTURE_2D, s_eyeZoomSnapshotTexture);
+            BindTextureDirect(GL_TEXTURE_2D, s_eyeZoomSnapshotTexture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, zoomOutputWidth, zoomOutputHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1582,7 +1582,7 @@ void handleEyeZoomMode(const GLState& s, float opacity, int animatedViewportX) {
             glGenFramebuffers(1, &s_eyeZoomTempFBO);
             glGenTextures(1, &s_eyeZoomTempTexture);
 
-            glBindTexture(GL_TEXTURE_2D, s_eyeZoomTempTexture);
+            BindTextureDirect(GL_TEXTURE_2D, s_eyeZoomTempTexture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, zoomOutputWidth, zoomOutputHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1731,7 +1731,7 @@ void handleEyeZoomMode(const GLState& s, float opacity, int animatedViewportX) {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         glUseProgram(g_imageRenderProgram);
-        glBindTexture(GL_TEXTURE_2D, s_eyeZoomTempTexture);
+        BindTextureDirect(GL_TEXTURE_2D, s_eyeZoomTempTexture);
         glUniform1i(g_imageRenderShaderLocs.imageTexture, 0);
         glUniform1i(g_imageRenderShaderLocs.enableColorKey, 0);
         glUniform1f(g_imageRenderShaderLocs.opacity, opacity);
@@ -2118,7 +2118,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
 
             glEnable(GL_SCISSOR_TEST);
             glUseProgram(g_backgroundProgram);
-            glBindTexture(GL_TEXTURE_2D, texId);
+            BindTextureDirect(GL_TEXTURE_2D, texId);
             glUniform1i(g_backgroundShaderLocs.backgroundTexture, 0);
             glUniform1f(g_backgroundShaderLocs.opacity, opacity);
             glBindVertexArray(g_vao);
@@ -2143,7 +2143,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
 
             glDisable(GL_SCISSOR_TEST);
 
-            glBindTexture(GL_TEXTURE_2D, savedTexture);
+            BindTextureDirect(GL_TEXTURE_2D, savedTexture);
         };
 
         auto renderBackgroundColor = [&](const Color& color, float opacity) {
@@ -2268,6 +2268,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
 
     bool useFramebufferFallback = (gameTextureToUse == UINT_MAX);
 
+    /*
     static bool fallbackLogged = false;
     if (useFramebufferFallback && !fallbackLogged) {
         Log("Mirror rendering using framebuffer fallback mode (glClear hook disabled for this game version)");
@@ -2275,7 +2276,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
     } else if (!useFramebufferFallback && fallbackLogged) {
         Log("Mirror rendering switched to standard texture mode (glClear hook active)");
         fallbackLogged = false;
-    }
+    }*/
 
     {
         PROFILE_SCOPE_CAT("Set Viewport Geometry", "Rendering");
@@ -2428,14 +2429,14 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
                         inst.fbo_h = requiredFboH;
                         inst.forceUpdateFrames = 3;
 
-                        glBindTexture(GL_TEXTURE_2D, inst.fboTexture);
+                        BindTextureDirect(GL_TEXTURE_2D, inst.fboTexture);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, inst.fbo_w, inst.fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-                        glBindTexture(GL_TEXTURE_2D, inst.fboTextureBack);
+                        BindTextureDirect(GL_TEXTURE_2D, inst.fboTextureBack);
                         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, inst.fbo_w, inst.fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2917,7 +2918,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
 
             glBindVertexArray(g_fullscreenQuadVAO);
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, completedTexture);
+            BindTextureDirect(GL_TEXTURE_2D, completedTexture);
 
             glUseProgram(g_backgroundProgram);
             glUniform1f(g_backgroundShaderLocs.opacity, 1.0f);
@@ -3140,7 +3141,7 @@ void RenderTextureGridOverlay(bool showTextureGrid, int modeWidth, int modeHeigh
     std::vector<TexInfo> validTextures;
     for (GLuint id = 0; id <= MAX_TEXTURE_ID; id++) {
         if (glIsTexture(id)) {
-            glBindTexture(GL_TEXTURE_2D, id);
+            BindTextureDirect(GL_TEXTURE_2D, id);
             GLint texWidth = 0, texHeight = 0, internalFormat = 0;
             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &texWidth);
             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &texHeight);
@@ -3203,7 +3204,7 @@ void RenderTextureGridOverlay(bool showTextureGrid, int modeWidth, int modeHeigh
         int x = MARGIN + col * (TILE_SIZE + PADDING);
         int y = MARGIN + row * (TILE_SIZE + PADDING);
 
-        glBindTexture(GL_TEXTURE_2D, tex.id);
+        BindTextureDirect(GL_TEXTURE_2D, tex.id);
 
         GLint texWidth = tex.width;
         GLint texHeight = tex.height;
@@ -3256,13 +3257,13 @@ void RenderTextureGridOverlay(bool showTextureGrid, int modeWidth, int modeHeigh
     }
 
     for (const auto& pair : texFilterStates) {
-        glBindTexture(GL_TEXTURE_2D, pair.first);
+        BindTextureDirect(GL_TEXTURE_2D, pair.first);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, pair.second.first);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, pair.second.second);
     }
 
     glActiveTexture(lastActiveTexture);
-    glBindTexture(GL_TEXTURE_2D, lastTexture);
+    BindTextureDirect(GL_TEXTURE_2D, lastTexture);
     glBindVertexArray(lastVAO);
     glBindBuffer(GL_ARRAY_BUFFER, lastArrayBuffer);
     glUseProgram(lastProgram);
@@ -3863,5 +3864,6 @@ ModeTransitionState GetModeTransitionState() {
     }
     return state;
 }
+
 
 

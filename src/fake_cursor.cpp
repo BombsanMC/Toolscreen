@@ -374,7 +374,7 @@ static bool LoadSingleCursor(const std::wstring& path, UINT loadType, int size, 
                 LogCategory("cursor_textures", "[CursorTextures] WARNING: Failed to create invert mask texture - glGenTextures returned 0");
                 outData.hasInvertedPixels = false;
             } else {
-                glBindTexture(GL_TEXTURE_2D, outData.invertMaskTexture);
+                BindTextureDirect(GL_TEXTURE_2D, outData.invertMaskTexture);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -392,7 +392,7 @@ static bool LoadSingleCursor(const std::wstring& path, UINT loadType, int size, 
                     LogCategory("cursor_textures",
                                 "[CursorTextures] Created invert mask texture ID " + std::to_string(outData.invertMaskTexture));
                 }
-                glBindTexture(GL_TEXTURE_2D, 0);
+                BindTextureDirect(GL_TEXTURE_2D, 0);
             }
         }
 
@@ -450,7 +450,7 @@ static bool LoadSingleCursor(const std::wstring& path, UINT loadType, int size, 
         return false;
     }
 
-    glBindTexture(GL_TEXTURE_2D, outData.texture);
+    BindTextureDirect(GL_TEXTURE_2D, outData.texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -489,7 +489,7 @@ static bool LoadSingleCursor(const std::wstring& path, UINT loadType, int size, 
         return false;
     }
 
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
 
     LogCategory("cursor_textures", "[CursorTextures] Successfully created texture ID " + std::to_string(outData.texture) + " (" +
                                        std::to_string(width) + "x" + std::to_string(height) + ") for " + WideToUtf8(path));
@@ -707,13 +707,13 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
             while (glGetError() != GL_NO_ERROR) {}
             glGenTextures(1, &outData.invertMaskTexture);
             if (outData.invertMaskTexture != 0) {
-                glBindTexture(GL_TEXTURE_2D, outData.invertMaskTexture);
+                BindTextureDirect(GL_TEXTURE_2D, outData.invertMaskTexture);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, width, height, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, invertPixels.data());
-                glBindTexture(GL_TEXTURE_2D, 0);
+                BindTextureDirect(GL_TEXTURE_2D, 0);
             }
         }
         SelectObject(hdcMem, hbmOld);
@@ -758,7 +758,7 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
     glGenTextures(1, &outData.texture);
     if (outData.texture == 0) { return false; }
 
-    glBindTexture(GL_TEXTURE_2D, outData.texture);
+    BindTextureDirect(GL_TEXTURE_2D, outData.texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -775,7 +775,7 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
         return false;
     }
 
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
     return true;
 }
 
@@ -1088,14 +1088,14 @@ void RenderFakeCursor(HWND hwnd, int windowWidth, int windowHeight) {
         glLoadIdentity();
 
         glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, cursorData->texture);
+        BindTextureDirect(GL_TEXTURE_2D, cursorData->texture);
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         RenderCursorQuad(cursorX, cursorY);
 
         if (cursorData->hasInvertedPixels && cursorData->invertMaskTexture != 0) {
-            glBindTexture(GL_TEXTURE_2D, cursorData->invertMaskTexture);
+            BindTextureDirect(GL_TEXTURE_2D, cursorData->invertMaskTexture);
 
             glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -1118,5 +1118,6 @@ void RenderFakeCursor(HWND hwnd, int windowWidth, int windowHeight) {
         glFlush();
     }
 }
+
 
 

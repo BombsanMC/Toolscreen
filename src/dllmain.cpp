@@ -228,6 +228,8 @@ std::vector<DecodedImageData> g_decodedImagesQueue;
 std::mutex g_decodedImagesMutex;
 
 std::atomic<GLuint> g_cachedGameTextureId{ UINT_MAX };
+std::atomic<GLuint> g_pendingGameTextureIdCapture{ UINT_MAX };
+std::atomic<bool> g_pendingGameTextureIdRequest{ false };
 
 std::atomic<HCURSOR> g_specialCursorHandle{ NULL };
 
@@ -262,6 +264,8 @@ bool SubclassGameWindow(HWND hwnd) {
 
         g_minecraftHwnd.store(hwnd);
         g_cachedGameTextureId.store(UINT_MAX);
+        g_pendingGameTextureIdCapture.store(UINT_MAX, std::memory_order_release);
+        g_pendingGameTextureIdRequest.store(false, std::memory_order_release);
         g_hwndChanged.store(true);
     }
 
@@ -530,6 +534,44 @@ typedef void(APIENTRY* PFNGLBLITFRAMEBUFFERPROC_HOOK)(GLint srcX0, GLint srcY0, 
 PFNGLBLITFRAMEBUFFERPROC_HOOK oglBlitFramebuffer = NULL;
 std::atomic<bool> g_glBlitFramebufferHooked{ false };
 
+typedef void (APIENTRY* GLBINDTEXTUREPROC)(GLenum target, GLuint texture);
+GLBINDTEXTUREPROC oglBindTexture = NULL;
+GLBINDTEXTUREPROC g_oglBindTextureDriver = NULL;
+
+// Per-thread one-shot flag used to capture the first bind after a qualifying viewport hook.
+static thread_local bool g_captureGameTextureIdOnNextBind = false;
+
+void APIENTRY BindTextureDirect(GLenum target, GLuint texture) {
+    GLBINDTEXTUREPROC next = oglBindTexture ? oglBindTexture : g_oglBindTextureDriver;
+    if (next) {
+        next(target, texture);
+        return;
+    }
+    glBindTexture(target, texture);
+}
+
+static inline void BindTextureHook_Impl(GLBINDTEXTUREPROC next, GLenum target, GLuint texture) {
+    if (g_captureGameTextureIdOnNextBind) {
+        g_captureGameTextureIdOnNextBind = false;
+        if (texture != 0) {
+            bool expectedRequest = true;
+            if (g_pendingGameTextureIdRequest.compare_exchange_strong(expectedRequest, false, std::memory_order_acq_rel)) {
+                g_pendingGameTextureIdCapture.store(texture, std::memory_order_release);
+            }
+        }
+    }
+
+    if (next) next(target, texture);
+}
+
+void APIENTRY hkglBindTexture(GLenum target, GLuint texture) {
+    BindTextureHook_Impl(oglBindTexture, target, texture);
+}
+
+void APIENTRY hkglBindTexture_Driver(GLenum target, GLuint texture) {
+    BindTextureHook_Impl(g_oglBindTextureDriver, target, texture);
+}
+
 typedef void (*GLFWSETINPUTMODE)(void* window, int mode, int value);
 GLFWSETINPUTMODE oglfwSetInputMode = NULL;
 GLFWSETINPUTMODE g_oglfwSetInputModeThirdParty = NULL;
@@ -735,6 +777,10 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
 
     lastViewportW = modeWidth;
     lastViewportH = modeHeight;
+
+    if (g_pendingGameTextureIdRequest.load(std::memory_order_acquire)) {
+        g_captureGameTextureIdOnNextBind = true;
+    }
 
     const int screenW = GetCachedWindowWidth();
     const int screenH = GetCachedWindowHeight();
@@ -1119,102 +1165,48 @@ void AttemptAggressiveGlViewportHook() {
     Log("Total glViewport hook count: " + std::to_string(g_glViewportHookCount.load()));
 }
 
+static void AttemptHookGlBindTextureViaWgl() {
+    static std::atomic<bool> s_hooked{ false };
+    if (s_hooked.load(std::memory_order_acquire)) return;
+
+    HMODULE hOpenGL32 = GetModuleHandle(L"opengl32.dll");
+    if (!hOpenGL32) return;
+
+    typedef PROC(WINAPI* PFN_wglGetProcAddress)(LPCSTR);
+    PFN_wglGetProcAddress pwglGetProcAddress =
+        reinterpret_cast<PFN_wglGetProcAddress>(GetProcAddress(hOpenGL32, "wglGetProcAddress"));
+    if (!pwglGetProcAddress) return;
+
+    PROC pBindTexWGL = pwglGetProcAddress("glBindTexture");
+    if (pBindTexWGL != NULL &&
+        reinterpret_cast<void*>(pBindTexWGL) != reinterpret_cast<void*>(&hkglBindTexture) &&
+        reinterpret_cast<void*>(pBindTexWGL) != reinterpret_cast<void*>(&hkglBindTexture_Driver) &&
+        reinterpret_cast<void*>(pBindTexWGL) != reinterpret_cast<void*>(oglBindTexture)) {
+        LogCategory("init", "Attempting glBindTexture hook via wglGetProcAddress: " +
+                   std::to_string(reinterpret_cast<uintptr_t>(pBindTexWGL)));
+        if (HookChain::TryCreateAndEnableHook(reinterpret_cast<void*>(pBindTexWGL),
+                                              reinterpret_cast<void*>(&hkglBindTexture_Driver),
+                                              reinterpret_cast<void**>(&g_oglBindTextureDriver),
+                                              "glBindTexture (wglGetProcAddress)")) {
+            s_hooked.store(true, std::memory_order_release);
+            LogCategory("init", "SUCCESS: glBindTexture hooked via wglGetProcAddress (driver target)");
+        }
+    }
+}
 
 GLuint CalculateGameTextureId() {
-    ModeViewportInfo viewport = GetCurrentModeViewport();
-    if (!viewport.valid) {
-        Log("CalculateGameTextureId: Invalid viewport, cannot calculate texture ID");
-        return UINT_MAX;
+    const GLuint capturedTex = g_pendingGameTextureIdCapture.exchange(UINT_MAX, std::memory_order_acq_rel);
+    if (capturedTex != UINT_MAX) {
+        return capturedTex;
     }
 
-    int targetWidth = viewport.width;
-    int targetHeight = viewport.height;
-
-    Log("CalculateGameTextureId: Looking for texture with dimensions " + std::to_string(targetWidth) + "x" + std::to_string(targetHeight));
-
-    constexpr GLuint kMaxCheckRange = 1000;
-
-    std::array<uint8_t, kMaxCheckRange> excludedTextureMask{};
-    size_t excludedTextureCount = 0;
-    auto markExcludedTexture = [&](GLuint textureId) {
-        if (textureId != 0 && textureId != UINT_MAX && textureId < kMaxCheckRange && excludedTextureMask[textureId] == 0) {
-            excludedTextureMask[textureId] = 1;
-            ++excludedTextureCount;
-        }
-    };
-
-    {
-        GLuint obsOverrideTexture = g_obsOverrideTexture.load(std::memory_order_acquire);
-        markExcludedTexture(obsOverrideTexture);
-
-        GLuint obsCaptureTexture = GetObsCaptureTexture();
-        markExcludedTexture(obsCaptureTexture);
-
-        std::vector<GLuint> renderThreadExcludedTextureIds;
-        GetRenderThreadCalibrationExcludeTextureIds(renderThreadExcludedTextureIds);
-        for (GLuint id : renderThreadExcludedTextureIds) { markExcludedTexture(id); }
-    }
-
-    if (excludedTextureCount > 0) {
-        Log("CalculateGameTextureId: Excluding " + std::to_string(excludedTextureCount) +
-            " internal texture IDs from calibration");
-    }
-
-    GLint oldTexture = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldTexture);
-
-    for (GLuint texId = 0; texId < kMaxCheckRange; texId++) {
-        if (excludedTextureMask[texId] != 0) { continue; }
-
-        if (!glIsTexture(texId)) { continue; }
-
-        glBindTexture(GL_TEXTURE_2D, texId);
-
-        GLint width = 0, height = 0;
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
-
-        if (width == targetWidth && height == targetHeight) {
-            // Check texture parameters: minFilter and magFilter must be GL_NEAREST,
-            // wrapS and wrapT must be GL_CLAMP_TO_EDGE
-            GLint minFilter = 0, magFilter = 0, wrapS = 0, wrapT = 0;
-            glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minFilter);
-            glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &magFilter);
-            glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &wrapS);
-            glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wrapT);
-
-            if (g_gameVersion <= GameVersion(1, 16, 5)) {
-                if (minFilter != GL_NEAREST || magFilter != GL_NEAREST || wrapS != GL_CLAMP || wrapT != GL_CLAMP) {
-                    Log("CalculateGameTextureId: Texture " + std::to_string(texId) +
-                        " has matching dimensions but wrong parameters (minFilter=" + std::to_string(minFilter) + ", magFilter=" +
-                        std::to_string(magFilter) + ", wrapS=" + std::to_string(wrapS) + ", wrapT=" + std::to_string(wrapT) + ")");
-                    continue;
-                }
-            } else {
-                /*
-                if (minFilter != GL_NEAREST || magFilter != GL_NEAREST || wrapS != GL_CLAMP || wrapT != GL_CLAMP) {
-                    Log("CalculateGameTextureId: Texture " + std::to_string(texId) +
-                        " has matching dimensions but wrong parameters (minFilter=" + std::to_string(minFilter) + ", magFilter=" +
-                        std::to_string(magFilter) + ", wrapS=" + std::to_string(wrapS) + ", wrapT=" + std::to_string(wrapT) + ")");
-                    continue;
-                }*/
-            }
-
-            Log("CalculateGameTextureId: Found matching texture ID " + std::to_string(texId) + " with dimensions " + std::to_string(width) +
-                "x" + std::to_string(height));
-            glBindTexture(GL_TEXTURE_2D, oldTexture);
-            return texId;
-        }
-
-        glBindTexture(GL_TEXTURE_2D, oldTexture);
-    }
-
-    Log("CalculateGameTextureId: No matching texture found in range 1-" + std::to_string(kMaxCheckRange));
+    const bool wasAlreadyRequested = g_pendingGameTextureIdRequest.exchange(true, std::memory_order_acq_rel);
     return UINT_MAX;
 }
 
 static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
     if (!next) return FALSE;
+
     auto startTime = std::chrono::high_resolution_clock::now();
     _set_se_translator(SEHTranslator);
 
@@ -1249,6 +1241,8 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
                 }
 
                 AttemptAggressiveGlViewportHook();
+
+                AttemptHookGlBindTextureViaWgl();
 
                 AttemptHookGlBlitNamedFramebufferViaGlew();
 
@@ -1316,6 +1310,8 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
                     StartObsHookThread();
 
                     g_cachedGameTextureId.store(UINT_MAX, std::memory_order_release);
+                    g_pendingGameTextureIdCapture.store(UINT_MAX, std::memory_order_release);
+                    g_pendingGameTextureIdRequest.store(false, std::memory_order_release);
                     g_lastSeenGameGLContext.store(currentContext, std::memory_order_release);
                 }
             } else {
@@ -2105,6 +2101,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
 #define HOOK(mod, name) CreateHookOrDie(GetProcAddress(mod, #name), &hk##name, &o##name, #name)
         HOOK(hOpenGL32, wglSwapBuffers);
+        HOOK(hOpenGL32, glBindTexture);
         if (IsVersionInRange(g_gameVersion, GameVersion(1, 0, 0), GameVersion(1, 21, 0))) {
             if (HOOK(hOpenGL32, glViewport)) {
                 g_glViewportHookCount.fetch_add(1);

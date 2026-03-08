@@ -289,6 +289,7 @@ extern std::atomic<HCURSOR> g_specialCursorHandle;
 
 void Log(const std::string& message);
 void Log(const std::wstring& message);
+void APIENTRY BindTextureDirect(GLenum target, GLuint texture);
 
 void StartLogThread(); // Start background log writer thread
 void StopLogThread();  // Stop background log writer thread (flushes first)

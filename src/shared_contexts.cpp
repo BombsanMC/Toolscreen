@@ -122,12 +122,12 @@ static bool VerifyTextureSharing(HGLRC gameContext, HDC gameDC, HGLRC otherConte
     {
         ScopedWglMakeCurrent makeGame(gameDC, gameContext);
         glGenTextures(1, &testTex);
-        glBindTexture(GL_TEXTURE_2D, testTex);
+        BindTextureDirect(GL_TEXTURE_2D, testTex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         unsigned int pixel = 0xFF00FFFFu;
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &pixel);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
     }
 
     bool ok = false;
@@ -351,5 +351,6 @@ HDC GetSharedMirrorContextDC() { return g_sharedMirrorContextDC.load(); }
 HDC GetSharedContextDC() { return g_sharedContextDC.load(); }
 
 bool AreSharedContextsReady() { return g_sharedContextsReady.load(); }
+
 
 

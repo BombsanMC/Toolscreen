@@ -117,7 +117,7 @@ void CaptureBackbufferForObs(int width, int height) {
         if (g_obsCaptureFBO == 0) { glGenFramebuffers(1, &g_obsCaptureFBO); }
 
         glGenTextures(1, &g_obsCaptureTexture);
-        glBindTexture(GL_TEXTURE_2D, g_obsCaptureTexture);
+        BindTextureDirect(GL_TEXTURE_2D, g_obsCaptureTexture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -127,7 +127,7 @@ void CaptureBackbufferForObs(int width, int height) {
         glBindFramebuffer(GL_FRAMEBUFFER, g_obsCaptureFBO);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_obsCaptureTexture, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
 
         g_obsCaptureWidth = width;
         g_obsCaptureHeight = height;
@@ -264,5 +264,6 @@ void StopObsHookThread() {
     g_obsHookInitialized.store(false);
     Log("OBS Hook: Stopped");
 }
+
 
 

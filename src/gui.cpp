@@ -1,4 +1,4 @@
-﻿#include "gui.h"
+#include "gui.h"
 #include "config_toml.h"
 #include "expression_parser.h"
 #include "fake_cursor.h"
@@ -352,7 +352,7 @@ static bool EnsureSupporterTierTexture(const SupporterRoleEntry& role, GLuint& o
     glGenTextures(1, &entry.textureId);
     if (entry.textureId == 0) { return false; }
 
-    glBindTexture(GL_TEXTURE_2D, entry.textureId);
+    BindTextureDirect(GL_TEXTURE_2D, entry.textureId);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -363,7 +363,7 @@ static bool EnsureSupporterTierTexture(const SupporterRoleEntry& role, GLuint& o
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, role.tierIconWidth, role.tierIconHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                  role.tierIconPixels.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
 
     entry.width = role.tierIconWidth;
     entry.height = role.tierIconHeight;
@@ -3277,7 +3277,7 @@ void RenderSettingsGUI() {
                     }
 
                     glGenTextures(1, &s_discordTexture);
-                    glBindTexture(GL_TEXTURE_2D, s_discordTexture);
+                    BindTextureDirect(GL_TEXTURE_2D, s_discordTexture);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -3287,7 +3287,7 @@ void RenderSettingsGUI() {
                     glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
                     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
                     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-                    glBindTexture(GL_TEXTURE_2D, 0);
+                    BindTextureDirect(GL_TEXTURE_2D, 0);
                     stbi_image_free(pixels);
                 };
 
@@ -3609,7 +3609,7 @@ void main() {
         if (!pixels || w <= 0 || h <= 0) { return; }
 
         glGenTextures(1, &outTexture);
-        glBindTexture(GL_TEXTURE_2D, outTexture);
+        BindTextureDirect(GL_TEXTURE_2D, outTexture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -3619,7 +3619,7 @@ void main() {
         glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
 
         outW = w;
         outH = h;
@@ -3703,7 +3703,7 @@ void main() {
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture);
+    BindTextureDirect(GL_TEXTURE_2D, texture);
     glUniform1f(s_locOpacity, toastOpacity);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
@@ -3712,7 +3712,7 @@ void main() {
     glBindBuffer(GL_ARRAY_BUFFER, savedVBO);
     glBindFramebuffer(GL_FRAMEBUFFER, savedFBO);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, savedTex);
+    BindTextureDirect(GL_TEXTURE_2D, savedTex);
     glActiveTexture(savedActiveTex);
     if (oglViewport)
         oglViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
@@ -3823,9 +3823,9 @@ void RenderProfilerOverlay(bool showProfiler, bool showPerformanceOverlay) {
 
                 if (entry.depth > 0) {
                     if (isLastAtDepth) {
-                        indent += "â””â”€ ";
+                        indent += "└─ ";
                     } else {
-                        indent += "â”œâ”€ ";
+                        indent += "├─ ";
                     }
                 }
 
@@ -4012,7 +4012,7 @@ void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC)) {
         glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_buffer);
         glActiveTexture(last_active_texture);
-        glBindTexture(GL_TEXTURE_2D, last_texture);
+        BindTextureDirect(GL_TEXTURE_2D, last_texture);
         if (oglViewport)
             oglViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
         else
@@ -4085,7 +4085,7 @@ void RenderImGuiWithStateProtection(bool useFullProtection) {
         glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_buffer);
         glActiveTexture(last_active_texture);
-        glBindTexture(GL_TEXTURE_2D, last_texture);
+        BindTextureDirect(GL_TEXTURE_2D, last_texture);
         if (oglViewport)
             oglViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
         else
@@ -4132,5 +4132,6 @@ void RenderImGuiWithStateProtection(bool useFullProtection) {
             glDisable(GL_BLEND);
     }
 }
+
 
 
