@@ -26,8 +26,16 @@ echo Configuring with preset vs2022-x64...
 cmake --preset vs2022-x64
 if errorlevel 1 goto :fail
 
-echo Building with preset %BUILD_PRESET%...
-cmake --build --preset %BUILD_PRESET%
+echo Building DLL with preset %BUILD_PRESET%...
+cmake --build --preset %BUILD_PRESET% --target Toolscreen
+if errorlevel 1 goto :fail
+
+echo Building EXE package with preset %BUILD_PRESET%...
+cmake --build --preset %BUILD_PRESET% --target installer_exe
+if errorlevel 1 goto :fail
+
+echo Building JAR package with preset %BUILD_PRESET%...
+cmake --build --preset %BUILD_PRESET% --target jar
 if errorlevel 1 goto :fail
 
 if "%RUN_TESTS%"=="1" (
