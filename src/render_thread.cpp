@@ -17,9 +17,9 @@
 #include <fstream>
 
 // ImGui includes for render thread
-#include "include/imgui/backends/imgui_impl_opengl3.h"
-#include "include/imgui/backends/imgui_impl_win32.h"
-#include "include/imgui/imgui.h"
+#include "imgui_impl_opengl3.h"
+#include "imgui_impl_win32.h"
+#include "imgui.h"
 
 #include "logic_thread.h"
 
@@ -461,9 +461,10 @@ static bool RT_TryInitializeImGui(HWND hwnd, const Config& cfg) {
         io.Fonts->AddFontDefault();
         (void)io.Fonts->Build();
     }
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
-    ImGui_ImplOpenGL3_CreateFontsTexture();
-    if ((GLuint)(intptr_t)io.Fonts->TexID == 0) {
+    if (io.Fonts->TexData != nullptr) {
+        ImGui_ImplOpenGL3_UpdateTexture(io.Fonts->TexData);
+    }
+    if ((GLuint)(intptr_t)io.Fonts->TexRef.GetTexID() == 0) {
         Log("ERROR: Render Thread: ImGui font texture ID is 0 after initialization; GUI may render black");
     }
 
@@ -3800,11 +3801,11 @@ static void RenderThreadFunc(void* gameGLContext) {
                                 g_eyeZoomTextFont = ImGui::GetFont();
                             }
                         }
+                        if (io.Fonts->TexData != nullptr) {
+                            ImGui_ImplOpenGL3_UpdateTexture(io.Fonts->TexData);
+                        }
 
-                        ImGui_ImplOpenGL3_DestroyFontsTexture();
-                        ImGui_ImplOpenGL3_CreateFontsTexture();
-
-                        if ((GLuint)(intptr_t)io.Fonts->TexID == 0) {
+                        if ((GLuint)(intptr_t)io.Fonts->TexRef.GetTexID() == 0) {
                             Log("ERROR: Render Thread: ImGui font texture ID is 0 after reload; GUI may render black");
                         }
 

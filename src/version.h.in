@@ -3,9 +3,9 @@
 #include <string>
 
 
-#define TOOLSCREEN_VERSION_MAJOR 1
-#define TOOLSCREEN_VERSION_MINOR 1
-#define TOOLSCREEN_VERSION_PATCH 3
+#define TOOLSCREEN_VERSION_MAJOR @TOOLSCREEN_VERSION_MAJOR@
+#define TOOLSCREEN_VERSION_MINOR @TOOLSCREEN_VERSION_MINOR@
+#define TOOLSCREEN_VERSION_PATCH @TOOLSCREEN_VERSION_PATCH@
 
 #define CONFIG_VERSION 2
 
@@ -53,5 +53,3 @@ GameVersion GetGameVersionFromCommandLine();
 GameVersion ParseMinecraftVersionFromMMCPack(const std::wstring& mmcPackPath);
 bool IsVersionInRange(const GameVersion& version, const GameVersion& minVer, const GameVersion& maxVer);
 bool IsResolutionChangeSupported(const GameVersion& version);
-
-

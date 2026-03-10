@@ -56,19 +56,19 @@ std::atomic<uint64_t> g_configSnapshotVersion{ 0 };
 // CONFIG SNAPSHOT (RCU) - Lock-free immutable config for reader threads
 // The mutable g_config is only touched by the GUI/main thread.
 // Reader threads call GetConfigSnapshot() for a safe, lock-free snapshot.
-static std::shared_ptr<const Config> g_configSnapshot;
+static std::atomic<std::shared_ptr<const Config>> g_configSnapshot;
 
 void PublishConfigSnapshot() {
     auto snapshot = std::make_shared<const Config>(g_config);
     // Lock-free publish: atomic store of shared_ptr.
-    std::atomic_store_explicit(&g_configSnapshot, std::move(snapshot), std::memory_order_release);
+    g_configSnapshot.store(std::move(snapshot), std::memory_order_release);
 
     g_configSnapshotVersion.fetch_add(1, std::memory_order_release);
 }
 
 std::shared_ptr<const Config> GetConfigSnapshot() {
     // Lock-free read: atomic load of shared_ptr.
-    return std::atomic_load_explicit(&g_configSnapshot, std::memory_order_acquire);
+    return g_configSnapshot.load(std::memory_order_acquire);
 }
 
 // HOTKEY SECONDARY MODE STATE - Thread-safe runtime state separated from Config

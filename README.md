@@ -64,3 +64,7 @@ Double-click the Toolscreen installer (`.jar` or `.exe`) and select **Uninstall*
 ## Community
 
 Need help or want to share your setup? Join the [Discord server](https://discord.gg/A2v6bCJg6K).
+
+## Building
+
+Run `build.bat` to build Toolscreen; output files are in `out/build/bin/Release/`.
