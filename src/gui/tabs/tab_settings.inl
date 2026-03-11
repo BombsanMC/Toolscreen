@@ -24,6 +24,36 @@ if (ImGui::BeginTabItem(trc("tabs.settings"))) {
     ImGui::SameLine();
     HelpMarker(trc("tooltip.hide_animations_in_game"));
 
+    ImGui::Spacing();
+    ImGui::SeparatorText(trc("hotkeys.window_hotkeys"));
+
+    ImGui::PushID("settings_borderless_hotkey");
+    {
+        std::string borderlessKeyStr = GetKeyComboString(g_config.borderlessHotkey);
+
+        ImGui::Text(trc("label.toggle_borderless"));
+        ImGui::SameLine();
+
+        const bool isBindingBorderless = (s_mainHotkeyToBind == -998);
+        const char* borderlessButtonLabel =
+            isBindingBorderless ? trc("hotkeys.press_keys") : (borderlessKeyStr.empty() ? trc("hotkeys.click_to_bind") : borderlessKeyStr.c_str());
+        if (ImGui::Button(borderlessButtonLabel, ImVec2(150, 0))) {
+            s_mainHotkeyToBind = -998;
+            s_altHotkeyToBind = { -1, -1 };
+            s_exclusionToBind = { -1, -1 };
+            MarkHotkeyBindingActive();
+        }
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.toggle_borderless"));
+    }
+    ImGui::PopID();
+
+    ImGui::PushID("settings_auto_borderless");
+    if (ImGui::Checkbox(trc("settings.auto_borderless"), &g_config.autoBorderless)) { g_configIsDirty = true; }
+    ImGui::SameLine();
+    HelpMarker(trc("tooltip.auto_borderless"));
+    ImGui::PopID();
+
 /*    if (ImGui::Checkbox("Disable Fullscreen Prompt", &g_config.disableFullscreenPrompt)) { g_configIsDirty = true; }
     ImGui::SameLine();
     HelpMarker("Disables the fullscreen toast prompt (toast2).\n"

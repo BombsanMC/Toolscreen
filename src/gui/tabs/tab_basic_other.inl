@@ -106,13 +106,7 @@ if (ImGui::BeginTabItem(trc("tabs.other"))) {
 
     {
         ImGui::PushID("basic_auto_borderless");
-        ImGui::Text(trc("label.auto_borderless"));
-        ImGui::SameLine();
-        const char* label = g_config.autoBorderless ? trc("label.enabled") : trc("label.disabled");
-        if (ImGui::Button(label, ImVec2(150, 0))) {
-            g_config.autoBorderless = !g_config.autoBorderless;
-            g_configIsDirty = true;
-        }
+        if (ImGui::Checkbox(trc("settings.auto_borderless"), &g_config.autoBorderless)) { g_configIsDirty = true; }
         ImGui::SameLine();
         HelpMarker(trc("tooltip.auto_borderless"));
         ImGui::PopID();

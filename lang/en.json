@@ -579,6 +579,7 @@
     "restart_required.text": "A restart is required for this change to take effect.",
     "settings.camera_fps": "Camera FPS",
     "settings.capture_streaming": "Capture/Streaming",
+    "settings.auto_borderless": "Auto-Borderless",
     "settings.debug_options": "Debug Options",
     "settings.debug_passcode": "Debug Passcode",
     "settings.debug_passcode_prompt": "Enter passcode to access debug options:",

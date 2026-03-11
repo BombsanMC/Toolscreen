@@ -579,6 +579,7 @@
     "restart_required.text": "需要重启才能使此更改生效。",
     "settings.camera_fps": "摄像头 FPS",
     "settings.capture_streaming": "捕获/串流",
+    "settings.auto_borderless": "自动无边框",
     "settings.debug_options": "调试选项",
     "settings.debug_passcode": "调试密码",
     "settings.debug_passcode_prompt": "输入密码以访问调试选项：",
