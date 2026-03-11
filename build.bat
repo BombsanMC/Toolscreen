@@ -30,6 +30,14 @@ echo Building DLL with preset %BUILD_PRESET%...
 cmake --build --preset %BUILD_PRESET% --target Toolscreen
 if errorlevel 1 goto :fail
 
+echo Copying DLL into EXE packaging inputs...
+cmake --build --preset %BUILD_PRESET% --target toolscreen_prepare_easyinject_exe_inputs
+if errorlevel 1 goto :fail
+
+echo Reconfiguring with preset vs2022-x64 so the EXE packaging step sees the copied DLL...
+cmake --preset vs2022-x64
+if errorlevel 1 goto :fail
+
 echo Building EXE package with preset %BUILD_PRESET%...
 cmake --build --preset %BUILD_PRESET% --target installer_exe
 if errorlevel 1 goto :fail

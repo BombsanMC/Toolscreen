@@ -416,6 +416,11 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
         CONTENT "if(NOT EXISTS \"${EXE_OUTPUT}\")\n  message(FATAL_ERROR \"Expected Toolscreen exe at '${EXE_OUTPUT}'\")\nendif()\n"
     )
 
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_exe_embeds_dll_$<CONFIG>.cmake"
+        CONTENT "set(EMBED_DLL_INDEX_FILE \"${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-exe/embedded_dll_index.txt\")\nif(NOT EXISTS \"${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-exe/embedded_dll_index.txt\")\n  message(FATAL_ERROR \"Expected EasyInject embedded DLL index at '${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-exe/embedded_dll_index.txt'\")\nendif()\nfile(READ \"${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-exe/embedded_dll_index.txt\" EMBED_DLL_INDEX_CONTENT)\nif(NOT EMBED_DLL_INDEX_CONTENT MATCHES \"(^|\\n)[0-9]+\\|Toolscreen\\.dll(\\n|$)\")\n  message(FATAL_ERROR \"Expected EasyInject EXE packaging metadata to embed Toolscreen.dll\")\nendif()\n"
+    )
+
     add_test(
         NAME toolscreen_jar_exists
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_jar_$<CONFIG>.cmake"
@@ -424,6 +429,11 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     add_test(
         NAME toolscreen_exe_exists
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_exe_$<CONFIG>.cmake"
+    )
+
+    add_test(
+        NAME toolscreen_exe_embeds_dll
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_exe_embeds_dll_$<CONFIG>.cmake"
     )
 endif()
 
