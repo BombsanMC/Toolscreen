@@ -1955,6 +1955,142 @@ struct MT_MirrorFbos {
     int contentDownH = 0;
 };
 
+static void MT_ReleaseContentDetectionResources(MT_MirrorFbos& fb) {
+    if (fb.contentReadbackFence && glIsSync(fb.contentReadbackFence)) { glDeleteSync(fb.contentReadbackFence); }
+    fb.contentReadbackFence = nullptr;
+    fb.contentReadbackPending = false;
+
+    if (fb.contentDetectionPBO) {
+        glDeleteBuffers(1, &fb.contentDetectionPBO);
+        fb.contentDetectionPBO = 0;
+    }
+    fb.contentPBOWidth = 0;
+    fb.contentPBOHeight = 0;
+
+    if (fb.contentDownsampleFbo) {
+        glDeleteFramebuffers(1, &fb.contentDownsampleFbo);
+        fb.contentDownsampleFbo = 0;
+    }
+    if (fb.contentDownsampleTex) {
+        glDeleteTextures(1, &fb.contentDownsampleTex);
+        fb.contentDownsampleTex = 0;
+    }
+    fb.contentDownW = 0;
+    fb.contentDownH = 0;
+}
+
+static void MT_DeleteMirrorFbos(MT_MirrorFbos& fb) {
+    if (fb.backFbo) { glDeleteFramebuffers(1, &fb.backFbo); }
+    if (fb.tempBackFbo) { glDeleteFramebuffers(1, &fb.tempBackFbo); }
+    if (fb.finalBackFbo) { glDeleteFramebuffers(1, &fb.finalBackFbo); }
+    fb.backFbo = 0;
+    fb.tempBackFbo = 0;
+    fb.finalBackFbo = 0;
+    fb.lastBackTex = 0;
+    fb.lastTempTex = 0;
+    fb.lastFinalBackTex = 0;
+
+    MT_ReleaseContentDetectionResources(fb);
+}
+
+static bool MT_MirrorNeedsContentDetection(const ThreadedMirrorConfig& conf, bool useRawOutput) {
+    return !useRawOutput && conf.borderType == MirrorBorderType::Static && conf.staticBorderThickness > 0;
+}
+
+static bool MT_HarvestContentReadback(MT_MirrorFbos& fb, bool& outHasContent) {
+    if (!fb.contentReadbackPending || !fb.contentReadbackFence) { return false; }
+
+    GLenum fenceStatus = glClientWaitSync(fb.contentReadbackFence, 0, 0);
+    if (fenceStatus != GL_ALREADY_SIGNALED && fenceStatus != GL_CONDITION_SATISFIED) { return false; }
+
+    bool hasContent = false;
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
+    const unsigned char* mapped = static_cast<const unsigned char*>(
+        glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, fb.contentPBOWidth * fb.contentPBOHeight * 4, GL_MAP_READ_BIT));
+    if (mapped) {
+        const int w = fb.contentPBOWidth;
+        const int h = fb.contentPBOHeight;
+        const int step = 4;
+        for (int y = 0; y < h && !hasContent; y += step) {
+            const unsigned char* row = mapped + (static_cast<size_t>(y) * w * 4);
+            for (int x = 0; x < w; x += step) {
+                if (row[(static_cast<size_t>(x) * 4) + 3] > 0) {
+                    hasContent = true;
+                    break;
+                }
+            }
+        }
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+    if (glIsSync(fb.contentReadbackFence)) { glDeleteSync(fb.contentReadbackFence); }
+    fb.contentReadbackFence = nullptr;
+    fb.contentReadbackPending = false;
+
+    outHasContent = hasContent;
+    return true;
+}
+
+static void MT_QueueContentReadback(MT_MirrorFbos& fb, GLuint sourceFbo, int sourceW, int sourceH) {
+    if (sourceFbo == 0 || sourceW <= 0 || sourceH <= 0) {
+        MT_ReleaseContentDetectionResources(fb);
+        return;
+    }
+
+    constexpr int kDetectMax = 64;
+    const int detW = (std::min)(sourceW, kDetectMax);
+    const int detH = (std::min)(sourceH, kDetectMax);
+    if (detW <= 0 || detH <= 0) {
+        MT_ReleaseContentDetectionResources(fb);
+        return;
+    }
+
+    if ((fb.contentDownsampleFbo == 0) || (fb.contentDownsampleTex == 0) || (fb.contentDownW != detW) || (fb.contentDownH != detH)) {
+        if (fb.contentDownsampleFbo == 0) { glGenFramebuffers(1, &fb.contentDownsampleFbo); }
+        if (fb.contentDownsampleTex == 0) { glGenTextures(1, &fb.contentDownsampleTex); }
+        BindTextureDirect(GL_TEXTURE_2D, fb.contentDownsampleTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, detW, detH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        BindTextureDirect(GL_TEXTURE_2D, 0);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fb.contentDownsampleFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.contentDownsampleTex, 0);
+        fb.contentDownW = detW;
+        fb.contentDownH = detH;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    if (fb.contentDetectionPBO == 0 || fb.contentPBOWidth != detW || fb.contentPBOHeight != detH) {
+        if (fb.contentDetectionPBO == 0) { glGenBuffers(1, &fb.contentDetectionPBO); }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
+        glBufferData(GL_PIXEL_PACK_BUFFER, detW * detH * 4, nullptr, GL_STREAM_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        fb.contentPBOWidth = detW;
+        fb.contentPBOHeight = detH;
+    }
+
+    if (fb.contentReadbackFence && glIsSync(fb.contentReadbackFence)) { glDeleteSync(fb.contentReadbackFence); }
+    fb.contentReadbackFence = nullptr;
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb.contentDownsampleFbo);
+    glBlitFramebuffer(0, 0, sourceW, sourceH, 0, 0, detW, detH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb.contentDownsampleFbo);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
+    glReadPixels(0, 0, detW, detH, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    fb.contentReadbackFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    fb.contentReadbackPending = (fb.contentReadbackFence != nullptr);
+}
+
 static std::unordered_map<std::string, MT_MirrorFbos> g_sameThreadMirrorFbos;
 static std::unordered_map<std::string, MT_SourceRectGpuCacheEntry> g_sameThreadSourceRectGpuCaches;
 static GLuint g_sameThreadCaptureVAO = 0;
@@ -1999,6 +2135,15 @@ static std::vector<MirrorCaptureConfig> MT_NormalizeCaptureInputs(const std::vec
     return normalized;
 }
 
+static void MT_CopyNormalizedCaptureInputs(const std::vector<MirrorCaptureConfig>& inputRegions,
+                                           std::vector<MirrorCaptureConfig>& outRegions) {
+    outRegions.resize(inputRegions.size());
+    for (size_t i = 0; i < inputRegions.size(); ++i) {
+        outRegions[i] = inputRegions[i];
+        outRegions[i].relativeTo = MT_NormalizeCaptureAnchor(inputRegions[i].relativeTo);
+    }
+}
+
 static void MT_GetRelativeCoordsNormalized(const std::string& anchor, int relX, int relY, int w, int h, int containerW,
                                            int containerH, int& outX, int& outY) {
     char firstChar = anchor.empty() ? '\0' : anchor[0];
@@ -2022,8 +2167,7 @@ static void MT_GetRelativeCoordsNormalized(const std::string& anchor, int relX, 
     }
 }
 
-static ThreadedMirrorConfig BuildThreadedMirrorConfig(const MirrorConfig& mirror) {
-    ThreadedMirrorConfig conf;
+static void PopulateThreadedMirrorConfig(ThreadedMirrorConfig& conf, const MirrorConfig& mirror) {
     conf.name = mirror.name;
     conf.captureWidth = mirror.captureWidth;
     conf.captureHeight = mirror.captureHeight;
@@ -2044,8 +2188,7 @@ static ThreadedMirrorConfig BuildThreadedMirrorConfig(const MirrorConfig& mirror
     conf.outputColor = mirror.colors.output;
     conf.borderColor = mirror.colors.border;
     conf.colorSensitivity = mirror.colorSensitivity;
-    conf.input = MT_NormalizeCaptureInputs(mirror.input);
-    conf.sourceRectLayoutHash = MT_ComputeSourceRectLayoutHash(conf);
+    MT_CopyNormalizedCaptureInputs(mirror.input, conf.input);
     conf.outputScale = mirror.output.scale;
     conf.outputSeparateScale = mirror.output.separateScale;
     conf.outputScaleX = mirror.output.scaleX;
@@ -2053,15 +2196,14 @@ static ThreadedMirrorConfig BuildThreadedMirrorConfig(const MirrorConfig& mirror
     conf.outputX = mirror.output.x;
     conf.outputY = mirror.output.y;
     conf.outputRelativeTo = mirror.output.relativeTo;
-    return conf;
+    conf.sourceRectLayoutHash = MT_ComputeSourceRectLayoutHash(conf);
 }
 
 void BuildThreadedMirrorConfigs(const std::vector<MirrorConfig>& activeMirrors, std::vector<ThreadedMirrorConfig>& outConfigs) {
-    outConfigs.clear();
-    outConfigs.reserve(activeMirrors.size());
+    outConfigs.resize(activeMirrors.size());
 
-    for (const auto& mirror : activeMirrors) {
-        outConfigs.push_back(BuildThreadedMirrorConfig(mirror));
+    for (size_t i = 0; i < activeMirrors.size(); ++i) {
+        PopulateThreadedMirrorConfig(outConfigs[i], activeMirrors[i]);
     }
 }
 
@@ -2315,15 +2457,7 @@ static void MirrorCaptureThreadFunc(void* unused) {
                                 }
                             }
                             if (!stillExists) {
-                                if (it->second.backFbo) { glDeleteFramebuffers(1, &it->second.backFbo); }
-                                if (it->second.tempBackFbo) { glDeleteFramebuffers(1, &it->second.tempBackFbo); }
-                                if (it->second.finalBackFbo) { glDeleteFramebuffers(1, &it->second.finalBackFbo); }
-                                if (it->second.contentDetectionPBO) { glDeleteBuffers(1, &it->second.contentDetectionPBO); }
-                                if (it->second.contentReadbackFence && glIsSync(it->second.contentReadbackFence)) {
-                                    glDeleteSync(it->second.contentReadbackFence);
-                                }
-                                if (it->second.contentDownsampleFbo) { glDeleteFramebuffers(1, &it->second.contentDownsampleFbo); }
-                                if (it->second.contentDownsampleTex) { glDeleteTextures(1, &it->second.contentDownsampleTex); }
+                                MT_DeleteMirrorFbos(it->second);
                                 auto sourceRectIt = sourceRectGpuCaches.find(it->first);
                                 if (sourceRectIt != sourceRectGpuCaches.end()) {
                                     MT_DeleteSourceRectGpuCacheEntry(sourceRectIt->second);
@@ -2451,109 +2585,26 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
                 // Do NOT overwrite it here from conf.rawOutput - that causes race condition where
 
-                // === Harvest previous async content detection result (non-blocking) ===
-                {
-                    MT_MirrorFbos& fb = mt_fbos[conf.name];
-                    if (fb.contentReadbackPending && fb.contentReadbackFence) {
-                        GLenum fenceStatus = glClientWaitSync(fb.contentReadbackFence, 0, 0); // Non-blocking check
-                        if (fenceStatus == GL_ALREADY_SIGNALED || fenceStatus == GL_CONDITION_SATISFIED) {
-                            glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
-                            const unsigned char* mapped = static_cast<const unsigned char*>(
-                                glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0,
-                                    fb.contentPBOWidth * fb.contentPBOHeight * 4, GL_MAP_READ_BIT));
-                            if (mapped) {
-                                bool hasContent = false;
-                                const int w = fb.contentPBOWidth;
-                                const int h = fb.contentPBOHeight;
-                                const int step = 4;
-                                for (int y = 0; y < h && !hasContent; y += step) {
-                                    const unsigned char* row = mapped + (static_cast<size_t>(y) * w * 4);
-                                    for (int x = 0; x < w; x += step) {
-                                        if (row[(static_cast<size_t>(x) * 4) + 3] > 0) {
-                                            hasContent = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-                                inst->hasFrameContentBack = hasContent;
-                            }
-                            // do NOT call glUnmapBuffer (it would generate GL_INVALID_OPERATION).
-                            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-                            if (glIsSync(fb.contentReadbackFence)) { glDeleteSync(fb.contentReadbackFence); }
-                            fb.contentReadbackFence = nullptr;
-                            fb.contentReadbackPending = false;
-                        }
+                MT_MirrorFbos& fb = mt_fbos[conf.name];
+                const bool needsContentDetection =
+                    MT_MirrorNeedsContentDetection(conf, inst->desiredRawOutput.load(std::memory_order_acquire));
+                if (needsContentDetection) {
+                    bool hasContent = false;
+                    if (MT_HarvestContentReadback(fb, hasContent)) {
+                        inst->hasFrameContentBack = hasContent;
                     }
+                } else {
+                    MT_ReleaseContentDetectionResources(fb);
+                    inst->hasFrameContentBack = true;
                 }
 
                 debugSamplePixel(conf, validTexture, gameW, gameH);
 
-                MT_MirrorFbos& fb = mt_fbos[conf.name];
                 RenderMirrorToBuffer(inst, conf, validTexture, captureVAO, captureVBO, sourceRectGpuCaches[conf.name], localBackFbo,
                                      localTempBackFbo, &fb.lastTempTex, localFinalBackFbo, gammaMode, gameW, gameH, true);
 
-                // The result will be harvested on the NEXT frame (non-blocking).
-                if (!inst->desiredRawOutput.load(std::memory_order_acquire)) {
-                    MT_MirrorFbos& fb = mt_fbos[conf.name];
-                    int fboW = inst->fbo_w;
-                    int fboH = inst->fbo_h;
-
-                    constexpr int kDetectMax = 64;
-                    const int detW = (std::min)(fboW, kDetectMax);
-                    const int detH = (std::min)(fboH, kDetectMax);
-
-                    if (detW <= 0 || detH <= 0) {
-                    } else {
-
-                    if ((fb.contentDownsampleFbo == 0) || (fb.contentDownsampleTex == 0) || (fb.contentDownW != detW) || (fb.contentDownH != detH)) {
-                        if (fb.contentDownsampleFbo == 0) { glGenFramebuffers(1, &fb.contentDownsampleFbo); }
-                        if (fb.contentDownsampleTex == 0) { glGenTextures(1, &fb.contentDownsampleTex); }
-                        BindTextureDirect(GL_TEXTURE_2D, fb.contentDownsampleTex);
-                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, detW, detH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                        BindTextureDirect(GL_TEXTURE_2D, 0);
-
-                        glBindFramebuffer(GL_FRAMEBUFFER, fb.contentDownsampleFbo);
-                        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.contentDownsampleTex, 0);
-                        fb.contentDownW = detW;
-                        fb.contentDownH = detH;
-                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                    }
-
-                    if (fb.contentDetectionPBO == 0 || fb.contentPBOWidth != detW || fb.contentPBOHeight != detH) {
-                        if (fb.contentDetectionPBO == 0) { glGenBuffers(1, &fb.contentDetectionPBO); }
-                        glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
-                        glBufferData(GL_PIXEL_PACK_BUFFER, detW * detH * 4, nullptr, GL_STREAM_READ);
-                        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-                        fb.contentPBOWidth = detW;
-                        fb.contentPBOHeight = detH;
-                    }
-
-                    // Clean up any old fence that wasn't harvested
-                    if (fb.contentReadbackFence) {
-                        if (glIsSync(fb.contentReadbackFence)) { glDeleteSync(fb.contentReadbackFence); }
-                        fb.contentReadbackFence = nullptr;
-                    }
-
-                        glBindFramebuffer(GL_READ_FRAMEBUFFER, localBackFbo);
-                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb.contentDownsampleFbo);
-                        glBlitFramebuffer(0, 0, fboW, fboH, 0, 0, detW, detH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-
-                        glBindFramebuffer(GL_READ_FRAMEBUFFER, fb.contentDownsampleFbo);
-                        glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
-                        glReadPixels(0, 0, detW, detH, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-                        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-                        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
-                        // Fence so we know when the readback is done
-                        fb.contentReadbackFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                        fb.contentReadbackPending = true;
-                    }
+                if (needsContentDetection) {
+                    MT_QueueContentReadback(fb, localBackFbo, inst->fbo_w, inst->fbo_h);
                 }
 
                 // Pre-compute render cache for the render thread
@@ -2609,13 +2660,7 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
         // Cleanup mirror-thread local FBOs and PBOs
         for (auto& kv : mt_fbos) {
-            if (kv.second.backFbo) { glDeleteFramebuffers(1, &kv.second.backFbo); }
-            if (kv.second.tempBackFbo) { glDeleteFramebuffers(1, &kv.second.tempBackFbo); }
-            if (kv.second.finalBackFbo) { glDeleteFramebuffers(1, &kv.second.finalBackFbo); }
-            if (kv.second.contentDetectionPBO) { glDeleteBuffers(1, &kv.second.contentDetectionPBO); }
-            if (kv.second.contentReadbackFence && glIsSync(kv.second.contentReadbackFence)) { glDeleteSync(kv.second.contentReadbackFence); }
-            if (kv.second.contentDownsampleFbo) { glDeleteFramebuffers(1, &kv.second.contentDownsampleFbo); }
-            if (kv.second.contentDownsampleTex) { glDeleteTextures(1, &kv.second.contentDownsampleTex); }
+            MT_DeleteMirrorFbos(kv.second);
         }
         mt_fbos.clear();
 
@@ -2915,6 +2960,17 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<ThreadedMirrorConfig>
         if (fb.tempBackFbo == 0) { glGenFramebuffers(1, &fb.tempBackFbo); }
         if (fb.finalBackFbo == 0) { glGenFramebuffers(1, &fb.finalBackFbo); }
 
+        const bool needsContentDetection = MT_MirrorNeedsContentDetection(conf, conf.rawOutput);
+        if (needsContentDetection) {
+            bool hasContent = false;
+            if (MT_HarvestContentReadback(fb, hasContent)) {
+                inst->hasFrameContent = hasContent;
+            }
+        } else {
+            MT_ReleaseContentDetectionResources(fb);
+            inst->hasFrameContent = true;
+        }
+
         if (fb.lastBackTex != inst->fboTexture) {
             glBindFramebuffer(GL_FRAMEBUFFER, fb.backFbo);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, inst->fboTexture, 0);
@@ -2926,11 +2982,13 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<ThreadedMirrorConfig>
             fb.lastFinalBackTex = inst->finalTexture;
         }
 
-    RenderMirrorToBuffer(inst, conf, sourceTexture, g_sameThreadCaptureVAO, g_sameThreadCaptureVBO,
-                 g_sameThreadSourceRectGpuCaches[conf.name], fb.backFbo, fb.tempBackFbo, &fb.lastTempTex, fb.finalBackFbo,
-                 gammaMode, gameW, gameH, false, &stateCache, true);
+        RenderMirrorToBuffer(inst, conf, sourceTexture, g_sameThreadCaptureVAO, g_sameThreadCaptureVBO,
+                             g_sameThreadSourceRectGpuCaches[conf.name], fb.backFbo, fb.tempBackFbo, &fb.lastTempTex,
+                             fb.finalBackFbo, gammaMode, gameW, gameH, false, &stateCache, true);
 
-        inst->hasFrameContent = true;
+        if (needsContentDetection) {
+            MT_QueueContentReadback(fb, fb.backFbo, inst->fbo_w, inst->fbo_h);
+        }
         ComputeMirrorRenderCache(inst, conf, gameW, gameH, screenW, screenH, finalX, finalY, finalW, finalH, false);
         inst->capturedAsRawOutput = conf.rawOutput;
         if (inst->gpuFence && glIsSync(inst->gpuFence)) { glDeleteSync(inst->gpuFence); }
@@ -3158,10 +3216,24 @@ void InvalidateMirrorTextureCaches(const std::vector<std::string>& mirrorNames) 
 
     if (wglGetCurrentContext()) {
         for (const auto& mirrorName : mirrorNames) {
+            auto sameThreadFboIt = g_sameThreadMirrorFbos.find(mirrorName);
+            if (sameThreadFboIt != g_sameThreadMirrorFbos.end()) {
+                MT_DeleteMirrorFbos(sameThreadFboIt->second);
+                g_sameThreadMirrorFbos.erase(sameThreadFboIt);
+            }
+
             auto sameThreadCacheIt = g_sameThreadSourceRectGpuCaches.find(mirrorName);
             if (sameThreadCacheIt != g_sameThreadSourceRectGpuCaches.end()) {
                 MT_DeleteSourceRectGpuCacheEntry(sameThreadCacheIt->second);
                 g_sameThreadSourceRectGpuCaches.erase(sameThreadCacheIt);
+            }
+
+            auto instIt = g_mirrorInstances.find(mirrorName);
+            if (instIt != g_mirrorInstances.end() && instIt->second.tempCaptureTexture != 0) {
+                glDeleteTextures(1, &instIt->second.tempCaptureTexture);
+                instIt->second.tempCaptureTexture = 0;
+                instIt->second.tempCaptureTextureW = 0;
+                instIt->second.tempCaptureTextureH = 0;
             }
         }
     }
