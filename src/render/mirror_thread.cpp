@@ -5,6 +5,7 @@
 #include "render.h"
 #include "shared_contexts.h"
 #include "common/utils.h"
+#include <array>
 #include <algorithm>
 #include <condition_variable>
 #include <chrono>
@@ -193,17 +194,20 @@ static void MT_LogSharedContextHealthOnce() {
 static const char* mt_passthrough_vert_shader = R"(#version 330 core
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aTexCoord;
+layout(location = 2) in vec4 aSourceRect;
 out vec2 TexCoord;
+out vec4 SourceRect;
 void main() {
     gl_Position = vec4(aPos, 0.0, 1.0);
     TexCoord = aTexCoord;
+    SourceRect = aSourceRect;
 })";
 
 static const char* mt_filter_frag_shader = R"(#version 330 core
 out vec4 FragColor;
 in vec2 TexCoord;
+in vec4 SourceRect;
 uniform sampler2D screenTexture;
-uniform vec4 u_sourceRect;
 uniform int u_gammaMode;
 uniform vec3 u_targetColors[8];
 uniform int u_targetColorCount;
@@ -217,7 +221,7 @@ vec3 SRGBToLinear(vec3 c) {
     return mix(high, low, vec3(cutoff));
 }
 void main() {
-    vec2 srcCoord = u_sourceRect.xy + TexCoord * u_sourceRect.zw;
+    vec2 srcCoord = SourceRect.xy + TexCoord * SourceRect.zw;
     vec3 screenColor = texture(screenTexture, srcCoord).rgb;
     vec3 screenColorLinear = SRGBToLinear(screenColor);
     
@@ -253,8 +257,8 @@ void main() {
 static const char* mt_filter_passthrough_frag_shader = R"(#version 330 core
 out vec4 FragColor;
 in vec2 TexCoord;
+in vec4 SourceRect;
 uniform sampler2D screenTexture;
-uniform vec4 u_sourceRect;
 uniform int u_gammaMode;
 uniform vec3 u_targetColors[8];
 uniform int u_targetColorCount;
@@ -267,7 +271,7 @@ vec3 SRGBToLinear(vec3 c) {
     return mix(high, low, vec3(cutoff));
 }
 void main() {
-    vec2 srcCoord = u_sourceRect.xy + TexCoord * u_sourceRect.zw;
+    vec2 srcCoord = SourceRect.xy + TexCoord * SourceRect.zw;
     vec3 screenColor = texture(screenTexture, srcCoord).rgb;
     vec3 screenColorLinear = SRGBToLinear(screenColor);
     
@@ -303,10 +307,10 @@ void main() {
 static const char* mt_passthrough_frag_shader = R"(#version 330 core
 out vec4 FragColor;
 in vec2 TexCoord;
+in vec4 SourceRect;
 uniform sampler2D screenTexture;
-uniform vec4 u_sourceRect;
 void main() {
-    vec2 srcCoord = u_sourceRect.xy + TexCoord * u_sourceRect.zw;
+    vec2 srcCoord = SourceRect.xy + TexCoord * SourceRect.zw;
     // Force alpha=1 to avoid propagating undefined/junk alpha from game textures.
     vec4 c = texture(screenTexture, srcCoord);
     FragColor = vec4(c.rgb, 1.0);
@@ -1004,9 +1008,289 @@ static void ComputeMirrorRenderCache(MirrorInstance* inst, const ThreadedMirrorC
     cache.isValid = true;
 }
 
+struct MT_RenderToBufferStateCache {
+    GLuint framebuffer = 0;
+    bool framebufferValid = false;
+    GLuint program = 0;
+    bool programValid = false;
+    GLuint texture = 0;
+    bool textureValid = false;
+    bool blendEnabled = false;
+    bool blendValid = false;
+    int viewportX = 0;
+    int viewportY = 0;
+    int viewportW = 0;
+    int viewportH = 0;
+    bool viewportValid = false;
+    float clearColorR = 0.0f;
+    float clearColorG = 0.0f;
+    float clearColorB = 0.0f;
+    float clearColorA = 0.0f;
+    bool clearColorValid = false;
+
+    int filterGammaMode = 0;
+    bool filterGammaModeValid = false;
+    int filterTargetColorCount = 0;
+    bool filterTargetColorStateValid = false;
+    std::array<float, 24> filterTargetColors{};
+    float filterSensitivity = 0.0f;
+    bool filterSensitivityValid = false;
+    Color filterOutputColor{};
+    bool filterOutputColorValid = false;
+
+    int filterPassthroughGammaMode = 0;
+    bool filterPassthroughGammaModeValid = false;
+    int filterPassthroughTargetColorCount = 0;
+    bool filterPassthroughTargetColorStateValid = false;
+    std::array<float, 24> filterPassthroughTargetColors{};
+    float filterPassthroughSensitivity = 0.0f;
+    bool filterPassthroughSensitivityValid = false;
+
+    float backgroundOpacity = 0.0f;
+    bool backgroundOpacityValid = false;
+
+    int renderBorderWidth = 0;
+    bool renderBorderWidthValid = false;
+    Color renderOutputColor{};
+    bool renderOutputColorValid = false;
+    Color renderBorderColor{};
+    bool renderBorderColorValid = false;
+    float renderScreenPixelX = 0.0f;
+    float renderScreenPixelY = 0.0f;
+    bool renderScreenPixelValid = false;
+
+    int renderPassthroughBorderWidth = 0;
+    bool renderPassthroughBorderWidthValid = false;
+    Color renderPassthroughBorderColor{};
+    bool renderPassthroughBorderColorValid = false;
+    float renderPassthroughScreenPixelX = 0.0f;
+    float renderPassthroughScreenPixelY = 0.0f;
+    bool renderPassthroughScreenPixelValid = false;
+    GLuint sourceRectAttribBuffer = 0;
+    bool sourceRectAttribBufferValid = false;
+};
+
+static void MT_BindFramebufferCached(GLuint framebuffer, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->framebufferValid || stateCache->framebuffer != framebuffer) {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        if (stateCache) {
+            stateCache->framebuffer = framebuffer;
+            stateCache->framebufferValid = true;
+        }
+    }
+}
+
+static void MT_SetViewportCached(int x, int y, int width, int height, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->viewportValid || stateCache->viewportX != x || stateCache->viewportY != y ||
+        stateCache->viewportW != width || stateCache->viewportH != height) {
+        if (oglViewport) {
+            oglViewport(x, y, width, height);
+        } else {
+            glViewport(x, y, width, height);
+        }
+
+        if (stateCache) {
+            stateCache->viewportX = x;
+            stateCache->viewportY = y;
+            stateCache->viewportW = width;
+            stateCache->viewportH = height;
+            stateCache->viewportValid = true;
+        }
+    }
+}
+
+static void MT_UseProgramCached(GLuint program, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->programValid || stateCache->program != program) {
+        glUseProgram(program);
+        if (stateCache) {
+            stateCache->program = program;
+            stateCache->programValid = true;
+        }
+    }
+}
+
+static void MT_BindTextureCached(GLuint texture, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->textureValid || stateCache->texture != texture) {
+        BindTextureDirect(GL_TEXTURE_2D, texture);
+        if (stateCache) {
+            stateCache->texture = texture;
+            stateCache->textureValid = true;
+        }
+    }
+}
+
+static void MT_SetBlendEnabledCached(bool enabled, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->blendValid || stateCache->blendEnabled != enabled) {
+        if (enabled) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+        } else {
+            glDisable(GL_BLEND);
+        }
+
+        if (stateCache) {
+            stateCache->blendEnabled = enabled;
+            stateCache->blendValid = true;
+        }
+    }
+}
+
+static void MT_SetClearColorCached(float r, float g, float b, float a, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->clearColorValid || stateCache->clearColorR != r || stateCache->clearColorG != g ||
+        stateCache->clearColorB != b || stateCache->clearColorA != a) {
+        glClearColor(r, g, b, a);
+        if (stateCache) {
+            stateCache->clearColorR = r;
+            stateCache->clearColorG = g;
+            stateCache->clearColorB = b;
+            stateCache->clearColorA = a;
+            stateCache->clearColorValid = true;
+        }
+    }
+}
+
+static bool MT_ColorEquals(const Color& left, const Color& right) {
+    return left.r == right.r && left.g == right.g && left.b == right.b && left.a == right.a;
+}
+
+static uint64_t MT_HashBytes(uint64_t seed, const void* data, size_t size) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        seed ^= static_cast<uint64_t>(bytes[i]);
+        seed *= 1099511628211ull;
+    }
+    return seed;
+}
+
+static uint64_t MT_ComputeSourceRectLayoutHash(const ThreadedMirrorConfig& conf) {
+    uint64_t hash = 1469598103934665603ull;
+    hash = MT_HashBytes(hash, &conf.captureWidth, sizeof(conf.captureWidth));
+    hash = MT_HashBytes(hash, &conf.captureHeight, sizeof(conf.captureHeight));
+
+    const size_t inputCount = conf.input.size();
+    hash = MT_HashBytes(hash, &inputCount, sizeof(inputCount));
+    for (const auto& input : conf.input) {
+        hash = MT_HashBytes(hash, &input.x, sizeof(input.x));
+        hash = MT_HashBytes(hash, &input.y, sizeof(input.y));
+        hash = MT_HashBytes(hash, input.relativeTo.data(), input.relativeTo.size());
+    }
+
+    return hash;
+}
+
+struct MT_SourceRectCacheEntry {
+    uint64_t layoutHash = 0;
+    int gameW = 0;
+    int gameH = 0;
+    std::vector<float> sourceRects;
+};
+
+struct MT_SourceRectGpuCacheEntry {
+    GLuint instanceVbo = 0;
+    size_t capacityBytes = 0;
+    uint64_t layoutHash = 0;
+    int gameW = 0;
+    int gameH = 0;
+};
+
+static void MT_DeleteSourceRectGpuCacheEntry(MT_SourceRectGpuCacheEntry& cacheEntry) {
+    if (cacheEntry.instanceVbo != 0) {
+        glDeleteBuffers(1, &cacheEntry.instanceVbo);
+        cacheEntry.instanceVbo = 0;
+    }
+    cacheEntry.capacityBytes = 0;
+    cacheEntry.layoutHash = 0;
+    cacheEntry.gameW = 0;
+    cacheEntry.gameH = 0;
+}
+
+static void MT_BindSourceRectInstanceBufferCached(GLuint instanceVbo, MT_RenderToBufferStateCache* stateCache) {
+    if (!stateCache || !stateCache->sourceRectAttribBufferValid || stateCache->sourceRectAttribBuffer != instanceVbo) {
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVbo);
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        if (stateCache) {
+            stateCache->sourceRectAttribBuffer = instanceVbo;
+            stateCache->sourceRectAttribBufferValid = true;
+        }
+    }
+}
+
+// Forward declaration needed for use in MT_GetCachedSourceRects before the full definition below
+static void MT_GetRelativeCoordsNormalized(const std::string& anchor, int relX, int relY, int w, int h, int containerW,
+                                           int containerH, int& outX, int& outY);
+
+static const std::vector<float>& MT_GetCachedSourceRects(const ThreadedMirrorConfig& conf, int gameW, int gameH) {
+    thread_local std::unordered_map<std::string, MT_SourceRectCacheEntry> s_sourceRectCache;
+
+    MT_SourceRectCacheEntry& cacheEntry = s_sourceRectCache[conf.name];
+    const size_t requiredFloatCount = conf.input.size() * 4;
+    if (cacheEntry.layoutHash == conf.sourceRectLayoutHash && cacheEntry.gameW == gameW && cacheEntry.gameH == gameH &&
+        cacheEntry.sourceRects.size() == requiredFloatCount) {
+        return cacheEntry.sourceRects;
+    }
+
+    cacheEntry.layoutHash = conf.sourceRectLayoutHash;
+    cacheEntry.gameW = gameW;
+    cacheEntry.gameH = gameH;
+    cacheEntry.sourceRects.resize(requiredFloatCount);
+
+    const float sw = static_cast<float>(conf.captureWidth) / gameW;
+    const float sh = static_cast<float>(conf.captureHeight) / gameH;
+    for (size_t i = 0; i < conf.input.size(); ++i) {
+        const auto& r = conf.input[i];
+        int capX = 0;
+        int capY = 0;
+        MT_GetRelativeCoordsNormalized(r.relativeTo, r.x, r.y, conf.captureWidth, conf.captureHeight, gameW, gameH, capX, capY);
+        const int capYGl = gameH - capY - conf.captureHeight;
+
+        cacheEntry.sourceRects[i * 4 + 0] = static_cast<float>(capX) / gameW;
+        cacheEntry.sourceRects[i * 4 + 1] = static_cast<float>(capYGl) / gameH;
+        cacheEntry.sourceRects[i * 4 + 2] = sw;
+        cacheEntry.sourceRects[i * 4 + 3] = sh;
+    }
+
+    return cacheEntry.sourceRects;
+}
+
+static int MT_UploadSourceRectInstances(MT_SourceRectGpuCacheEntry& gpuCache, const ThreadedMirrorConfig& conf, int gameW, int gameH,
+                                        MT_RenderToBufferStateCache* stateCache) {
+    const size_t instanceCount = conf.input.size();
+    if (instanceCount == 0) { return 0; }
+
+    if (gpuCache.instanceVbo == 0) {
+        glGenBuffers(1, &gpuCache.instanceVbo);
+        gpuCache.capacityBytes = 0;
+        gpuCache.layoutHash = 0;
+        gpuCache.gameW = 0;
+        gpuCache.gameH = 0;
+    }
+
+    if (gpuCache.layoutHash != conf.sourceRectLayoutHash || gpuCache.gameW != gameW || gpuCache.gameH != gameH) {
+        const std::vector<float>& sourceRects = MT_GetCachedSourceRects(conf, gameW, gameH);
+        const size_t requiredBytes = sourceRects.size() * sizeof(float);
+        glBindBuffer(GL_ARRAY_BUFFER, gpuCache.instanceVbo);
+        if (gpuCache.capacityBytes < requiredBytes) {
+            glBufferData(GL_ARRAY_BUFFER, requiredBytes, sourceRects.data(), GL_DYNAMIC_DRAW);
+            gpuCache.capacityBytes = requiredBytes;
+        } else {
+            glBufferSubData(GL_ARRAY_BUFFER, 0, requiredBytes, sourceRects.data());
+        }
+
+        gpuCache.layoutHash = conf.sourceRectLayoutHash;
+        gpuCache.gameW = gameW;
+        gpuCache.gameH = gameH;
+    }
+
+    MT_BindSourceRectInstanceBufferCached(gpuCache.instanceVbo, stateCache);
+
+    return static_cast<int>(instanceCount);
+}
+
 static bool RenderMirrorToBuffer(MirrorInstance* inst, const ThreadedMirrorConfig& conf, GLuint validCopyTexture, GLuint captureVAO,
-                                 GLuint captureVBO, GLuint captureFbo, GLuint captureFinalFbo, MirrorGammaMode gammaMode, int gameW,
-                                 int gameH, bool writeToBack) {
+                                 GLuint captureVBO, MT_SourceRectGpuCacheEntry& sourceRectGpuCache, GLuint captureFbo, GLuint captureFinalFbo,
+                                 MirrorGammaMode gammaMode, int gameW,
+                                 int gameH, bool writeToBack, MT_RenderToBufferStateCache* stateCache = nullptr,
+                                 bool fixedStateAlreadyPrepared = false) {
     PROFILE_SCOPE_CAT("Capture Single Mirror", "Mirror Thread");
 
     const GLuint captureTexture = writeToBack ? inst->fboTextureBack : inst->fboTexture;
@@ -1014,102 +1298,134 @@ static bool RenderMirrorToBuffer(MirrorInstance* inst, const ThreadedMirrorConfi
     const int finalW = writeToBack ? inst->final_w_back : inst->final_w;
     const int finalH = writeToBack ? inst->final_h_back : inst->final_h;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
-    if (oglViewport)
-        oglViewport(0, 0, inst->fbo_w, inst->fbo_h);
-    else
-        glViewport(0, 0, inst->fbo_w, inst->fbo_h);
+    MT_BindFramebufferCached(captureFbo, stateCache);
+    MT_SetViewportCached(0, 0, inst->fbo_w, inst->fbo_h, stateCache);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_SCISSOR_TEST);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    if (!fixedStateAlreadyPrepared) {
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glActiveTexture(GL_TEXTURE0);
+        glBindVertexArray(captureVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, captureVBO);
+    }
 
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    MT_SetClearColorCached(0.0f, 0.0f, 0.0f, 0.0f, stateCache);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glActiveTexture(GL_TEXTURE0);
-    BindTextureDirect(GL_TEXTURE_2D, validCopyTexture);
+    MT_BindTextureCached(validCopyTexture, stateCache);
 
     bool useRawOutput = inst->desiredRawOutput.load(std::memory_order_acquire);
     bool useColorPassthrough = conf.colorPassthrough;
 
     if (useRawOutput) {
-        glUseProgram(mt_passthroughProgram);
-        glUniform1i(mt_passthroughShaderLocs.screenTexture, 0);
+        MT_UseProgramCached(mt_passthroughProgram, stateCache);
     } else if (useColorPassthrough) {
-        glUseProgram(mt_filterPassthroughProgram);
-        glUniform1i(mt_filterPassthroughShaderLocs.screenTexture, 0);
-        if (mt_filterPassthroughShaderLocs.gammaMode >= 0) {
+        const int colorCount = (std::min)(static_cast<int>(conf.targetColors.size()), 8);
+        std::array<float, 24> targetColorData{};
+        for (int i = 0; i < colorCount; ++i) {
+            targetColorData[static_cast<size_t>(i) * 3 + 0] = conf.targetColors[i].r;
+            targetColorData[static_cast<size_t>(i) * 3 + 1] = conf.targetColors[i].g;
+            targetColorData[static_cast<size_t>(i) * 3 + 2] = conf.targetColors[i].b;
+        }
+
+        MT_UseProgramCached(mt_filterPassthroughProgram, stateCache);
+        if (mt_filterPassthroughShaderLocs.gammaMode >= 0 &&
+            (!stateCache || !stateCache->filterPassthroughGammaModeValid ||
+             stateCache->filterPassthroughGammaMode != static_cast<int>(gammaMode))) {
             glUniform1i(mt_filterPassthroughShaderLocs.gammaMode, static_cast<int>(gammaMode));
+            if (stateCache) {
+                stateCache->filterPassthroughGammaMode = static_cast<int>(gammaMode);
+                stateCache->filterPassthroughGammaModeValid = true;
+            }
         }
 
-        int colorCount = (std::min)(static_cast<int>(conf.targetColors.size()), 8);
-        glUniform1i(mt_filterPassthroughShaderLocs.targetColorCount, colorCount);
-
-        for (int i = 0; i < colorCount; i++) {
-            glUniform3f(mt_filterPassthroughShaderLocs.targetColors + i, conf.targetColors[i].r, conf.targetColors[i].g,
-                        conf.targetColors[i].b);
+        if (!stateCache || !stateCache->filterPassthroughTargetColorStateValid ||
+            stateCache->filterPassthroughTargetColorCount != colorCount ||
+            !std::equal(targetColorData.begin(), targetColorData.begin() + (static_cast<size_t>(colorCount) * 3),
+                        stateCache->filterPassthroughTargetColors.begin())) {
+            glUniform1i(mt_filterPassthroughShaderLocs.targetColorCount, colorCount);
+            if (colorCount > 0) {
+                glUniform3fv(mt_filterPassthroughShaderLocs.targetColors, colorCount, targetColorData.data());
+            }
+            if (stateCache) {
+                stateCache->filterPassthroughTargetColorCount = colorCount;
+                stateCache->filterPassthroughTargetColors = targetColorData;
+                stateCache->filterPassthroughTargetColorStateValid = true;
+            }
         }
 
-        glUniform1f(mt_filterPassthroughShaderLocs.sensitivity, conf.colorSensitivity);
+        if (!stateCache || !stateCache->filterPassthroughSensitivityValid ||
+            stateCache->filterPassthroughSensitivity != conf.colorSensitivity) {
+            glUniform1f(mt_filterPassthroughShaderLocs.sensitivity, conf.colorSensitivity);
+            if (stateCache) {
+                stateCache->filterPassthroughSensitivity = conf.colorSensitivity;
+                stateCache->filterPassthroughSensitivityValid = true;
+            }
+        }
     } else {
-        glUseProgram(mt_filterProgram);
-        glUniform1i(mt_filterShaderLocs.screenTexture, 0);
-        if (mt_filterShaderLocs.gammaMode >= 0) {
+        const int colorCount = (std::min)(static_cast<int>(conf.targetColors.size()), 8);
+        std::array<float, 24> targetColorData{};
+        for (int i = 0; i < colorCount; ++i) {
+            targetColorData[static_cast<size_t>(i) * 3 + 0] = conf.targetColors[i].r;
+            targetColorData[static_cast<size_t>(i) * 3 + 1] = conf.targetColors[i].g;
+            targetColorData[static_cast<size_t>(i) * 3 + 2] = conf.targetColors[i].b;
+        }
+
+        MT_UseProgramCached(mt_filterProgram, stateCache);
+        if (mt_filterShaderLocs.gammaMode >= 0 &&
+            (!stateCache || !stateCache->filterGammaModeValid || stateCache->filterGammaMode != static_cast<int>(gammaMode))) {
             glUniform1i(mt_filterShaderLocs.gammaMode, static_cast<int>(gammaMode));
+            if (stateCache) {
+                stateCache->filterGammaMode = static_cast<int>(gammaMode);
+                stateCache->filterGammaModeValid = true;
+            }
         }
 
-        int colorCount = (std::min)(static_cast<int>(conf.targetColors.size()), 8);
-        glUniform1i(mt_filterShaderLocs.targetColorCount, colorCount);
-
-        for (int i = 0; i < colorCount; i++) {
-            glUniform3f(mt_filterShaderLocs.targetColors + i, conf.targetColors[i].r, conf.targetColors[i].g, conf.targetColors[i].b);
+        if (!stateCache || !stateCache->filterTargetColorStateValid || stateCache->filterTargetColorCount != colorCount ||
+            !std::equal(targetColorData.begin(), targetColorData.begin() + (static_cast<size_t>(colorCount) * 3),
+                        stateCache->filterTargetColors.begin())) {
+            glUniform1i(mt_filterShaderLocs.targetColorCount, colorCount);
+            if (colorCount > 0) {
+                glUniform3fv(mt_filterShaderLocs.targetColors, colorCount, targetColorData.data());
+            }
+            if (stateCache) {
+                stateCache->filterTargetColorCount = colorCount;
+                stateCache->filterTargetColors = targetColorData;
+                stateCache->filterTargetColorStateValid = true;
+            }
         }
 
-        glUniform4f(mt_filterShaderLocs.outputColor, conf.outputColor.r, conf.outputColor.g, conf.outputColor.b, conf.outputColor.a);
-        glUniform1f(mt_filterShaderLocs.sensitivity, conf.colorSensitivity);
+        if (!stateCache || !stateCache->filterOutputColorValid || !MT_ColorEquals(stateCache->filterOutputColor, conf.outputColor)) {
+            glUniform4f(mt_filterShaderLocs.outputColor, conf.outputColor.r, conf.outputColor.g, conf.outputColor.b,
+                        conf.outputColor.a);
+            if (stateCache) {
+                stateCache->filterOutputColor = conf.outputColor;
+                stateCache->filterOutputColorValid = true;
+            }
+        }
+        if (!stateCache || !stateCache->filterSensitivityValid || stateCache->filterSensitivity != conf.colorSensitivity) {
+            glUniform1f(mt_filterShaderLocs.sensitivity, conf.colorSensitivity);
+            if (stateCache) {
+                stateCache->filterSensitivity = conf.colorSensitivity;
+                stateCache->filterSensitivityValid = true;
+            }
+        }
     }
 
-    glBindVertexArray(captureVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, captureVBO);
-
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
     if (useRawOutput) {
-        glDisable(GL_BLEND);
+        MT_SetBlendEnabledCached(false, stateCache);
     } else {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
+        MT_SetBlendEnabledCached(true, stateCache);
     }
 
     int padding = (conf.borderType == MirrorBorderType::Dynamic) ? conf.dynamicBorderThickness : 0;
-    if (oglViewport)
-        oglViewport(padding, padding, conf.captureWidth, conf.captureHeight);
-    else
-        glViewport(padding, padding, conf.captureWidth, conf.captureHeight);
+    MT_SetViewportCached(padding, padding, conf.captureWidth, conf.captureHeight, stateCache);
+    const int instanceCount = MT_UploadSourceRectInstances(sourceRectGpuCache, conf, gameW, gameH, stateCache);
+    glDrawArraysInstanced(GL_TRIANGLES, 0, 6, instanceCount);
 
-    for (const auto& r : conf.input) {
-        int capX, capY;
-        GetRelativeCoords(r.relativeTo, r.x, r.y, conf.captureWidth, conf.captureHeight, gameW, gameH, capX, capY);
-        int capY_gl = gameH - capY - conf.captureHeight;
-        float sx = static_cast<float>(capX) / gameW;
-        float sy = static_cast<float>(capY_gl) / gameH;
-        float sw = static_cast<float>(conf.captureWidth) / gameW;
-        float sh = static_cast<float>(conf.captureHeight) / gameH;
-
-        if (useRawOutput) {
-            glUniform4f(mt_passthroughShaderLocs.sourceRect, sx, sy, sw, sh);
-        } else if (useColorPassthrough) {
-            glUniform4f(mt_filterPassthroughShaderLocs.sourceRect, sx, sy, sw, sh);
-        } else {
-            glUniform4f(mt_filterShaderLocs.sourceRect, sx, sy, sw, sh);
-        }
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-    }
-
-    glDisable(GL_BLEND);
+    MT_SetBlendEnabledCached(false, stateCache);
 
     // Uses async PBO readback: previous frame's result is harvested (non-blocking), then a
     if (useRawOutput) {
@@ -1126,68 +1442,114 @@ static bool RenderMirrorToBuffer(MirrorInstance* inst, const ThreadedMirrorConfi
         PROFILE_SCOPE_CAT("Apply Border Shader", "Mirror Thread");
 
         if (useRawOutput) {
-            glBindFramebuffer(GL_FRAMEBUFFER, captureFinalFbo);
-            if (oglViewport)
-                oglViewport(0, 0, finalW, finalH);
-            else
-                glViewport(0, 0, finalW, finalH);
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            MT_BindFramebufferCached(captureFinalFbo, stateCache);
+            MT_SetViewportCached(0, 0, finalW, finalH, stateCache);
+            MT_SetClearColorCached(0.0f, 0.0f, 0.0f, 1.0f, stateCache);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            BindTextureDirect(GL_TEXTURE_2D, captureTexture);
-            glUseProgram(mt_backgroundProgram);
-            glUniform1i(mt_backgroundShaderLocs.backgroundTexture, 0);
-            glUniform1f(mt_backgroundShaderLocs.opacity, 1.0f);
-
-            static const float fullscreenVerts[] = { -1, -1, 0, 0, 1, -1, 1, 0, 1, 1, 1, 1, -1, -1, 0, 0, 1, 1, 1, 1, -1, 1, 0, 1 };
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fullscreenVerts), fullscreenVerts);
+            MT_BindTextureCached(captureTexture, stateCache);
+            MT_UseProgramCached(mt_backgroundProgram, stateCache);
+            if (!stateCache || !stateCache->backgroundOpacityValid || stateCache->backgroundOpacity != 1.0f) {
+                glUniform1f(mt_backgroundShaderLocs.opacity, 1.0f);
+                if (stateCache) {
+                    stateCache->backgroundOpacity = 1.0f;
+                    stateCache->backgroundOpacityValid = true;
+                }
+            }
             glDrawArrays(GL_TRIANGLES, 0, 6);
         } else if (conf.borderType == MirrorBorderType::Static) {
             // Static border will be rendered later in render_thread.cpp on top of the mirror
-            glBindFramebuffer(GL_FRAMEBUFFER, captureFinalFbo);
-            if (oglViewport)
-                oglViewport(0, 0, finalW, finalH);
-            else
-                glViewport(0, 0, finalW, finalH);
-            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            MT_BindFramebufferCached(captureFinalFbo, stateCache);
+            MT_SetViewportCached(0, 0, finalW, finalH, stateCache);
+            MT_SetClearColorCached(0.0f, 0.0f, 0.0f, 0.0f, stateCache);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            BindTextureDirect(GL_TEXTURE_2D, captureTexture);
-            glUseProgram(mt_backgroundProgram);
-            glUniform1i(mt_backgroundShaderLocs.backgroundTexture, 0);
-            glUniform1f(mt_backgroundShaderLocs.opacity, 1.0f);
-
-            static const float fullscreenVerts[] = { -1, -1, 0, 0, 1, -1, 1, 0, 1, 1, 1, 1, -1, -1, 0, 0, 1, 1, 1, 1, -1, 1, 0, 1 };
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fullscreenVerts), fullscreenVerts);
+            MT_BindTextureCached(captureTexture, stateCache);
+            MT_UseProgramCached(mt_backgroundProgram, stateCache);
+            if (!stateCache || !stateCache->backgroundOpacityValid || stateCache->backgroundOpacity != 1.0f) {
+                glUniform1f(mt_backgroundShaderLocs.opacity, 1.0f);
+                if (stateCache) {
+                    stateCache->backgroundOpacity = 1.0f;
+                    stateCache->backgroundOpacityValid = true;
+                }
+            }
             glDrawArrays(GL_TRIANGLES, 0, 6);
         } else {
-            glBindFramebuffer(GL_FRAMEBUFFER, captureFinalFbo);
-            if (oglViewport)
-                oglViewport(0, 0, finalW, finalH);
-            else
-                glViewport(0, 0, finalW, finalH);
-            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            MT_BindFramebufferCached(captureFinalFbo, stateCache);
+            MT_SetViewportCached(0, 0, finalW, finalH, stateCache);
+            MT_SetClearColorCached(0.0f, 0.0f, 0.0f, 0.0f, stateCache);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            BindTextureDirect(GL_TEXTURE_2D, captureTexture);
+            MT_BindTextureCached(captureTexture, stateCache);
             if (useColorPassthrough) {
-                glUseProgram(mt_renderPassthroughProgram);
-                glUniform1i(mt_renderPassthroughShaderLocs.borderWidth, conf.dynamicBorderThickness);
-                glUniform4f(mt_renderPassthroughShaderLocs.borderColor, conf.borderColor.r, conf.borderColor.g, conf.borderColor.b,
-                            conf.borderColor.a);
-                glUniform2f(mt_renderPassthroughShaderLocs.screenPixel, 1.0f / finalW, 1.0f / finalH);
+                MT_UseProgramCached(mt_renderPassthroughProgram, stateCache);
+                if (!stateCache || !stateCache->renderPassthroughBorderWidthValid ||
+                    stateCache->renderPassthroughBorderWidth != conf.dynamicBorderThickness) {
+                    glUniform1i(mt_renderPassthroughShaderLocs.borderWidth, conf.dynamicBorderThickness);
+                    if (stateCache) {
+                        stateCache->renderPassthroughBorderWidth = conf.dynamicBorderThickness;
+                        stateCache->renderPassthroughBorderWidthValid = true;
+                    }
+                }
+                if (!stateCache || !stateCache->renderPassthroughBorderColorValid ||
+                    !MT_ColorEquals(stateCache->renderPassthroughBorderColor, conf.borderColor)) {
+                    glUniform4f(mt_renderPassthroughShaderLocs.borderColor, conf.borderColor.r, conf.borderColor.g,
+                                conf.borderColor.b, conf.borderColor.a);
+                    if (stateCache) {
+                        stateCache->renderPassthroughBorderColor = conf.borderColor;
+                        stateCache->renderPassthroughBorderColorValid = true;
+                    }
+                }
+                const float screenPixelX = 1.0f / finalW;
+                const float screenPixelY = 1.0f / finalH;
+                if (!stateCache || !stateCache->renderPassthroughScreenPixelValid ||
+                    stateCache->renderPassthroughScreenPixelX != screenPixelX ||
+                    stateCache->renderPassthroughScreenPixelY != screenPixelY) {
+                    glUniform2f(mt_renderPassthroughShaderLocs.screenPixel, screenPixelX, screenPixelY);
+                    if (stateCache) {
+                        stateCache->renderPassthroughScreenPixelX = screenPixelX;
+                        stateCache->renderPassthroughScreenPixelY = screenPixelY;
+                        stateCache->renderPassthroughScreenPixelValid = true;
+                    }
+                }
             } else {
-                glUseProgram(mt_renderProgram);
-                glUniform1i(mt_renderShaderLocs.borderWidth, conf.dynamicBorderThickness);
-                glUniform4f(mt_renderShaderLocs.outputColor, conf.outputColor.r, conf.outputColor.g, conf.outputColor.b,
-                            conf.outputColor.a);
-                glUniform4f(mt_renderShaderLocs.borderColor, conf.borderColor.r, conf.borderColor.g, conf.borderColor.b,
-                            conf.borderColor.a);
-                glUniform2f(mt_renderShaderLocs.screenPixel, 1.0f / finalW, 1.0f / finalH);
+                MT_UseProgramCached(mt_renderProgram, stateCache);
+                if (!stateCache || !stateCache->renderBorderWidthValid || stateCache->renderBorderWidth != conf.dynamicBorderThickness) {
+                    glUniform1i(mt_renderShaderLocs.borderWidth, conf.dynamicBorderThickness);
+                    if (stateCache) {
+                        stateCache->renderBorderWidth = conf.dynamicBorderThickness;
+                        stateCache->renderBorderWidthValid = true;
+                    }
+                }
+                if (!stateCache || !stateCache->renderOutputColorValid || !MT_ColorEquals(stateCache->renderOutputColor, conf.outputColor)) {
+                    glUniform4f(mt_renderShaderLocs.outputColor, conf.outputColor.r, conf.outputColor.g, conf.outputColor.b,
+                                conf.outputColor.a);
+                    if (stateCache) {
+                        stateCache->renderOutputColor = conf.outputColor;
+                        stateCache->renderOutputColorValid = true;
+                    }
+                }
+                if (!stateCache || !stateCache->renderBorderColorValid || !MT_ColorEquals(stateCache->renderBorderColor, conf.borderColor)) {
+                    glUniform4f(mt_renderShaderLocs.borderColor, conf.borderColor.r, conf.borderColor.g, conf.borderColor.b,
+                                conf.borderColor.a);
+                    if (stateCache) {
+                        stateCache->renderBorderColor = conf.borderColor;
+                        stateCache->renderBorderColorValid = true;
+                    }
+                }
+                const float screenPixelX = 1.0f / finalW;
+                const float screenPixelY = 1.0f / finalH;
+                if (!stateCache || !stateCache->renderScreenPixelValid || stateCache->renderScreenPixelX != screenPixelX ||
+                    stateCache->renderScreenPixelY != screenPixelY) {
+                    glUniform2f(mt_renderShaderLocs.screenPixel, screenPixelX, screenPixelY);
+                    if (stateCache) {
+                        stateCache->renderScreenPixelX = screenPixelX;
+                        stateCache->renderScreenPixelY = screenPixelY;
+                        stateCache->renderScreenPixelValid = true;
+                    }
+                }
             }
 
-            static const float fullscreenVerts[] = { -1, -1, 0, 0, 1, -1, 1, 0, 1, 1, 1, 1, -1, -1, 0, 0, 1, 1, 1, 1, -1, 1, 0, 1 };
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(fullscreenVerts), fullscreenVerts);
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 
@@ -1220,6 +1582,7 @@ struct MT_MirrorFbos {
 };
 
 static std::unordered_map<std::string, MT_MirrorFbos> g_sameThreadMirrorFbos;
+static std::unordered_map<std::string, MT_SourceRectGpuCacheEntry> g_sameThreadSourceRectGpuCaches;
 static GLuint g_sameThreadCaptureVAO = 0;
 static GLuint g_sameThreadCaptureVBO = 0;
 
@@ -1236,8 +1599,53 @@ static void EnsureSameThreadMirrorCaptureResources() {
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(2);
+    glVertexAttribDivisor(2, 1);
+
     static const float verts[] = { -1, -1, 0, 0, 1, -1, 1, 0, 1, 1, 1, 1, -1, -1, 0, 0, 1, 1, 1, 1, -1, 1, 0, 1 };
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+}
+
+static std::string MT_NormalizeCaptureAnchor(const std::string& relativeTo) {
+    if (relativeTo.length() > 8 && relativeTo.substr(relativeTo.length() - 8) == "Viewport") {
+        return relativeTo.substr(0, relativeTo.length() - 8);
+    }
+    if (relativeTo.length() > 6 && relativeTo.substr(relativeTo.length() - 6) == "Screen") {
+        return relativeTo.substr(0, relativeTo.length() - 6);
+    }
+    return relativeTo;
+}
+
+static std::vector<MirrorCaptureConfig> MT_NormalizeCaptureInputs(const std::vector<MirrorCaptureConfig>& inputRegions) {
+    std::vector<MirrorCaptureConfig> normalized = inputRegions;
+    for (auto& region : normalized) {
+        region.relativeTo = MT_NormalizeCaptureAnchor(region.relativeTo);
+    }
+    return normalized;
+}
+
+static void MT_GetRelativeCoordsNormalized(const std::string& anchor, int relX, int relY, int w, int h, int containerW,
+                                           int containerH, int& outX, int& outY) {
+    char firstChar = anchor.empty() ? '\0' : anchor[0];
+
+    if (firstChar == 't') {
+        outY = relY;
+        outX = (anchor == "topLeft") ? relX : containerW - w - relX;
+    } else if (firstChar == 'c') {
+        outX = (containerW - w) / 2 + relX;
+        outY = (containerH - h) / 2 + relY;
+    } else if (firstChar == 'p') {
+        const int pieYTop = 220;
+        const int pieXLeft = 92;
+        const int pieXRight = 36;
+        int baseX = (anchor == "pieLeft") ? containerW - pieXLeft : containerW - pieXRight;
+        outX = baseX + relX;
+        outY = containerH - pieYTop + relY;
+    } else {
+        outY = containerH - h - relY;
+        outX = (anchor == "bottomRight") ? containerW - w - relX : relX;
+    }
 }
 
 static ThreadedMirrorConfig BuildThreadedMirrorConfig(const MirrorConfig& mirror) {
@@ -1262,7 +1670,8 @@ static ThreadedMirrorConfig BuildThreadedMirrorConfig(const MirrorConfig& mirror
     conf.outputColor = mirror.colors.output;
     conf.borderColor = mirror.colors.border;
     conf.colorSensitivity = mirror.colorSensitivity;
-    conf.input = mirror.input;
+    conf.input = MT_NormalizeCaptureInputs(mirror.input);
+    conf.sourceRectLayoutHash = MT_ComputeSourceRectLayoutHash(conf);
     conf.outputScale = mirror.output.scale;
     conf.outputSeparateScale = mirror.output.separateScale;
     conf.outputScaleX = mirror.output.scaleX;
@@ -1271,6 +1680,15 @@ static ThreadedMirrorConfig BuildThreadedMirrorConfig(const MirrorConfig& mirror
     conf.outputY = mirror.output.y;
     conf.outputRelativeTo = mirror.output.relativeTo;
     return conf;
+}
+
+void BuildThreadedMirrorConfigs(const std::vector<MirrorConfig>& activeMirrors, std::vector<ThreadedMirrorConfig>& outConfigs) {
+    outConfigs.clear();
+    outConfigs.reserve(activeMirrors.size());
+
+    for (const auto& mirror : activeMirrors) {
+        outConfigs.push_back(BuildThreadedMirrorConfig(mirror));
+    }
 }
 
 static void MirrorCaptureThreadFunc(void* unused) {
@@ -1323,6 +1741,10 @@ static void MirrorCaptureThreadFunc(void* unused) {
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
 
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(2);
+        glVertexAttribDivisor(2, 1);
+
         static const float verts[] = { -1, -1, 0, 0, 1, -1, 1, 0, 1, 1, 1, 1, -1, -1, 0, 0, 1, 1, 1, 1, -1, 1, 0, 1 };
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
 
@@ -1333,6 +1755,7 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
 
         std::unordered_map<std::string, MT_MirrorFbos> mt_fbos;
+        std::unordered_map<std::string, MT_SourceRectGpuCacheEntry> sourceRectGpuCaches;
 
         uint64_t cachedConfigVersion = 0;
         std::vector<ThreadedMirrorConfig> configsCache;
@@ -1353,7 +1776,7 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
             const auto& r = conf.input[0];
             int capX = 0, capY = 0;
-            GetRelativeCoords(r.relativeTo, r.x, r.y, conf.captureWidth, conf.captureHeight, gameW, gameH, capX, capY);
+            MT_GetRelativeCoordsNormalized(r.relativeTo, r.x, r.y, conf.captureWidth, conf.captureHeight, gameW, gameH, capX, capY);
             int capY_gl = gameH - capY - conf.captureHeight;
             int sampleX = capX + conf.captureWidth / 2;
             int sampleY = capY_gl + conf.captureHeight / 2;
@@ -1526,6 +1949,11 @@ static void MirrorCaptureThreadFunc(void* unused) {
                                 }
                                 if (it->second.contentDownsampleFbo) { glDeleteFramebuffers(1, &it->second.contentDownsampleFbo); }
                                 if (it->second.contentDownsampleTex) { glDeleteTextures(1, &it->second.contentDownsampleTex); }
+                                auto sourceRectIt = sourceRectGpuCaches.find(it->first);
+                                if (sourceRectIt != sourceRectGpuCaches.end()) {
+                                    MT_DeleteSourceRectGpuCacheEntry(sourceRectIt->second);
+                                    sourceRectGpuCaches.erase(sourceRectIt);
+                                }
                                 it = mt_fbos.erase(it);
                                 continue;
                             }
@@ -1681,8 +2109,8 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
                 debugSamplePixel(conf, validTexture, gameW, gameH);
 
-                RenderMirrorToBuffer(inst, conf, validTexture, captureVAO, captureVBO, localBackFbo, localFinalBackFbo, gammaMode, gameW,
-                                     gameH, true);
+                RenderMirrorToBuffer(inst, conf, validTexture, captureVAO, captureVBO, sourceRectGpuCaches[conf.name], localBackFbo,
+                                     localFinalBackFbo, gammaMode, gameW, gameH, true);
 
                 // The result will be harvested on the NEXT frame (non-blocking).
                 if (!inst->desiredRawOutput.load(std::memory_order_acquire)) {
@@ -1788,6 +2216,10 @@ static void MirrorCaptureThreadFunc(void* unused) {
 
         if (captureVAO) glDeleteVertexArrays(1, &captureVAO);
         if (captureVBO) glDeleteBuffers(1, &captureVBO);
+        for (auto& kv : sourceRectGpuCaches) {
+            MT_DeleteSourceRectGpuCacheEntry(kv.second);
+        }
+        sourceRectGpuCaches.clear();
 
         // Cleanup local shader programs (created on this thread's context)
         MT_CleanupShaders();
@@ -2026,9 +2458,9 @@ void SwapMirrorBuffers() {
     }
 }
 
-bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& activeMirrors, GLuint sourceTexture, int gameW, int gameH,
-                                         int screenW, int screenH, int finalX, int finalY, int finalW, int finalH) {
-    if (activeMirrors.empty() || sourceTexture == 0 || gameW <= 0 || gameH <= 0) { return false; }
+bool RenderMirrorCapturesOnCurrentThread(const std::vector<ThreadedMirrorConfig>& activeMirrorConfigs, GLuint sourceTexture, int gameW,
+                                         int gameH, int screenW, int screenH, int finalX, int finalY, int finalW, int finalH) {
+    if (activeMirrorConfigs.empty() || sourceTexture == 0 || gameW <= 0 || gameH <= 0) { return false; }
 
     if (mt_filterProgram == 0 || mt_renderProgram == 0 || mt_backgroundProgram == 0) {
         if (!MT_InitializeShaders()) { return false; }
@@ -2037,24 +2469,32 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& active
 
     MirrorGammaMode gammaMode = GetGlobalMirrorGammaMode();
     bool renderedAny = false;
+    MT_RenderToBufferStateCache stateCache{};
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(g_sameThreadCaptureVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g_sameThreadCaptureVBO);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
     auto now = std::chrono::steady_clock::now();
     std::unique_lock<std::shared_mutex> lock(g_mirrorInstancesMutex);
 
-    for (const auto& mirror : activeMirrors) {
-        if (mirror.input.empty() || mirror.captureWidth <= 0 || mirror.captureHeight <= 0) { continue; }
+    for (const auto& conf : activeMirrorConfigs) {
+        if (conf.input.empty() || conf.captureWidth <= 0 || conf.captureHeight <= 0) { continue; }
 
-        auto it = g_mirrorInstances.find(mirror.name);
+        auto it = g_mirrorInstances.find(conf.name);
         if (it == g_mirrorInstances.end()) { continue; }
 
         MirrorInstance* inst = &it->second;
-        if (mirror.fps > 0 && inst->forceUpdateFrames <= 0) {
+        if (conf.fps > 0 && inst->forceUpdateFrames <= 0) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - inst->lastUpdateTime).count();
-            if (elapsed < (1000 / mirror.fps)) { continue; }
+            if (elapsed < (1000 / conf.fps)) { continue; }
         }
 
-        ThreadedMirrorConfig conf = BuildThreadedMirrorConfig(mirror);
-        inst->desiredRawOutput.store(mirror.rawOutput, std::memory_order_relaxed);
+        inst->desiredRawOutput.store(conf.rawOutput, std::memory_order_relaxed);
 
         int borderPadding = (conf.borderType == MirrorBorderType::Dynamic) ? conf.dynamicBorderThickness : 0;
         int requiredFboW = conf.captureWidth + 2 * borderPadding;
@@ -2068,10 +2508,6 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& active
 
             BindTextureDirect(GL_TEXTURE_2D, inst->fboTexture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, inst->fbo_w, inst->fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             BindTextureDirect(GL_TEXTURE_2D, 0);
         }
 
@@ -2082,10 +2518,6 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& active
         if (inst->final_w != requiredFinalW || inst->final_h != requiredFinalH) {
             BindTextureDirect(GL_TEXTURE_2D, inst->finalTexture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, requiredFinalW, requiredFinalH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             BindTextureDirect(GL_TEXTURE_2D, 0);
 
             inst->final_w = requiredFinalW;
@@ -2096,7 +2528,7 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& active
             inst->cachedRenderStateBack.isValid = false;
         }
 
-        MT_MirrorFbos& fb = g_sameThreadMirrorFbos[mirror.name];
+        MT_MirrorFbos& fb = g_sameThreadMirrorFbos[conf.name];
         if (fb.backFbo == 0) { glGenFramebuffers(1, &fb.backFbo); }
         if (fb.finalBackFbo == 0) { glGenFramebuffers(1, &fb.finalBackFbo); }
 
@@ -2111,12 +2543,13 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& active
             fb.lastFinalBackTex = inst->finalTexture;
         }
 
-        RenderMirrorToBuffer(inst, conf, sourceTexture, g_sameThreadCaptureVAO, g_sameThreadCaptureVBO, fb.backFbo, fb.finalBackFbo,
-                             gammaMode, gameW, gameH, false);
+    RenderMirrorToBuffer(inst, conf, sourceTexture, g_sameThreadCaptureVAO, g_sameThreadCaptureVBO,
+                 g_sameThreadSourceRectGpuCaches[conf.name], fb.backFbo, fb.finalBackFbo, gammaMode, gameW, gameH, false,
+                 &stateCache, true);
 
         inst->hasFrameContent = true;
         ComputeMirrorRenderCache(inst, conf, gameW, gameH, screenW, screenH, finalX, finalY, finalW, finalH, false);
-        inst->capturedAsRawOutput = mirror.rawOutput;
+        inst->capturedAsRawOutput = conf.rawOutput;
         if (inst->gpuFence && glIsSync(inst->gpuFence)) { glDeleteSync(inst->gpuFence); }
         inst->gpuFence = nullptr;
         inst->hasValidContent = true;
@@ -2132,41 +2565,7 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& active
 // Update capture configs from main thread (call when active mirrors change)
 void UpdateMirrorCaptureConfigs(const std::vector<MirrorConfig>& activeMirrors) {
     std::vector<ThreadedMirrorConfig> configs;
-    configs.reserve(activeMirrors.size());
-
-    for (const auto& m : activeMirrors) {
-        ThreadedMirrorConfig conf;
-        conf.name = m.name;
-        conf.captureWidth = m.captureWidth;
-        conf.captureHeight = m.captureHeight;
-        conf.borderType = m.border.type;
-        conf.dynamicBorderThickness = m.border.dynamicThickness;
-        conf.staticBorderShape = m.border.staticShape;
-        conf.staticBorderColor = m.border.staticColor;
-        conf.staticBorderThickness = m.border.staticThickness;
-        conf.staticBorderRadius = m.border.staticRadius;
-        conf.staticBorderOffsetX = m.border.staticOffsetX;
-        conf.staticBorderOffsetY = m.border.staticOffsetY;
-        conf.staticBorderWidth = m.border.staticWidth;
-        conf.staticBorderHeight = m.border.staticHeight;
-        conf.fps = m.fps;
-        conf.rawOutput = m.rawOutput;
-        conf.colorPassthrough = m.colorPassthrough;
-        conf.targetColors = m.colors.targetColors;
-        conf.outputColor = m.colors.output;
-        conf.borderColor = m.colors.border;
-        conf.colorSensitivity = m.colorSensitivity;
-        conf.input = m.input;
-        conf.outputScale = m.output.scale;
-        conf.outputSeparateScale = m.output.separateScale;
-        conf.outputScaleX = m.output.scaleX;
-        conf.outputScaleY = m.output.scaleY;
-        conf.outputX = m.output.x;
-        conf.outputY = m.output.y;
-        conf.outputRelativeTo = m.output.relativeTo;
-
-        configs.push_back(conf);
-    }
+    BuildThreadedMirrorConfigs(activeMirrors, configs);
 
     // Compute summaries from the local vector (avoid reading g_threadedMirrorConfigs without its mutex).
     const int mirrorCount = static_cast<int>(configs.size());
@@ -2301,7 +2700,8 @@ void UpdateMirrorInputRegions(const std::string& mirrorName, const std::vector<M
     std::lock_guard<std::mutex> lock(g_threadedMirrorConfigMutex);
     for (auto& conf : g_threadedMirrorConfigs) {
         if (conf.name == mirrorName) {
-            conf.input = inputRegions;
+            conf.input = MT_NormalizeCaptureInputs(inputRegions);
+            conf.sourceRectLayoutHash = MT_ComputeSourceRectLayoutHash(conf);
             break;
         }
     }
@@ -2335,6 +2735,7 @@ void UpdateMirrorCaptureSettings(const std::string& mirrorName, int captureWidth
             conf.colorSensitivity = colorSensitivity;
             conf.rawOutput = rawOutput;
             conf.colorPassthrough = colorPassthrough;
+            conf.sourceRectLayoutHash = MT_ComputeSourceRectLayoutHash(conf);
             break;
         }
     }
@@ -2370,6 +2771,16 @@ void InvalidateMirrorTextureCaches(const std::vector<std::string>& mirrorNames) 
         inst.final_h_back = 0;
 
         inst.forceUpdateFrames = 3;
+    }
+
+    if (wglGetCurrentContext()) {
+        for (const auto& mirrorName : mirrorNames) {
+            auto sameThreadCacheIt = g_sameThreadSourceRectGpuCaches.find(mirrorName);
+            if (sameThreadCacheIt != g_sameThreadSourceRectGpuCaches.end()) {
+                MT_DeleteSourceRectGpuCacheEntry(sameThreadCacheIt->second);
+                g_sameThreadSourceRectGpuCaches.erase(sameThreadCacheIt);
+            }
+        }
     }
 }
 

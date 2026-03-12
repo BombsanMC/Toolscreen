@@ -6,6 +6,7 @@
 #include <GL/glew.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -59,6 +60,7 @@ struct ThreadedMirrorConfig {
     Color borderColor;
     float colorSensitivity = 0.0f;
     std::vector<MirrorCaptureConfig> input;
+    uint64_t sourceRectLayoutHash = 0;
     std::chrono::steady_clock::time_point lastCaptureTime;
 
     float outputScale = 1.0f;
@@ -141,8 +143,10 @@ void SwapMirrorBuffers();
 
 // Render active mirror captures on the current GL thread using the shared mirror resources.
 // Returns true when at least one mirror produced a fresh front buffer during this call.
-bool RenderMirrorCapturesOnCurrentThread(const std::vector<MirrorConfig>& activeMirrors, GLuint sourceTexture, int gameW, int gameH,
-                                         int screenW, int screenH, int finalX, int finalY, int finalW, int finalH);
+bool RenderMirrorCapturesOnCurrentThread(const std::vector<ThreadedMirrorConfig>& activeMirrorConfigs, GLuint sourceTexture, int gameW,
+                                         int gameH, int screenW, int screenH, int finalX, int finalY, int finalW, int finalH);
+
+void BuildThreadedMirrorConfigs(const std::vector<MirrorConfig>& activeMirrors, std::vector<ThreadedMirrorConfig>& outConfigs);
 
 // Update capture configs from main thread (call when active mirrors change)
 void UpdateMirrorCaptureConfigs(const std::vector<MirrorConfig>& activeMirrors);

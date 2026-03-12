@@ -158,6 +158,10 @@ if (ImGui::BeginTabItem(trc("tabs.settings"))) {
         HelpMarker(trc("settings.tooltip.delay_rendering_until_blitted"));
         if (ImGui::Checkbox(trc("settings.same_thread_render_pipeline"), &g_config.debug.sameThreadRenderPipeline)) {
             g_sameThreadMirrorPipelineActive.store(g_config.debug.sameThreadRenderPipeline, std::memory_order_release);
+            if (g_config.debug.sameThreadRenderPipeline) {
+                StopMirrorCaptureThread();
+                StopRenderThread();
+            }
             g_configIsDirty = true;
         }
         ImGui::SameLine();

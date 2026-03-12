@@ -12,7 +12,7 @@
 #include "features/virtual_camera.h"
 #include "features/window_overlay.h"
 #include <unordered_map>
-#include <set>
+#include <unordered_set>
 #include <thread>
 #include <fstream>
 
@@ -183,6 +183,61 @@ static void RT_LogInvalidTextureSampleThrottled(const std::string& stage, GLuint
     LogCategory("texture_ops", "Render Thread: Invalid texture sample stage=" + stage + " tex=" + std::to_string(texture) +
                                    " isTexture=" + std::to_string(isTexture ? 1 : 0) + " actual=" +
                                    std::to_string(actualW) + "x" + std::to_string(actualH) + expectedStr);
+}
+
+struct RT_TextureSampleabilityCacheEntry {
+    int width = 0;
+    int height = 0;
+    ULONGLONG checkedAtMs = 0;
+    bool valid = false;
+};
+
+static std::unordered_map<GLuint, RT_TextureSampleabilityCacheEntry> s_rtTextureSampleabilityCache;
+static std::mutex s_rtTextureSampleabilityCacheMutex;
+
+static void RT_InvalidateTextureSampleabilityCache(GLuint texture) {
+    std::lock_guard<std::mutex> lock(s_rtTextureSampleabilityCacheMutex);
+    s_rtTextureSampleabilityCache.erase(texture);
+}
+
+static bool RT_IsSampleableTexture2DCached(GLuint texture, int expectedW = 0, int expectedH = 0) {
+    if (texture == 0) { return false; }
+
+    constexpr ULONGLONG kCacheLifetimeMs = 250;
+    const ULONGLONG now = GetTickCount64();
+
+    {
+        std::lock_guard<std::mutex> lock(s_rtTextureSampleabilityCacheMutex);
+        auto it = s_rtTextureSampleabilityCache.find(texture);
+        if (it != s_rtTextureSampleabilityCache.end()) {
+            const RT_TextureSampleabilityCacheEntry& cached = it->second;
+            const bool dimsMatch = expectedW <= 0 || expectedH <= 0 || (cached.width == expectedW && cached.height == expectedH);
+            if (dimsMatch && (now - cached.checkedAtMs) <= kCacheLifetimeMs) {
+                return cached.valid;
+            }
+        }
+    }
+
+    int actualW = 0;
+    int actualH = 0;
+    const bool valid = RT_IsSampleableTexture2D(texture, &actualW, &actualH);
+
+    {
+        std::lock_guard<std::mutex> lock(s_rtTextureSampleabilityCacheMutex);
+        s_rtTextureSampleabilityCache[texture] = { actualW, actualH, now, valid };
+
+        if (s_rtTextureSampleabilityCache.size() > 512) {
+            for (auto it = s_rtTextureSampleabilityCache.begin(); it != s_rtTextureSampleabilityCache.end();) {
+                if ((now - it->second.checkedAtMs) > 5000) {
+                    it = s_rtTextureSampleabilityCache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+
+    return valid;
 }
 
 // Last known good texture - updated only after GPU fence confirms rendering complete
@@ -1309,6 +1364,7 @@ static void CleanupRenderFBOs() {
             fbo.fbo = 0;
         }
         if (fbo.texture != 0) {
+            RT_InvalidateTextureSampleabilityCache(fbo.texture);
             glDeleteTextures(1, &fbo.texture);
             fbo.texture = 0;
         }
@@ -1333,6 +1389,7 @@ static void CleanupRenderFBOs() {
             fbo.fbo = 0;
         }
         if (fbo.texture != 0) {
+            RT_InvalidateTextureSampleabilityCache(fbo.texture);
             glDeleteTextures(1, &fbo.texture);
             fbo.texture = 0;
         }
@@ -2137,8 +2194,24 @@ static void RT_RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, con
     if (!slideCfgSnap) return;
     const Config& slideCfg = *slideCfgSnap;
 
-    std::set<std::string> sourceMirrorNames;
+    const bool isAnimating = transitionProgress < 1.0f;
+    const float toScaleX = (toW > 0 && geo.gameW > 0) ? static_cast<float>(toW) / geo.gameW : 1.0f;
+    const float toScaleY = (toH > 0 && geo.gameH > 0) ? static_cast<float>(toH) / geo.gameH : 1.0f;
+    const float fromScaleX = (fromW > 0 && geo.gameW > 0) ? static_cast<float>(fromW) / geo.gameW : toScaleX;
+    const float fromScaleY = (fromH > 0 && geo.gameH > 0) ? static_cast<float>(fromH) / geo.gameH : toScaleY;
+    const int effectiveFromH = isTransitioningFromEyeZoom ? toH : fromH;
+    const int effectiveFromY = isTransitioningFromEyeZoom ? toY : fromY;
+    const bool wantsTransitionSlide = mirrorSlideProgress < 1.0f && !skipAnimation;
+    const int targetViewportX = (fullW - slideCfg.eyezoom.windowWidth) / 2;
+    const bool hasEyeZoomAnimatedPosition = eyeZoomAnimatedViewportX >= 0 && targetViewportX > 0;
+    const bool isEyeZoomTransitioning = hasEyeZoomAnimatedPosition && eyeZoomAnimatedViewportX < targetViewportX;
+    const bool wantsEyeZoomSlide =
+        slideCfg.eyezoom.slideMirrorsIn && hasEyeZoomAnimatedPosition && isEyeZoomMode && isEyeZoomTransitioning;
+    const float eyeZoomSlideProgress = wantsEyeZoomSlide ? static_cast<float>(eyeZoomAnimatedViewportX) / targetViewportX : 1.0f;
+
+    std::unordered_set<std::string> sourceMirrorNames;
     if (!fromModeId.empty() && (fromSlideMirrorsIn || toSlideMirrorsIn || slideCfg.eyezoom.slideMirrorsIn)) {
+        sourceMirrorNames.reserve(activeMirrors.size());
         for (const auto& mode : slideCfg.modes) {
             if (EqualsIgnoreCase(mode.id, fromModeId)) {
                 for (const auto& mirrorName : mode.mirrorIds) { sourceMirrorNames.insert(mirrorName); }
@@ -2212,8 +2285,7 @@ static void RT_RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, con
             GLsync fence = inst.gpuFence;
 
             const auto& cache = inst.cachedRenderState;
-            bool isAnimating = transitionProgress < 1.0f;
-            bool cacheMatchesCurrentGeo =
+            const bool cacheMatchesCurrentGeo =
                 cache.isValid && !isAnimating && cache.finalX == geo.finalX && cache.finalY == geo.finalY && cache.finalW == geo.finalW &&
                 cache.finalH == geo.finalH && cache.screenW == fullW && cache.screenH == fullH &&
                 cache.outputX == conf.output.x && cache.outputY == conf.output.y && cache.outputScale == conf.output.scale &&
@@ -2273,7 +2345,7 @@ static void RT_RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, con
         const MirrorConfig& conf = *renderData.config;
         const float effectiveOpacity = modeOpacity * conf.opacity;
         if (effectiveOpacity <= 0.0f) continue;
-        if (!RT_IsSampleableTexture2D(renderData.texture)) {
+        if (!RT_IsSampleableTexture2DCached(renderData.texture, renderData.tex_w, renderData.tex_h)) {
             RT_LogInvalidTextureSampleThrottled("mirror_texture:" + conf.name, renderData.texture, renderData.tex_w, renderData.tex_h);
             continue;
         }
@@ -2311,31 +2383,24 @@ static void RT_RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, con
             } else {
                 // Must calculate position relative to EACH viewport's actual dimensions
 
-                float toScaleX = (toW > 0 && geo.gameW > 0) ? static_cast<float>(toW) / geo.gameW : 1.0f;
-                float toScaleY = (toH > 0 && geo.gameH > 0) ? static_cast<float>(toH) / geo.gameH : 1.0f;
-                float fromScaleX = (fromW > 0 && geo.gameW > 0) ? static_cast<float>(fromW) / geo.gameW : toScaleX;
-                float fromScaleY = (fromH > 0 && geo.gameH > 0) ? static_cast<float>(fromH) / geo.gameH : toScaleY;
-
-                int toSizeW = relativeStretching ? static_cast<int>(renderData.outW * toScaleX) : renderData.outW;
-                int toSizeH = relativeStretching ? static_cast<int>(renderData.outH * toScaleY) : renderData.outH;
-                int fromSizeW = relativeStretching ? static_cast<int>(renderData.outW * fromScaleX) : renderData.outW;
-                int fromSizeH = relativeStretching ? static_cast<int>(renderData.outH * fromScaleY) : renderData.outH;
+                const int toSizeW = relativeStretching ? static_cast<int>(renderData.outW * toScaleX) : renderData.outW;
+                const int toSizeH = relativeStretching ? static_cast<int>(renderData.outH * toScaleY) : renderData.outH;
+                const int fromSizeW = relativeStretching ? static_cast<int>(renderData.outW * fromScaleX) : renderData.outW;
+                const int fromSizeH = relativeStretching ? static_cast<int>(renderData.outH * fromScaleY) : renderData.outH;
 
                 int toOutX, toOutY;
                 GetRelativeCoords(anchor, conf.output.x, conf.output.y, toSizeW, toSizeH, toW, toH, toOutX, toOutY);
-                int toPosX = toX + toOutX;
-                int toPosY = toY + toOutY;
+                const int toPosX = toX + toOutX;
+                const int toPosY = toY + toOutY;
 
                 int fromOutX, fromOutY;
-                int effectiveFromH = isTransitioningFromEyeZoom ? toH : fromH;
-                int effectiveFromY = isTransitioningFromEyeZoom ? toY : fromY;
-                int effectiveFromSizeH = isTransitioningFromEyeZoom ? toSizeH : fromSizeH;
+                const int effectiveFromSizeH = isTransitioningFromEyeZoom ? toSizeH : fromSizeH;
                 GetRelativeCoords(anchor, conf.output.x, conf.output.y, fromSizeW, effectiveFromSizeH, fromW, effectiveFromH, fromOutX,
                                   fromOutY);
-                int fromPosX = fromX + fromOutX;
-                int fromPosY = effectiveFromY + fromOutY;
+                const int fromPosX = fromX + fromOutX;
+                const int fromPosY = effectiveFromY + fromOutY;
 
-                float t = transitionProgress;
+                const float t = transitionProgress;
                 finalX_screen = static_cast<int>(fromPosX + (toPosX - fromPosX) * t);
                 finalY_screen = static_cast<int>(fromPosY + (toPosY - fromPosY) * t);
 
@@ -2358,25 +2423,14 @@ static void RT_RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, con
             bool shouldApplySlide = false;
             float slideProgress = 1.0f;
 
-            // --- EyeZoom slide animation (uses viewport X for synchronization) ---
-            auto ezCfgSnap = GetConfigSnapshot();
-            if (!ezCfgSnap) continue;
-            EyeZoomConfig zoomConfig = ezCfgSnap->eyezoom;
-            int modeWidth = zoomConfig.windowWidth;
-            int targetViewportX = (fullW - modeWidth) / 2;
-
-            bool hasEyeZoomAnimatedPosition = eyeZoomAnimatedViewportX >= 0 && targetViewportX > 0;
-            bool isEyeZoomTransitioning = hasEyeZoomAnimatedPosition && eyeZoomAnimatedViewportX < targetViewportX;
-
-            bool isTransitioningToEyeZoom = isEyeZoomMode && isEyeZoomTransitioning && !isTransitioningFromEyeZoom;
-            bool isEyeZoomSlideOut = isEyeZoomMode && isTransitioningFromEyeZoom && isEyeZoomTransitioning;
-
-            if (zoomConfig.slideMirrorsIn && (isTransitioningToEyeZoom || isEyeZoomSlideOut) && hasEyeZoomAnimatedPosition) {
+            const bool isTransitioningToEyeZoom = wantsEyeZoomSlide && !isTransitioningFromEyeZoom;
+            const bool isEyeZoomSlideOut = wantsEyeZoomSlide && isTransitioningFromEyeZoom;
+            if (isTransitioningToEyeZoom || isEyeZoomSlideOut) {
                 shouldApplySlide = true;
-                slideProgress = static_cast<float>(eyeZoomAnimatedViewportX) / static_cast<float>(targetViewportX);
+                slideProgress = eyeZoomSlideProgress;
             }
 
-            if (!shouldApplySlide && mirrorSlideProgress < 1.0f && !skipAnimation) {
+            if (!shouldApplySlide && wantsTransitionSlide) {
                 if (toSlideMirrorsIn && !isSlideOutPass) {
                     shouldApplySlide = true;
                     slideProgress = mirrorSlideProgress;
@@ -3387,7 +3441,7 @@ static void RenderThreadFunc(void* gameGLContext) {
                     }
                 }
 
-                if (readyTex != 0 && srcW > 0 && srcH > 0 && !RT_IsSampleableTexture2D(readyTex)) {
+                if (readyTex != 0 && srcW > 0 && srcH > 0 && !RT_IsSampleableTexture2DCached(readyTex, srcW, srcH)) {
                     RT_LogInvalidTextureSampleThrottled("obs_ready_texture", readyTex, srcW, srcH);
                     GLuint safeTex = GetSafeReadTexture();
                     int safeW = GetFallbackGameWidth();
@@ -3397,7 +3451,7 @@ static void RenderThreadFunc(void* gameGLContext) {
                         safeH = request.fullH;
                     }
 
-                    if (safeTex != 0 && safeW > 0 && safeH > 0 && RT_IsSampleableTexture2D(safeTex)) {
+                    if (safeTex != 0 && safeW > 0 && safeH > 0 && RT_IsSampleableTexture2DCached(safeTex, safeW, safeH)) {
                         readyTex = safeTex;
                         srcW = safeW;
                         srcH = safeH;
@@ -3621,7 +3675,7 @@ static void RenderThreadFunc(void* gameGLContext) {
                     }
                 }
 
-                if (readyTex != 0 && srcW > 0 && srcH > 0 && !RT_IsSampleableTexture2D(readyTex)) {
+                if (readyTex != 0 && srcW > 0 && srcH > 0 && !RT_IsSampleableTexture2DCached(readyTex, srcW, srcH)) {
                     RT_LogInvalidTextureSampleThrottled("eyezoom_ready_texture", readyTex, srcW, srcH);
                     GLuint safeTex = GetSafeReadTexture();
                     int safeW = GetFallbackGameWidth();
@@ -3631,7 +3685,7 @@ static void RenderThreadFunc(void* gameGLContext) {
                         safeH = request.fullH;
                     }
 
-                    if (safeTex != 0 && safeW > 0 && safeH > 0 && RT_IsSampleableTexture2D(safeTex)) {
+                    if (safeTex != 0 && safeW > 0 && safeH > 0 && RT_IsSampleableTexture2DCached(safeTex, safeW, safeH)) {
                         readyTex = safeTex;
                         srcW = safeW;
                         srcH = safeH;

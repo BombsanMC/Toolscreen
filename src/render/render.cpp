@@ -1612,8 +1612,11 @@ static bool CreateMirrorFramebuffer(GLuint& fbo, GLuint& texture, int w, int h, 
     return (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 }
 
+static void InvalidateTextureSampleabilityCache(GLuint texture);
+
 static void DeleteMirrorFramebuffer(GLuint& fbo, GLuint& texture) {
     if (texture != 0) {
+        InvalidateTextureSampleabilityCache(texture);
         glDeleteTextures(1, &texture);
         texture = 0;
     }
@@ -1664,6 +1667,13 @@ static void ReleaseMirrorAsyncGPUResources(MirrorInstance& inst) {
 }
 
 static bool UpdateMirrorAsyncResourceMode(const std::vector<MirrorConfig>* activeMirrors, bool sameThreadRenderPipeline) {
+    static bool s_asyncResourceModeInitialized = false;
+    static bool s_lastSameThreadRenderPipeline = false;
+
+    if (activeMirrors == nullptr && s_asyncResourceModeInitialized && s_lastSameThreadRenderPipeline == sameThreadRenderPipeline) {
+        return true;
+    }
+
     GLint lastFramebuffer = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &lastFramebuffer);
     GLint lastTexture = 0;
@@ -1699,6 +1709,10 @@ static bool UpdateMirrorAsyncResourceMode(const std::vector<MirrorConfig>* activ
 
     glBindFramebuffer(GL_FRAMEBUFFER, lastFramebuffer);
     BindTextureDirect(GL_TEXTURE_2D, lastTexture);
+    if (success) {
+        s_asyncResourceModeInitialized = true;
+        s_lastSameThreadRenderPipeline = sameThreadRenderPipeline;
+    }
     return success;
 }
 
@@ -1813,6 +1827,61 @@ static void LogInvalidTextureSampleThrottled(const std::string& stage, GLuint te
                                    std::to_string(actualH) + expected);
 }
 
+struct TextureSampleabilityCacheEntry {
+    int width = 0;
+    int height = 0;
+    ULONGLONG checkedAtMs = 0;
+    bool valid = false;
+};
+
+static std::unordered_map<GLuint, TextureSampleabilityCacheEntry> s_textureSampleabilityCache;
+static std::mutex s_textureSampleabilityCacheMutex;
+
+static void InvalidateTextureSampleabilityCache(GLuint texture) {
+    std::lock_guard<std::mutex> lock(s_textureSampleabilityCacheMutex);
+    s_textureSampleabilityCache.erase(texture);
+}
+
+static bool IsSampleableTexture2DCached(GLuint texture, int expectedW = 0, int expectedH = 0) {
+    if (texture == 0) { return false; }
+
+    constexpr ULONGLONG kCacheLifetimeMs = 250;
+    const ULONGLONG now = GetTickCount64();
+
+    {
+        std::lock_guard<std::mutex> lock(s_textureSampleabilityCacheMutex);
+        auto it = s_textureSampleabilityCache.find(texture);
+        if (it != s_textureSampleabilityCache.end()) {
+            const TextureSampleabilityCacheEntry& cached = it->second;
+            const bool dimsMatch = expectedW <= 0 || expectedH <= 0 || (cached.width == expectedW && cached.height == expectedH);
+            if (dimsMatch && (now - cached.checkedAtMs) <= kCacheLifetimeMs) {
+                return cached.valid;
+            }
+        }
+    }
+
+    int actualW = 0;
+    int actualH = 0;
+    const bool valid = IsSampleableTexture2D(texture, &actualW, &actualH);
+
+    {
+        std::lock_guard<std::mutex> lock(s_textureSampleabilityCacheMutex);
+        s_textureSampleabilityCache[texture] = { actualW, actualH, now, valid };
+
+        if (s_textureSampleabilityCache.size() > 512) {
+            for (auto it = s_textureSampleabilityCache.begin(); it != s_textureSampleabilityCache.end();) {
+                if ((now - it->second.checkedAtMs) > 5000) {
+                    it = s_textureSampleabilityCache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+
+    return valid;
+}
+
 static void ClearEyeZoomTextLabels() {
     std::lock_guard<std::mutex> lock(s_eyezoomTextMutex);
     s_eyezoomTextLabels.clear();
@@ -1843,7 +1912,7 @@ static void RenderCachedEyeZoomTextLabels() {
 static bool SelectSameThreadGameTexture(GLuint preferredTexture, int preferredW, int preferredH, GLuint& outTexture, int& outW,
                                         int& outH) {
     if (preferredTexture != 0 && preferredTexture != UINT_MAX && preferredW > 0 && preferredH > 0 &&
-        IsSampleableTexture2D(preferredTexture)) {
+    IsSampleableTexture2DCached(preferredTexture, preferredW, preferredH)) {
         outTexture = preferredTexture;
         outW = preferredW;
         outH = preferredH;
@@ -1853,12 +1922,12 @@ static bool SelectSameThreadGameTexture(GLuint preferredTexture, int preferredW,
     outTexture = GetReadyGameTexture();
     outW = GetReadyGameWidth();
     outH = GetReadyGameHeight();
-    if (outTexture != 0 && outW > 0 && outH > 0 && IsSampleableTexture2D(outTexture)) { return true; }
+    if (outTexture != 0 && outW > 0 && outH > 0 && IsSampleableTexture2DCached(outTexture, outW, outH)) { return true; }
 
     outTexture = GetFallbackGameTexture();
     outW = GetFallbackGameWidth();
     outH = GetFallbackGameHeight();
-    if (outTexture != 0 && outW > 0 && outH > 0 && IsSampleableTexture2D(outTexture)) { return true; }
+    if (outTexture != 0 && outW > 0 && outH > 0 && IsSampleableTexture2DCached(outTexture, outW, outH)) { return true; }
 
     outTexture = GetSafeReadTexture();
     if (outTexture != 0 && IsSampleableTexture2D(outTexture, &outW, &outH)) { return true; }
@@ -1875,7 +1944,6 @@ static void DrawPassthroughTextureRegion(GLuint textureId, const float sourceRec
 
     glUseProgram(g_passthroughProgram);
     BindTextureDirect(GL_TEXTURE_2D, textureId);
-    glUniform1i(g_passthroughShaderLocs.screenTexture, 0);
     glUniform4f(g_passthroughShaderLocs.sourceRect, sourceRect[0], sourceRect[1], sourceRect[2], sourceRect[3]);
     glUniform1f(g_passthroughShaderLocs.opacity, opacity);
 
@@ -1919,8 +1987,24 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
                                 bool isSlideOutPass, const Config& cfg) {
     if (activeMirrors.empty()) return;
 
-    std::set<std::string> sourceMirrorNames;
+    const bool isAnimating = transitionProgress < 1.0f;
+    const float toScaleX = (toW > 0 && geo.gameW > 0) ? static_cast<float>(toW) / geo.gameW : 1.0f;
+    const float toScaleY = (toH > 0 && geo.gameH > 0) ? static_cast<float>(toH) / geo.gameH : 1.0f;
+    const float fromScaleX = (fromW > 0 && geo.gameW > 0) ? static_cast<float>(fromW) / geo.gameW : toScaleX;
+    const float fromScaleY = (fromH > 0 && geo.gameH > 0) ? static_cast<float>(fromH) / geo.gameH : toScaleY;
+    const int effectiveFromH = isTransitioningFromEyeZoom ? toH : fromH;
+    const int effectiveFromY = isTransitioningFromEyeZoom ? toY : fromY;
+    const bool wantsTransitionSlide = mirrorSlideProgress < 1.0f && !skipAnimation;
+    const int targetViewportX = (fullW - cfg.eyezoom.windowWidth) / 2;
+    const bool hasEyeZoomAnimatedPosition = eyeZoomAnimatedViewportX >= 0 && targetViewportX > 0;
+    const bool isEyeZoomTransitioning = hasEyeZoomAnimatedPosition && eyeZoomAnimatedViewportX < targetViewportX;
+    const bool wantsEyeZoomSlide =
+        cfg.eyezoom.slideMirrorsIn && hasEyeZoomAnimatedPosition && isEyeZoomMode && isEyeZoomTransitioning;
+    const float eyeZoomSlideProgress = wantsEyeZoomSlide ? static_cast<float>(eyeZoomAnimatedViewportX) / targetViewportX : 1.0f;
+
+    std::unordered_set<std::string> sourceMirrorNames;
     if (!fromModeId.empty() && (fromSlideMirrorsIn || toSlideMirrorsIn || cfg.eyezoom.slideMirrorsIn)) {
+        sourceMirrorNames.reserve(activeMirrors.size());
         for (const auto& mode : cfg.modes) {
             if (EqualsIgnoreCase(mode.id, fromModeId)) {
                 for (const auto& mirrorName : mode.mirrorIds) { sourceMirrorNames.insert(mirrorName); }
@@ -1973,8 +2057,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
             data.gpuFence = inst.gpuFence;
 
             const auto& cache = inst.cachedRenderState;
-            bool isAnimating = transitionProgress < 1.0f;
-            bool cacheMatchesCurrentGeo =
+            const bool cacheMatchesCurrentGeo =
                 cache.isValid && !isAnimating && cache.finalX == geo.finalX && cache.finalY == geo.finalY && cache.finalW == geo.finalW &&
                 cache.finalH == geo.finalH && cache.screenW == fullW && cache.screenH == fullH && cache.outputX == conf.output.x &&
                 cache.outputY == conf.output.y && cache.outputScale == conf.output.scale &&
@@ -2010,17 +2093,26 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
 
     glUseProgram(g_backgroundProgram);
 
+    GLuint lastBoundMirrorTexture = 0;
+    float lastMirrorOpacity = -1.0f;
+
     for (auto& renderData : mirrorsToRender) {
         const MirrorConfig& conf = *renderData.config;
         const float effectiveOpacity = modeOpacity * conf.opacity;
         if (effectiveOpacity <= 0.0f) continue;
-        if (!IsSampleableTexture2D(renderData.texture)) {
+        if (!IsSampleableTexture2DCached(renderData.texture, renderData.tex_w, renderData.tex_h)) {
             LogInvalidTextureSampleThrottled("mirror_texture:" + conf.name, renderData.texture, renderData.tex_w, renderData.tex_h);
             continue;
         }
 
-        glUniform1f(g_backgroundShaderLocs.opacity, effectiveOpacity);
-        BindTextureDirect(GL_TEXTURE_2D, renderData.texture);
+        if (lastMirrorOpacity != effectiveOpacity) {
+            glUniform1f(g_backgroundShaderLocs.opacity, effectiveOpacity);
+            lastMirrorOpacity = effectiveOpacity;
+        }
+        if (lastBoundMirrorTexture != renderData.texture) {
+            BindTextureDirect(GL_TEXTURE_2D, renderData.texture);
+            lastBoundMirrorTexture = renderData.texture;
+        }
 
         if (renderData.cacheValid) {
             glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(renderData.vertices), renderData.vertices);
@@ -2043,15 +2135,10 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
                 GetRelativeCoords(anchor, conf.output.x, conf.output.y, renderData.outW, renderData.outH, fullW, fullH, finalXScreen,
                                   finalYScreen);
             } else {
-                float toScaleX = (toW > 0 && geo.gameW > 0) ? static_cast<float>(toW) / geo.gameW : 1.0f;
-                float toScaleY = (toH > 0 && geo.gameH > 0) ? static_cast<float>(toH) / geo.gameH : 1.0f;
-                float fromScaleX = (fromW > 0 && geo.gameW > 0) ? static_cast<float>(fromW) / geo.gameW : toScaleX;
-                float fromScaleY = (fromH > 0 && geo.gameH > 0) ? static_cast<float>(fromH) / geo.gameH : toScaleY;
-
-                int toSizeW = relativeStretching ? static_cast<int>(renderData.outW * toScaleX) : renderData.outW;
-                int toSizeH = relativeStretching ? static_cast<int>(renderData.outH * toScaleY) : renderData.outH;
-                int fromSizeW = relativeStretching ? static_cast<int>(renderData.outW * fromScaleX) : renderData.outW;
-                int fromSizeH = relativeStretching ? static_cast<int>(renderData.outH * fromScaleY) : renderData.outH;
+                const int toSizeW = relativeStretching ? static_cast<int>(renderData.outW * toScaleX) : renderData.outW;
+                const int toSizeH = relativeStretching ? static_cast<int>(renderData.outH * toScaleY) : renderData.outH;
+                const int fromSizeW = relativeStretching ? static_cast<int>(renderData.outW * fromScaleX) : renderData.outW;
+                const int fromSizeH = relativeStretching ? static_cast<int>(renderData.outH * fromScaleY) : renderData.outH;
 
                 int toOutX = 0;
                 int toOutY = 0;
@@ -2059,17 +2146,15 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
 
                 int fromOutX = 0;
                 int fromOutY = 0;
-                int effectiveFromH = isTransitioningFromEyeZoom ? toH : fromH;
-                int effectiveFromY = isTransitioningFromEyeZoom ? toY : fromY;
-                int effectiveFromSizeH = isTransitioningFromEyeZoom ? toSizeH : fromSizeH;
+                const int effectiveFromSizeH = isTransitioningFromEyeZoom ? toSizeH : fromSizeH;
                 GetRelativeCoords(anchor, conf.output.x, conf.output.y, fromSizeW, effectiveFromSizeH, fromW, effectiveFromH, fromOutX,
                                   fromOutY);
 
-                int toPosX = toX + toOutX;
-                int toPosY = toY + toOutY;
-                int fromPosX = fromX + fromOutX;
-                int fromPosY = effectiveFromY + fromOutY;
-                float t = transitionProgress;
+                const int toPosX = toX + toOutX;
+                const int toPosY = toY + toOutY;
+                const int fromPosX = fromX + fromOutX;
+                const int fromPosY = effectiveFromY + fromOutY;
+                const float t = transitionProgress;
                 finalXScreen = static_cast<int>(fromPosX + (toPosX - fromPosX) * t);
                 finalYScreen = static_cast<int>(fromPosY + (toPosY - fromPosY) * t);
                 if (relativeStretching) {
@@ -2080,17 +2165,13 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
 
             bool shouldApplySlide = false;
             float slideProgress = 1.0f;
-            int modeWidth = cfg.eyezoom.windowWidth;
-            int targetViewportX = (fullW - modeWidth) / 2;
-            bool hasEyeZoomAnimatedPosition = eyeZoomAnimatedViewportX >= 0 && targetViewportX > 0;
-            bool isEyeZoomTransitioning = hasEyeZoomAnimatedPosition && eyeZoomAnimatedViewportX < targetViewportX;
-            bool isTransitioningToEyeZoom = isEyeZoomMode && isEyeZoomTransitioning && !isTransitioningFromEyeZoom;
-            bool isEyeZoomSlideOut = isEyeZoomMode && isTransitioningFromEyeZoom && isEyeZoomTransitioning;
-            if (cfg.eyezoom.slideMirrorsIn && (isTransitioningToEyeZoom || isEyeZoomSlideOut) && hasEyeZoomAnimatedPosition) {
+            const bool isTransitioningToEyeZoom = wantsEyeZoomSlide && !isTransitioningFromEyeZoom;
+            const bool isEyeZoomSlideOut = wantsEyeZoomSlide && isTransitioningFromEyeZoom;
+            if (isTransitioningToEyeZoom || isEyeZoomSlideOut) {
                 shouldApplySlide = true;
-                slideProgress = static_cast<float>(eyeZoomAnimatedViewportX) / static_cast<float>(targetViewportX);
+                slideProgress = eyeZoomSlideProgress;
             }
-            if (!shouldApplySlide && mirrorSlideProgress < 1.0f && !skipAnimation) {
+            if (!shouldApplySlide && wantsTransitionSlide) {
                 if (toSlideMirrorsIn && !isSlideOutPass) {
                     shouldApplySlide = true;
                     slideProgress = mirrorSlideProgress;
@@ -2128,6 +2209,20 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
     }
 
     glUseProgram(g_staticBorderProgram);
+
+    bool staticBorderUniformsValid = false;
+    int lastStaticBorderShape = 0;
+    float lastStaticBorderColorR = 0.0f;
+    float lastStaticBorderColorG = 0.0f;
+    float lastStaticBorderColorB = 0.0f;
+    float lastStaticBorderColorA = 0.0f;
+    float lastStaticBorderThickness = 0.0f;
+    float lastStaticBorderRadius = 0.0f;
+    float lastStaticBorderBaseW = 0.0f;
+    float lastStaticBorderBaseH = 0.0f;
+    float lastStaticBorderQuadW = 0.0f;
+    float lastStaticBorderQuadH = 0.0f;
+
     for (const auto& renderData : mirrorsToRender) {
         const MirrorConfig& conf = *renderData.config;
         const MirrorBorderConfig& border = conf.border;
@@ -2146,14 +2241,49 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
         int quadX = renderData.screenX - centerOffsetX + border.staticOffsetX - borderExtension;
         int quadY = renderData.screenY - centerOffsetY + border.staticOffsetY - borderExtension;
         int quadYGl = fullH - (quadY + quadH);
+        const int shape = static_cast<int>(border.staticShape);
+        const float borderColorR = border.staticColor.r;
+        const float borderColorG = border.staticColor.g;
+        const float borderColorB = border.staticColor.b;
+        const float borderColorA = border.staticColor.a * conf.opacity * modeOpacity;
+        const float borderThickness = static_cast<float>(border.staticThickness);
+        const float borderRadius = static_cast<float>(border.staticRadius);
+        const float baseWF = static_cast<float>(baseW);
+        const float baseHF = static_cast<float>(baseH);
+        const float quadWF = static_cast<float>(quadW);
+        const float quadHF = static_cast<float>(quadH);
 
-        glUniform1i(g_staticBorderShaderLocs.shape, static_cast<int>(border.staticShape));
-        glUniform4f(g_staticBorderShaderLocs.borderColor, border.staticColor.r, border.staticColor.g, border.staticColor.b,
-                    border.staticColor.a * conf.opacity * modeOpacity);
-        glUniform1f(g_staticBorderShaderLocs.thickness, static_cast<float>(border.staticThickness));
-        glUniform1f(g_staticBorderShaderLocs.radius, static_cast<float>(border.staticRadius));
-        glUniform2f(g_staticBorderShaderLocs.size, static_cast<float>(baseW), static_cast<float>(baseH));
-        glUniform2f(g_staticBorderShaderLocs.quadSize, static_cast<float>(quadW), static_cast<float>(quadH));
+        if (!staticBorderUniformsValid || lastStaticBorderShape != shape) {
+            glUniform1i(g_staticBorderShaderLocs.shape, shape);
+            lastStaticBorderShape = shape;
+        }
+        if (!staticBorderUniformsValid || lastStaticBorderColorR != borderColorR || lastStaticBorderColorG != borderColorG ||
+            lastStaticBorderColorB != borderColorB || lastStaticBorderColorA != borderColorA) {
+            glUniform4f(g_staticBorderShaderLocs.borderColor, borderColorR, borderColorG, borderColorB, borderColorA);
+            lastStaticBorderColorR = borderColorR;
+            lastStaticBorderColorG = borderColorG;
+            lastStaticBorderColorB = borderColorB;
+            lastStaticBorderColorA = borderColorA;
+        }
+        if (!staticBorderUniformsValid || lastStaticBorderThickness != borderThickness) {
+            glUniform1f(g_staticBorderShaderLocs.thickness, borderThickness);
+            lastStaticBorderThickness = borderThickness;
+        }
+        if (!staticBorderUniformsValid || lastStaticBorderRadius != borderRadius) {
+            glUniform1f(g_staticBorderShaderLocs.radius, borderRadius);
+            lastStaticBorderRadius = borderRadius;
+        }
+        if (!staticBorderUniformsValid || lastStaticBorderBaseW != baseWF || lastStaticBorderBaseH != baseHF) {
+            glUniform2f(g_staticBorderShaderLocs.size, baseWF, baseHF);
+            lastStaticBorderBaseW = baseWF;
+            lastStaticBorderBaseH = baseHF;
+        }
+        if (!staticBorderUniformsValid || lastStaticBorderQuadW != quadWF || lastStaticBorderQuadH != quadHF) {
+            glUniform2f(g_staticBorderShaderLocs.quadSize, quadWF, quadHF);
+            lastStaticBorderQuadW = quadWF;
+            lastStaticBorderQuadH = quadHF;
+        }
+        staticBorderUniformsValid = true;
 
         float nx1 = (static_cast<float>(quadX) / fullW) * 2.0f - 1.0f;
         float ny1 = (static_cast<float>(quadYGl) / fullH) * 2.0f - 1.0f;
@@ -2571,6 +2701,19 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
     static std::vector<MirrorConfig> s_cachedActiveMirrors;
     static std::vector<ImageConfig> s_cachedActiveImages;
     static std::vector<const WindowOverlayConfig*> s_cachedActiveWindowOverlays;
+    static uint64_t s_cachedEyeZoomSlideOutConfigVersion = 0;
+    static std::string s_cachedEyeZoomSlideOutTargetModeId;
+    static std::vector<MirrorConfig> s_cachedEyeZoomSlideOutMirrors;
+    static uint64_t s_cachedTransitionSlideOutConfigVersion = 0;
+    static std::string s_cachedTransitionSlideOutFromModeId;
+    static std::string s_cachedTransitionSlideOutTargetModeId;
+    static std::vector<MirrorConfig> s_cachedTransitionSlideOutMirrors;
+    static uint64_t s_cachedSameThreadCaptureConfigVersion = 0;
+    static std::string s_cachedSameThreadCaptureModeId;
+    static std::string s_cachedSameThreadCaptureFromModeId;
+    static bool s_cachedSameThreadCaptureHasEyeZoomSlideOut = false;
+    static bool s_cachedSameThreadCaptureHasTransitionSlideOut = false;
+    static std::vector<ThreadedMirrorConfig> s_cachedSameThreadCaptureConfigs;
     static const std::vector<MirrorConfig> s_emptyMirrors;
     static const std::vector<ImageConfig> s_emptyImages;
     static const std::vector<const WindowOverlayConfig*> s_emptyWindowOverlays;
@@ -2583,8 +2726,8 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
     geo.finalW = request.finalW;
     geo.finalH = request.finalH;
 
-    std::vector<MirrorConfig> eyeZoomSlideOutMirrors;
-    std::vector<MirrorConfig> genericSlideOutMirrors;
+    const std::vector<MirrorConfig>* eyeZoomSlideOutMirrors = &s_emptyMirrors;
+    const std::vector<MirrorConfig>* transitionSlideOutMirrors = &s_emptyMirrors;
     const bool hasMirrorSlideOutWork = !request.isRawWindowedMode &&
                                        ((request.isTransitioningFromEyeZoom && cfg.eyezoom.slideMirrorsIn && !request.skipAnimation) ||
                                         (!request.isTransitioningFromEyeZoom && request.fromSlideMirrorsIn && !request.fromModeId.empty() &&
@@ -2611,42 +2754,64 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
         needModeElements ? s_cachedActiveWindowOverlays : s_emptyWindowOverlays;
 
     if (!request.isRawWindowedMode && request.isTransitioningFromEyeZoom && cfg.eyezoom.slideMirrorsIn && !request.skipAnimation) {
-        PROFILE_SCOPE_CAT("Resolve EyeZoom Slide-Out Mirrors", "Rendering");
-        std::vector<MirrorConfig> eyeZoomMirrors;
-        std::vector<ImageConfig> unusedImages;
-        std::vector<const WindowOverlayConfig*> unusedOverlays;
-        CollectActiveElementsForMode(cfg, "EyeZoom", false, cfgVersion, eyeZoomMirrors, unusedImages, unusedOverlays);
-
-        for (const auto& ezMirror : eyeZoomMirrors) {
-            bool existsInTarget = false;
+        if (s_cachedEyeZoomSlideOutConfigVersion != cfgVersion || s_cachedEyeZoomSlideOutTargetModeId != request.modeId) {
+            PROFILE_SCOPE_CAT("Resolve EyeZoom Slide-Out Mirrors", "Rendering");
+            std::vector<MirrorConfig> eyeZoomMirrors;
+            std::vector<ImageConfig> unusedImages;
+            std::vector<const WindowOverlayConfig*> unusedOverlays;
+            std::unordered_set<std::string> activeMirrorNames;
+            activeMirrorNames.reserve(activeMirrors.size());
             for (const auto& targetMirror : activeMirrors) {
-                if (targetMirror.name == ezMirror.name) {
-                    existsInTarget = true;
-                    break;
+                activeMirrorNames.insert(targetMirror.name);
+            }
+
+            CollectActiveElementsForMode(cfg, "EyeZoom", false, cfgVersion, eyeZoomMirrors, unusedImages, unusedOverlays);
+
+            s_cachedEyeZoomSlideOutMirrors.clear();
+            s_cachedEyeZoomSlideOutMirrors.reserve(eyeZoomMirrors.size());
+            for (const auto& ezMirror : eyeZoomMirrors) {
+                if (activeMirrorNames.find(ezMirror.name) == activeMirrorNames.end()) {
+                    s_cachedEyeZoomSlideOutMirrors.push_back(ezMirror);
                 }
             }
-            if (!existsInTarget) { eyeZoomSlideOutMirrors.push_back(ezMirror); }
+
+            s_cachedEyeZoomSlideOutConfigVersion = cfgVersion;
+            s_cachedEyeZoomSlideOutTargetModeId = request.modeId;
         }
+
+        eyeZoomSlideOutMirrors = &s_cachedEyeZoomSlideOutMirrors;
     }
 
     if (!request.isRawWindowedMode && !request.isTransitioningFromEyeZoom && request.fromSlideMirrorsIn && !request.fromModeId.empty() &&
         request.mirrorSlideProgress < 1.0f && !request.skipAnimation) {
-        PROFILE_SCOPE_CAT("Resolve Transition Slide-Out Mirrors", "Rendering");
-        std::vector<MirrorConfig> fromModeMirrors;
-        std::vector<ImageConfig> unusedImages;
-        std::vector<const WindowOverlayConfig*> unusedOverlays;
-        CollectActiveElementsForMode(cfg, request.fromModeId, false, cfgVersion, fromModeMirrors, unusedImages, unusedOverlays);
-
-        for (const auto& fromMirror : fromModeMirrors) {
-            bool existsInTarget = false;
+        if (s_cachedTransitionSlideOutConfigVersion != cfgVersion || s_cachedTransitionSlideOutFromModeId != request.fromModeId ||
+            s_cachedTransitionSlideOutTargetModeId != request.modeId) {
+            PROFILE_SCOPE_CAT("Resolve Transition Slide-Out Mirrors", "Rendering");
+            std::vector<MirrorConfig> fromModeMirrors;
+            std::vector<ImageConfig> unusedImages;
+            std::vector<const WindowOverlayConfig*> unusedOverlays;
+            std::unordered_set<std::string> activeMirrorNames;
+            activeMirrorNames.reserve(activeMirrors.size());
             for (const auto& targetMirror : activeMirrors) {
-                if (targetMirror.name == fromMirror.name) {
-                    existsInTarget = true;
-                    break;
+                activeMirrorNames.insert(targetMirror.name);
+            }
+
+            CollectActiveElementsForMode(cfg, request.fromModeId, false, cfgVersion, fromModeMirrors, unusedImages, unusedOverlays);
+
+            s_cachedTransitionSlideOutMirrors.clear();
+            s_cachedTransitionSlideOutMirrors.reserve(fromModeMirrors.size());
+            for (const auto& fromMirror : fromModeMirrors) {
+                if (activeMirrorNames.find(fromMirror.name) == activeMirrorNames.end()) {
+                    s_cachedTransitionSlideOutMirrors.push_back(fromMirror);
                 }
             }
-            if (!existsInTarget) { genericSlideOutMirrors.push_back(fromMirror); }
+
+            s_cachedTransitionSlideOutConfigVersion = cfgVersion;
+            s_cachedTransitionSlideOutFromModeId = request.fromModeId;
+            s_cachedTransitionSlideOutTargetModeId = request.modeId;
         }
+
+        transitionSlideOutMirrors = &s_cachedTransitionSlideOutMirrors;
     }
 
     if (!request.isRawWindowedMode && request.showEyeZoom) {
@@ -2664,18 +2829,32 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
     }
 
     if (!request.isRawWindowedMode) {
-        std::vector<MirrorConfig> mirrorsForCapture = activeMirrors;
-        AppendUniqueMirrorsByName(mirrorsForCapture, eyeZoomSlideOutMirrors);
-        AppendUniqueMirrorsByName(mirrorsForCapture, genericSlideOutMirrors);
-
         GLuint sourceTexture = 0;
         int sourceW = 0;
         int sourceH = 0;
-        if (!mirrorsForCapture.empty() &&
+        const bool hasEyeZoomSlideOutMirrors = !eyeZoomSlideOutMirrors->empty();
+        const bool hasTransitionSlideOutMirrors = !transitionSlideOutMirrors->empty();
+        if (s_cachedSameThreadCaptureConfigVersion != cfgVersion || s_cachedSameThreadCaptureModeId != request.modeId ||
+            s_cachedSameThreadCaptureFromModeId != request.fromModeId ||
+            s_cachedSameThreadCaptureHasEyeZoomSlideOut != hasEyeZoomSlideOutMirrors ||
+            s_cachedSameThreadCaptureHasTransitionSlideOut != hasTransitionSlideOutMirrors) {
+            std::vector<MirrorConfig> mirrorsForCapture = activeMirrors;
+            AppendUniqueMirrorsByName(mirrorsForCapture, *eyeZoomSlideOutMirrors);
+            AppendUniqueMirrorsByName(mirrorsForCapture, *transitionSlideOutMirrors);
+            BuildThreadedMirrorConfigs(mirrorsForCapture, s_cachedSameThreadCaptureConfigs);
+
+            s_cachedSameThreadCaptureConfigVersion = cfgVersion;
+            s_cachedSameThreadCaptureModeId = request.modeId;
+            s_cachedSameThreadCaptureFromModeId = request.fromModeId;
+            s_cachedSameThreadCaptureHasEyeZoomSlideOut = hasEyeZoomSlideOutMirrors;
+            s_cachedSameThreadCaptureHasTransitionSlideOut = hasTransitionSlideOutMirrors;
+        }
+
+        if (!s_cachedSameThreadCaptureConfigs.empty() &&
             SelectSameThreadGameTexture(request.gameTextureId, request.gameW, request.gameH, sourceTexture, sourceW, sourceH)) {
             PROFILE_SCOPE_CAT("Capture Mirror Sources", "Rendering");
-            if (RenderMirrorCapturesOnCurrentThread(mirrorsForCapture, sourceTexture, sourceW, sourceH, request.fullW, request.fullH,
-                                                   geo.finalX, geo.finalY, geo.finalW, geo.finalH)) {
+            if (RenderMirrorCapturesOnCurrentThread(s_cachedSameThreadCaptureConfigs, sourceTexture, sourceW, sourceH, request.fullW,
+                                                   request.fullH, geo.finalX, geo.finalY, geo.finalW, geo.finalH)) {
                 PROFILE_SCOPE_CAT("Prepare Overlay GL State", "Rendering");
                 PrepareSameThreadOverlayState(s, request.fullW, request.fullH);
             }
@@ -2692,9 +2871,9 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
                                 request.toSlideMirrorsIn, false, cfg);
         }
 
-        if (!eyeZoomSlideOutMirrors.empty()) {
+        if (!eyeZoomSlideOutMirrors->empty()) {
             PROFILE_SCOPE_CAT("Render EyeZoom Slide-Out Mirrors", "Rendering");
-            RenderMirrorsDirect(eyeZoomSlideOutMirrors, geo, request.fullW, request.fullH, request.overlayOpacity,
+            RenderMirrorsDirect(*eyeZoomSlideOutMirrors, geo, request.fullW, request.fullH, request.overlayOpacity,
                                 request.excludeOnlyOnMyScreen, request.relativeStretching, request.transitionProgress,
                                 request.mirrorSlideProgress, request.fromX, request.fromY, request.fromW, request.fromH,
                                 request.toX, request.toY, request.toW, request.toH, true, request.isTransitioningFromEyeZoom,
@@ -2702,9 +2881,9 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
                                 request.toSlideMirrorsIn, true, cfg);
         }
 
-        if (!genericSlideOutMirrors.empty()) {
+        if (!transitionSlideOutMirrors->empty()) {
             PROFILE_SCOPE_CAT("Render Transition Slide-Out Mirrors", "Rendering");
-            RenderMirrorsDirect(genericSlideOutMirrors, geo, request.fullW, request.fullH, request.overlayOpacity,
+            RenderMirrorsDirect(*transitionSlideOutMirrors, geo, request.fullW, request.fullH, request.overlayOpacity,
                                 request.excludeOnlyOnMyScreen, request.relativeStretching, request.transitionProgress,
                                 request.mirrorSlideProgress, request.fromX, request.fromY, request.fromW, request.fromH,
                                 request.toX, request.toY, request.toW, request.toH, false, false, -1, request.skipAnimation,
@@ -2733,7 +2912,7 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
         RenderWelcomeToast(request.welcomeToastIsFullscreen);
     }
 
-    return !activeMirrors.empty() || !eyeZoomSlideOutMirrors.empty() || !genericSlideOutMirrors.empty() || !activeImages.empty() ||
+    return !activeMirrors.empty() || !eyeZoomSlideOutMirrors->empty() || !transitionSlideOutMirrors->empty() || !activeImages.empty() ||
            !activeWindowOverlays.empty() || request.shouldRenderGui || request.showPerformanceOverlay || request.showProfiler ||
            request.showTextureGrid || request.showEyeZoom || request.showWelcomeToast;
 }
