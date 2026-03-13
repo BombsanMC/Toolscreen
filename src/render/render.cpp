@@ -6071,11 +6071,10 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font)
     if (!hasTriangulation && !showForBoat) return;
 
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
-    if (!font || !font->IsLoaded()) font = ImGui::GetFont();
-
     const float scale  = (nb.overlayScale > 0.01f) ? nb.overlayScale : 1.0f;
     const float fs    = GetNinjabrainFontSize() * scale;
-    const float lineH = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "Ag").y;
+    if (!font || !font->IsLoaded()) font = ImGui::GetFont();
+    const float lineH = fs; 
     const float colGap = nb.colSpacing * scale;
     const int outlineR = nb.outlineWidth;
     const float padX   = (8.0f + (float)outlineR) * scale;
