@@ -306,3 +306,7 @@ void RenderCachedTextureGridLabels();
 void GetAnimatedModePosition(int& outX, int& outY);
 
 
+
+struct NinjabrainOverlayConfig;
+struct ImFont;
+void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font);
