@@ -2683,11 +2683,7 @@ static void RenderWindowOverlaysDirect(const std::vector<const WindowOverlayConf
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-    std::unique_lock<std::mutex> cacheLock(g_windowOverlayCacheMutex, std::try_to_lock);
-    if (!cacheLock.owns_lock()) {
-        glDisable(GL_BLEND);
-        return;
-    }
+    std::lock_guard<std::mutex> cacheLock(g_windowOverlayCacheMutex);
 
     const std::string focusedName = GetFocusedWindowOverlayName();
     glUseProgram(g_imageRenderProgram);
