@@ -3350,8 +3350,8 @@ static GLuint PrepareSameThreadVirtualCameraTexture(GLuint srcTexture, int srcW,
     return g_sameThreadVirtualCameraScaleTexture;
 }
 
-static void SubmitSameThreadVirtualCameraFrame(GLuint srcTexture, int srcW, int srcH) {
-    if (!IsVirtualCameraActive() || !ShouldCaptureVirtualCameraFrame()) { return; }
+static void SubmitSameThreadVirtualCameraFrame(GLuint srcTexture, int srcW, int srcH, bool captureVirtualCameraFrame) {
+    if (!captureVirtualCameraFrame || !IsVirtualCameraActive()) { return; }
 
     uint32_t vcWidth = 0;
     uint32_t vcHeight = 0;
@@ -3502,7 +3502,8 @@ static void RenderSameThreadObsBackgroundConfig(const BackgroundConfig& bg, GLui
     DrawFullscreenSolidColor(bg.color);
 }
 
-bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH, bool skipAnimation) {
+bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH,
+                              bool skipAnimation, bool captureVirtualCameraFrame) {
     if (!modeToRender) { return false; }
 
     int fullW = 0;
@@ -3739,7 +3740,7 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
 
     {
         PROFILE_SCOPE_CAT("Capture Virtual Camera Frame", "OBS");
-        SubmitSameThreadVirtualCameraFrame(g_sameThreadObsComposeTextures[composeIndex], fullW, fullH);
+        SubmitSameThreadVirtualCameraFrame(g_sameThreadObsComposeTextures[composeIndex], fullW, fullH, captureVirtualCameraFrame);
     }
 
     return true;

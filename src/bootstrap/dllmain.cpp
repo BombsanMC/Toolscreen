@@ -1940,7 +1940,7 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
         const bool shouldRenderVirtualCameraFrame = IsVirtualCameraActive() && ShouldCaptureVirtualCameraFrame();
         if (needsDualRendering && (shouldRenderObsHookFrame || shouldRenderVirtualCameraFrame)) {
             PROFILE_SCOPE_CAT("Capture Same-Thread OBS Frame", "OBS");
-            RenderSameThreadObsFrame(&modeToRenderCopy, s, current_gameW, current_gameH, false);
+            RenderSameThreadObsFrame(&modeToRenderCopy, s, current_gameW, current_gameH, false, shouldRenderVirtualCameraFrame);
         }
 
         {
