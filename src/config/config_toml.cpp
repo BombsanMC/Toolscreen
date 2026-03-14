@@ -1148,8 +1148,7 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("showTextureGrid", cfg.showTextureGrid);
     out.insert("delayRenderingUntilFinished", cfg.delayRenderingUntilFinished);
     out.insert("delayRenderingUntilBlitted", cfg.delayRenderingUntilBlitted);
-    out.insert("sameThreadRenderPipeline", cfg.sameThreadRenderPipeline);
-    out.insert("sameThreadDedicatedObsTexture", cfg.sameThreadDedicatedObsTexture);
+    out.insert("useSharedContext", cfg.useSharedContext);
     out.insert("virtualCameraEnabled", cfg.virtualCameraEnabled);
 
     out.insert("logModeSwitch", cfg.logModeSwitch);
@@ -1174,9 +1173,12 @@ void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.delayRenderingUntilFinished =
         GetOr(tbl, "delayRenderingUntilFinished", ConfigDefaults::DEBUG_GLOBAL_DELAY_RENDERING_UNTIL_FINISHED);
     cfg.delayRenderingUntilBlitted = GetOr(tbl, "delayRenderingUntilBlitted", ConfigDefaults::DEBUG_GLOBAL_DELAY_RENDERING_UNTIL_BLITTED);
-    cfg.sameThreadRenderPipeline = GetOr(tbl, "sameThreadRenderPipeline", ConfigDefaults::DEBUG_GLOBAL_SAME_THREAD_RENDER_PIPELINE);
-    cfg.sameThreadDedicatedObsTexture =
-        GetOr(tbl, "sameThreadDedicatedObsTexture", ConfigDefaults::DEBUG_GLOBAL_SAME_THREAD_DEDICATED_OBS_TEXTURE);
+    if (tbl.contains("useSharedContext")) {
+        cfg.SetUseSharedContext(GetOr(tbl, "useSharedContext", ConfigDefaults::DEBUG_GLOBAL_USE_SHARED_CONTEXT));
+    } else {
+        const bool sameThreadRenderPipeline = GetOr(tbl, "sameThreadRenderPipeline", !ConfigDefaults::DEBUG_GLOBAL_USE_SHARED_CONTEXT);
+        cfg.SetUseSharedContext(!sameThreadRenderPipeline);
+    }
     cfg.virtualCameraEnabled = GetOr(tbl, "virtualCameraEnabled", false);
 
     cfg.logModeSwitch = GetOr(tbl, "logModeSwitch", ConfigDefaults::DEBUG_GLOBAL_LOG_MODE_SWITCH);

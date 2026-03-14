@@ -156,24 +156,16 @@ if (ImGui::BeginTabItem(trc("tabs.settings"))) {
         if (ImGui::Checkbox(trc("settings.delay_rendering_until_blitted"), &g_config.debug.delayRenderingUntilBlitted)) { g_configIsDirty = true; }
         ImGui::SameLine();
         HelpMarker(trc("settings.tooltip.delay_rendering_until_blitted"));
-        if (ImGui::Checkbox(trc("settings.same_thread_render_pipeline"), &g_config.debug.sameThreadRenderPipeline)) {
+        bool useSharedContext = g_config.debug.useSharedContext;
+        if (ImGui::Checkbox(trc("settings.use_shared_context"), &useSharedContext)) {
+            g_config.debug.SetUseSharedContext(useSharedContext);
             g_sameThreadMirrorPipelineActive.store(g_config.debug.sameThreadRenderPipeline, std::memory_order_release);
-            if (g_config.debug.sameThreadRenderPipeline) {
-                StopMirrorCaptureThread();
-                StopRenderThread();
-            }
+            StopMirrorCaptureThread();
+            StopRenderThread();
             g_configIsDirty = true;
         }
         ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.same_thread_render_pipeline"));
-        ImGui::BeginDisabled(!g_config.debug.sameThreadRenderPipeline);
-        if (ImGui::Checkbox(trc("settings.same_thread_dedicated_obs_texture"), &g_config.debug.sameThreadDedicatedObsTexture)) {
-            if (!g_config.debug.sameThreadDedicatedObsTexture) { StopRenderThread(); }
-            g_configIsDirty = true;
-        }
-        ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.same_thread_dedicated_obs_texture"));
-        ImGui::EndDisabled();
+        HelpMarker(trc("settings.tooltip.use_shared_context"));
         ImGui::Spacing();
         if (ImGui::Checkbox(trc("settings.show_performance_overlay"), &g_config.debug.showPerformanceOverlay)) { g_configIsDirty = true; }
         if (ImGui::Checkbox(trc("settings.show_profiler"), &g_config.debug.showProfiler)) { g_configIsDirty = true; }
