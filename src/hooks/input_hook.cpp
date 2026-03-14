@@ -406,25 +406,35 @@ InputHandlerResult HandleConfigLoadFailure(HWND hWnd, UINT uMsg, WPARAM wParam, 
     return { false, 0 };
 }
 
-InputHandlerResult HandleSetCursor(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, const std::string& gameState) {
+InputHandlerResult HandleSetCursor(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg != WM_SETCURSOR) { return { false, 0 }; }
     PROFILE_SCOPE("HandleSetCursor");
 
-    if (g_showGui.load() && s_forcedShowCursor && g_gameVersion >= GameVersion(1, 13, 0)) {
+    const bool showGui = g_showGui.load(std::memory_order_relaxed);
+    const bool useCachedVisibility = g_gameVersion >= GameVersion(1, 13, 0);
+
+    if (showGui && s_forcedShowCursor && useCachedVisibility) {
         EnsureSystemCursorVisible();
         static HCURSOR s_arrowCursor = LoadCursorW(NULL, IDC_ARROW);
-        SetCursor(s_arrowCursor);
+        SetCursorDirect(s_arrowCursor);
         return { true, true };
     }
 
-    if (!IsCursorVisible() && !g_showGui.load()) {
-        SetCursor(NULL);
+    const bool cursorVisible = useCachedVisibility ? QuerySystemCursorVisibleCached() : IsCursorVisible();
+    if (!cursorVisible && !showGui) {
+        SetCursorDirect(NULL);
         return { true, true };
     }
 
+    auto cfgSnap = GetConfigSnapshot();
+    if (!cfgSnap || !cfgSnap->cursors.enabled) {
+        return { false, 0 };
+    }
+
+    const std::string gameState = g_gameStateBuffers[g_currentGameStateIndex.load(std::memory_order_acquire)];
     const CursorTextures::CursorData* cursorData = CursorTextures::GetSelectedCursor(gameState, 64);
     if (cursorData && cursorData->hCursor) {
-        SetCursor(cursorData->hCursor);
+        SetCursorDirect(cursorData->hCursor);
         return { true, true };
     }
     return { false, 0 };
@@ -550,11 +560,11 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             } else {
                 ClipCursor(NULL);
             }
-            SetCursor(NULL);
+            SetCursorDirect(NULL);
 
             if (g_gameVersion < GameVersion(1, 13, 0)) {
                 HCURSOR airCursor = g_specialCursorHandle.load();
-                if (airCursor) SetCursor(airCursor);
+                if (airCursor) SetCursorDirect(airCursor);
             }
         }
         g_currentlyEditingMirror = "";
@@ -586,7 +596,7 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             s_forcedShowCursor = true;
             EnsureSystemCursorVisible();
             static HCURSOR s_arrowCursor = LoadCursorW(NULL, IDC_ARROW);
-            SetCursor(s_arrowCursor);
+            SetCursorDirect(s_arrowCursor);
         }
 
         g_configurePromptDismissedThisSession.store(true, std::memory_order_release);
@@ -2452,8 +2462,7 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     if (result.consumed) return result.result;
 
     if (uMsg == WM_SETCURSOR) {
-        const std::string localGameState = g_gameStateBuffers[g_currentGameStateIndex.load(std::memory_order_acquire)];
-        result = HandleSetCursor(hWnd, uMsg, wParam, lParam, localGameState);
+        result = HandleSetCursor(hWnd, uMsg, wParam, lParam);
         if (result.consumed) return result.result;
     }
 
