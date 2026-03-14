@@ -1696,6 +1696,28 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
     }
 }
 
+void ProcessPendingDecodedImages() {
+    std::vector<DecodedImageData> pendingImages;
+    {
+        std::lock_guard<std::mutex> lock(g_decodedImagesMutex);
+        if (g_decodedImagesQueue.empty()) {
+            return;
+        }
+        pendingImages.swap(g_decodedImagesQueue);
+    }
+
+    PROFILE_SCOPE_CAT("Process Decoded Images", "GPU Operations");
+    for (auto& decodedImg : pendingImages) {
+        if (!decodedImg.data) {
+            continue;
+        }
+
+        UploadDecodedImageToGPU(decodedImg);
+        stbi_image_free(decodedImg.data);
+        decodedImg.data = nullptr;
+    }
+}
+
 void InitializeGPUResources() {
     PROFILE_SCOPE_CAT("GPU Resource Initialization", "GPU Operations");
 
@@ -2693,6 +2715,7 @@ static void RenderWindowOverlaysDirect(const std::vector<const WindowOverlayConf
         WindowOverlayRenderData* renderData = entry.backBuffer.get();
         if (renderData && renderData->pixelData && renderData->width > 0 && renderData->height > 0) {
             if (renderData != entry.lastUploadedRenderData) {
+                PixelStoreStateGuard pixelStoreGuard;
                 if (entry.glTextureId == 0) {
                     glGenTextures(1, &entry.glTextureId);
                     BindTextureDirect(GL_TEXTURE_2D, entry.glTextureId);
@@ -2702,6 +2725,10 @@ static void RenderWindowOverlaysDirect(const std::vector<const WindowOverlayConf
                 }
 
                 BindTextureDirect(GL_TEXTURE_2D, entry.glTextureId);
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+                glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
                 if (entry.glTextureWidth != renderData->width || entry.glTextureHeight != renderData->height) {
                     entry.glTextureWidth = renderData->width;
                     entry.glTextureHeight = renderData->height;

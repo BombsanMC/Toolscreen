@@ -1895,13 +1895,16 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
             }
         }
 
-        // Note: Image processing is now done in render_thread
-
         if (g_pendingImageLoad) {
             PROFILE_SCOPE_CAT("Pending Image Load", "SwapBuffers");
             LoadAllImages();
             g_allImagesLoaded = true;
             g_pendingImageLoad = false;
+        }
+
+        {
+            PROFILE_SCOPE_CAT("Decoded Image Uploads", "SwapBuffers");
+            ProcessPendingDecodedImages();
         }
 
         int current_gameW = modeToRenderCopy.width;

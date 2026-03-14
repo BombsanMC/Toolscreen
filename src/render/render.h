@@ -225,6 +225,7 @@ void RenderGameBorder(int x, int y, int w, int h, int borderWidth, int radius, c
 
 void DiscardAllGPUImages();
 void CleanupGPUResources();
+void ProcessPendingDecodedImages();
 void UploadDecodedImageToGPU(const DecodedImageData& imgData);
 void UploadDecodedImageToGPU_Internal(const DecodedImageData& imgData);
 void InitializeGPUResources();
