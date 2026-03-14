@@ -151,6 +151,35 @@ static bool IsModifierVk(DWORD vk) {
            vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN;
 }
 
+static bool IsShiftVk(DWORD vk) {
+    return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
+}
+
+static bool IsShiftDownForIncomingEvent(DWORD incomingVk, DWORD incomingRawVk, bool isKeyDown) {
+    if (IsShiftVk(incomingVk) || incomingRawVk == VK_SHIFT) {
+        return isKeyDown;
+    }
+    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
+static bool HasShiftLayerOutputVk(const KeyRebind& rebind) {
+    return rebind.shiftLayerEnabled && rebind.shiftLayerOutputVK != 0;
+}
+
+static bool IsShiftLayerActiveForRebind(const KeyRebind& rebind, DWORD incomingVk, DWORD incomingRawVk, bool isKeyDown) {
+    return HasShiftLayerOutputVk(rebind) && IsShiftDownForIncomingEvent(incomingVk, incomingRawVk, isKeyDown);
+}
+
+static DWORD ResolveEffectiveCustomOutputVk(const KeyRebind& rebind, bool shiftLayerActive) {
+    if (shiftLayerActive && HasShiftLayerOutputVk(rebind)) {
+        return rebind.shiftLayerOutputVK;
+    }
+    if (rebind.useCustomOutput && rebind.customOutputVK != 0) {
+        return rebind.customOutputVK;
+    }
+    return 0;
+}
+
 static bool IsModifierScanCode(UINT scanCodeWithFlags) {
     const UINT scanLow = (scanCodeWithFlags & 0xFF);
     if (scanLow == 0) return false;
@@ -1163,8 +1192,9 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         for (const auto& rebind : cfg.keyRebinds.rebinds) {
             if (rebind.enabled && rebind.fromKey != 0 && rebind.toKey != 0 &&
                 (vkCode == rebind.fromKey || rawVkCode == rebind.fromKey)) {
-                rebindTargetVk = (rebind.useCustomOutput && rebind.customOutputVK != 0)
-                    ? rebind.customOutputVK : rebind.toKey;
+                const bool shiftLayerActive = IsShiftLayerActiveForRebind(rebind, vkCode, rawVkCode, isKeyDown);
+                const DWORD effectiveCustomOutputVk = ResolveEffectiveCustomOutputVk(rebind, shiftLayerActive);
+                rebindTargetVk = (effectiveCustomOutputVk != 0) ? effectiveCustomOutputVk : rebind.toKey;
                 break;
             }
         }
@@ -1759,6 +1789,33 @@ static bool TryTranslateVkToCharWithKeyboardState(DWORD vkCode, const BYTE keybo
     return false;
 }
 
+static bool ResolvePreferredOutputShiftState(const KeyRebind& rebind, bool shiftLayerActive, bool fallbackShifted) {
+    if (shiftLayerActive && HasShiftLayerOutputVk(rebind)) {
+        return rebind.shiftLayerOutputShifted;
+    }
+    return fallbackShifted;
+}
+
+static void ApplyPreferredOutputShiftState(const KeyRebind& rebind, bool shiftLayerActive, BYTE keyboardState[256]) {
+    if (!keyboardState) return;
+    if (!shiftLayerActive || !HasShiftLayerOutputVk(rebind)) return;
+
+    const BYTE shiftState = rebind.shiftLayerOutputShifted ? 0x80 : 0;
+    keyboardState[VK_SHIFT] = shiftState;
+    keyboardState[VK_LSHIFT] = shiftState;
+    keyboardState[VK_RSHIFT] = shiftState;
+}
+
+static bool TryTranslateVkToCharPreferShiftState(DWORD vkCode, bool preferShifted, WCHAR& outChar) {
+    if (TryTranslateVkToChar(vkCode, preferShifted, outChar) && outChar != 0) {
+        return true;
+    }
+    if (TryTranslateVkToChar(vkCode, !preferShifted, outChar) && outChar != 0) {
+        return true;
+    }
+    return false;
+}
+
 static bool IsValidUnicodeScalar(uint32_t cp) {
     if (cp == 0) return false;
     if (cp > 0x10FFFFu) return false;
@@ -1910,6 +1967,7 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
         const auto& rebind = rebindCfg->keyRebinds.rebinds[i];
 
         if (rebind.enabled && rebind.fromKey != 0 && rebind.toKey != 0 && matchesFromKey(vkCode, rawVkCode, rebind.fromKey)) {
+            const bool shiftLayerActive = IsShiftLayerActiveForRebind(rebind, vkCode, rawVkCode, isKeyDown);
             auto isNonCharSourceVk = [&](DWORD vk) {
                 if (IsModifierVk(vk)) return true;
                 if (vk == VK_LWIN || vk == VK_RWIN) return true;
@@ -1944,8 +2002,11 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
                 NormalizeModifierVkFromConfig(rebind.toKey, (rebind.useCustomOutput ? rebind.customOutputScanCode : 0));
 
             const DWORD defaultTextVK = NormalizeModifierVkFromConfig(rebind.fromKey);
+            const DWORD effectiveCustomOutputVk = ResolveEffectiveCustomOutputVk(rebind, shiftLayerActive);
             const DWORD textVK = NormalizeModifierVkFromConfig(
-                (rebind.useCustomOutput && rebind.customOutputVK != 0) ? rebind.customOutputVK : defaultTextVK);
+                (effectiveCustomOutputVk != 0) ? effectiveCustomOutputVk : defaultTextVK);
+            const bool preferShiftedText = ResolvePreferredOutputShiftState(
+                rebind, shiftLayerActive, IsShiftDownForIncomingEvent(vkCode, rawVkCode, isKeyDown));
 
             UINT outputScanCode = GetScanCodeWithExtendedFlag(triggerVK);
             if (rebind.useCustomOutput && rebind.customOutputScanCode != 0) {
@@ -2013,7 +2074,9 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 
                 if (isKeyDown && fromKeyIsNonCharMouse) {
                     const uint32_t configuredUnicodeText =
-                        (rebind.useCustomOutput && rebind.customOutputUnicode != 0) ? (uint32_t)rebind.customOutputUnicode : 0u;
+                        (!shiftLayerActive && rebind.useCustomOutput && rebind.customOutputUnicode != 0)
+                            ? (uint32_t)rebind.customOutputUnicode
+                            : 0u;
 
                     const UINT textScanCode = GetScanCodeWithExtendedFlag(textVK);
                     LPARAM charLParam = BuildKeyboardMessageLParam(textScanCode, true, false, 1, false, false);
@@ -2045,13 +2108,13 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
                                     ks[VK_RMENU] = 0;
                                 }
 
+                                ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
+
                                 (void)TryTranslateVkToCharWithKeyboardState(textVK, ks, outChar);
                             }
 
                             if (outChar == 0) {
-                                if (!TryTranslateVkToChar(textVK, false, outChar) || outChar == 0) {
-                                    (void)TryTranslateVkToChar(textVK, true, outChar);
-                                }
+                                (void)TryTranslateVkToCharPreferShiftState(textVK, preferShiftedText, outChar);
                             }
                         }
 
@@ -2086,7 +2149,9 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 
             auto emitTypedChar = [&](LPARAM charLParam) {
                 const uint32_t configuredUnicodeText =
-                    (rebind.useCustomOutput && rebind.customOutputUnicode != 0) ? (uint32_t)rebind.customOutputUnicode : 0u;
+                    (!shiftLayerActive && rebind.useCustomOutput && rebind.customOutputUnicode != 0)
+                        ? (uint32_t)rebind.customOutputUnicode
+                        : 0u;
 
                 if (configuredUnicodeText != 0) {
                     const UINT charMsg = isSystemKeyMsg ? WM_SYSCHAR : WM_CHAR;
@@ -2123,13 +2188,13 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
                             ks[VK_RMENU] = 0;
                         }
 
+                        ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
+
                         (void)TryTranslateVkToCharWithKeyboardState(textVK, ks, outChar);
                     }
 
                     if (outChar == 0) {
-                        if (!TryTranslateVkToChar(textVK, false, outChar) || outChar == 0) {
-                            (void)TryTranslateVkToChar(textVK, true, outChar);
-                        }
+                        (void)TryTranslateVkToCharPreferShiftState(textVK, preferShiftedText, outChar);
                     }
                 }
 
@@ -2245,12 +2310,19 @@ InputHandlerResult HandleCharRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         }
 
         if (matched) {
+            const bool shiftLayerActive = HasShiftLayerOutputVk(rebind) && matchedShifted;
+            const bool preferShiftedText = ResolvePreferredOutputShiftState(rebind, shiftLayerActive, matchedShifted);
+
             if (rebind.useCustomOutput && rebind.customOutputUnicode != 0) {
-                LRESULT r = SendUnicodeScalarAsCharMessage(hWnd, uMsg, (uint32_t)rebind.customOutputUnicode, lParam);
-                return { true, r };
+                if (!shiftLayerActive) {
+                    LRESULT r = SendUnicodeScalarAsCharMessage(hWnd, uMsg, (uint32_t)rebind.customOutputUnicode, lParam);
+                    return { true, r };
+                }
             }
 
-            if (!(rebind.useCustomOutput && rebind.customOutputVK != 0)) {
+            DWORD outputVK = ResolveEffectiveCustomOutputVk(rebind, shiftLayerActive);
+
+            if (outputVK == 0) {
                 if (RebindCannotType(rebind)) {
                     Log("[REBIND WM_CHAR] Consuming char code " + std::to_string(static_cast<unsigned int>(inputChar)) +
                         " (trigger cannot type)");
@@ -2259,7 +2331,6 @@ InputHandlerResult HandleCharRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 return { false, 0 };
             }
 
-            DWORD outputVK = rebind.customOutputVK;
             outputVK = NormalizeModifierVkFromConfig(outputVK);
 
             WCHAR outputChar = 0;
@@ -2270,9 +2341,7 @@ InputHandlerResult HandleCharRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             } else if (outputVK == VK_BACK) {
                 outputChar = L'\b';
             } else {
-                if (!TryTranslateVkToChar(outputVK, matchedShifted, outputChar) || outputChar == 0) {
-                    (void)TryTranslateVkToChar(outputVK, false, outputChar);
-                }
+                (void)TryTranslateVkToCharPreferShiftState(outputVK, preferShiftedText, outputChar);
             }
 
             if (outputChar == 0) {

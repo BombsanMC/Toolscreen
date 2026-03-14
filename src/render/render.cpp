@@ -2976,6 +2976,8 @@ static void RenderSameThreadImGui(const SameThreadOverlayState& request) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplWin32_NewFrame();
     SyncImGuiDisplayMetrics(hwnd);
+    ApplyDynamicGuiFontRefresh();
+    ApplyPendingKeyboardLayoutFontRefresh();
 
     // Feed queued input from the window thread into the main-thread ImGui context.
     ImGuiInputQueue_DrainToImGui();

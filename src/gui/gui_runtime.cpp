@@ -2,6 +2,7 @@
 
 #include "common/profiler.h"
 #include "common/utils.h"
+#include "imgui_cache.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_win32.h"
 #include "platform/resource.h"
@@ -15,6 +16,45 @@
 #include <chrono>
 
 static std::recursive_mutex s_imguiContextMutex;
+
+namespace {
+
+struct KeyboardLayoutFontRefreshRequest {
+    bool pending = false;
+    bool force = false;
+    ImVec2 windowSize = ImVec2(0.0f, 0.0f);
+    float keyHeight = 0.0f;
+    float keyboardScale = 1.0f;
+};
+
+struct KeyboardLayoutFontRefreshState {
+    bool valid = false;
+    std::string fontPath;
+    ImVec2 windowSize = ImVec2(0.0f, 0.0f);
+    float guiScaleFactor = 1.0f;
+    float keyHeight = 0.0f;
+    float keyboardScale = 1.0f;
+    float primarySize = 0.0f;
+    float secondarySize = 0.0f;
+};
+
+struct MainGuiFontRefreshState {
+    bool valid = false;
+    float guiScaleFactor = 1.0f;
+    std::string fontPath;
+};
+
+struct MainGuiFontRefreshRequest {
+    bool pending = false;
+    bool force = false;
+};
+
+KeyboardLayoutFontRefreshRequest s_pendingKeyboardLayoutFontRefresh;
+KeyboardLayoutFontRefreshState s_keyboardLayoutFontRefreshState;
+MainGuiFontRefreshState s_mainGuiFontRefreshState;
+MainGuiFontRefreshRequest s_pendingMainGuiFontRefresh;
+
+}
 
 std::recursive_mutex& GetImGuiContextMutex() { return s_imguiContextMutex; }
 
@@ -51,35 +91,56 @@ static ImFont* AddKeyboardFontWithFallback(ImFontAtlas* atlas, const std::string
     return nullptr;
 }
 
-static void ConfigureImGuiFontsAndStyle(float scaleFactor) {
+static void RebuildImGuiFontAtlas(float scaleFactor, float keyboardPrimarySize, float keyboardSecondarySize) {
     ImGuiIO& io = ImGui::GetIO();
 
     const float baseFontSize = 16.0f * scaleFactor;
     const std::string usePath = ResolveGuiFontPath(baseFontSize);
+
+    io.Fonts->Clear();
 
     ImFont* baseFont = AddFontWithFallback(io.Fonts, usePath, baseFontSize);
     if (!baseFont) {
         Log("GUI: Failed to load configured font, using ImGui default font");
         baseFont = io.Fonts->AddFontDefault();
     }
+    io.FontDefault = baseFont;
 
     ImFontConfig keyFontCfg{};
     keyFontCfg.OversampleH = 4;
     keyFontCfg.OversampleV = 2;
     keyFontCfg.PixelSnapH = true;
 
-    g_keyboardLayoutPrimaryFont = AddKeyboardFontWithFallback(io.Fonts, usePath, baseFontSize * 2.80f, keyFontCfg);
-    g_keyboardLayoutSecondaryFont = AddKeyboardFontWithFallback(io.Fonts, usePath, baseFontSize * 2.00f, keyFontCfg);
+    const float primarySize = (keyboardPrimarySize > 0.0f) ? keyboardPrimarySize : (baseFontSize * 2.80f);
+    const float secondarySize = (keyboardSecondarySize > 0.0f) ? keyboardSecondarySize : (baseFontSize * 2.00f);
+
+    g_keyboardLayoutPrimaryFont = AddKeyboardFontWithFallback(io.Fonts, usePath, primarySize, keyFontCfg);
+    g_keyboardLayoutSecondaryFont = AddKeyboardFontWithFallback(io.Fonts, usePath, secondarySize, keyFontCfg);
 
     if (!g_keyboardLayoutPrimaryFont) g_keyboardLayoutPrimaryFont = baseFont;
     if (!g_keyboardLayoutSecondaryFont) g_keyboardLayoutSecondaryFont = baseFont;
 
-    ImGui::StyleColorsDark();
+    InitializeOverlayTextFont(usePath, 16.0f, scaleFactor);
+    io.Fonts->Build();
+
+    if (io.BackendRendererUserData != nullptr) {
+        ImGui_ImplOpenGL3_DestroyDeviceObjects();
+        ImGui_ImplOpenGL3_CreateDeviceObjects();
+    }
+}
+
+static void ConfigureImGuiFontsAndStyle(float scaleFactor) {
+    RebuildImGuiFontAtlas(scaleFactor, 0.0f, 0.0f);
+
+    ImGuiStyle defaultStyle;
+    ImGui::GetStyle() = defaultStyle;
     LoadTheme();
     ApplyAppearanceConfig();
     ImGui::GetStyle().ScaleAllSizes(scaleFactor);
 
-    InitializeOverlayTextFont(usePath, 16.0f, scaleFactor);
+    s_mainGuiFontRefreshState.valid = true;
+    s_mainGuiFontRefreshState.guiScaleFactor = scaleFactor;
+    s_mainGuiFontRefreshState.fontPath = ResolveGuiFontPath(16.0f * scaleFactor);
 }
 
 static ImGuiContext* s_mainThreadImGuiContext = nullptr;
@@ -100,6 +161,93 @@ float ComputeGuiScaleFactorFromCachedWindowSize() {
     return scaleFactor;
 }
 
+void RequestDynamicGuiFontRefresh(bool forceRefresh) {
+    std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
+    s_pendingMainGuiFontRefresh.pending = true;
+    s_pendingMainGuiFontRefresh.force = s_pendingMainGuiFontRefresh.force || forceRefresh;
+}
+
+void ApplyDynamicGuiFontRefresh() {
+    std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
+    if (ImGui::GetCurrentContext() == nullptr) { return; }
+
+    const float guiScaleFactor = ComputeGuiScaleFactorFromCachedWindowSize();
+    const std::string fontPath = ResolveGuiFontPath(16.0f * guiScaleFactor);
+    const bool hasPendingRequest = s_pendingMainGuiFontRefresh.pending;
+    const bool scaleChanged = !s_mainGuiFontRefreshState.valid || fabsf(guiScaleFactor - s_mainGuiFontRefreshState.guiScaleFactor) > 0.001f;
+    const bool fontPathChanged = !s_mainGuiFontRefreshState.valid || fontPath != s_mainGuiFontRefreshState.fontPath;
+    const bool mustRefresh = s_pendingMainGuiFontRefresh.force || scaleChanged || fontPathChanged;
+
+    s_pendingMainGuiFontRefresh.pending = false;
+    s_pendingMainGuiFontRefresh.force = false;
+    if (!hasPendingRequest && !mustRefresh) { return; }
+    if (!mustRefresh) { return; }
+
+    ConfigureImGuiFontsAndStyle(guiScaleFactor);
+    if (s_keyboardLayoutFontRefreshState.valid) {
+        s_pendingKeyboardLayoutFontRefresh.pending = true;
+        s_pendingKeyboardLayoutFontRefresh.force = true;
+        s_pendingKeyboardLayoutFontRefresh.windowSize = s_keyboardLayoutFontRefreshState.windowSize;
+        s_pendingKeyboardLayoutFontRefresh.keyHeight = s_keyboardLayoutFontRefreshState.keyHeight;
+        s_pendingKeyboardLayoutFontRefresh.keyboardScale = s_keyboardLayoutFontRefreshState.keyboardScale;
+    }
+    InvalidateImGuiCache();
+}
+
+void RequestKeyboardLayoutFontRefresh(const ImVec2& windowSize, float keyHeight, float keyboardScale, bool forceRefresh) {
+    std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
+    if (windowSize.x <= 0.0f || windowSize.y <= 0.0f || keyHeight <= 0.0f) { return; }
+
+    s_pendingKeyboardLayoutFontRefresh.pending = true;
+    s_pendingKeyboardLayoutFontRefresh.force = s_pendingKeyboardLayoutFontRefresh.force || forceRefresh;
+    s_pendingKeyboardLayoutFontRefresh.windowSize = windowSize;
+    s_pendingKeyboardLayoutFontRefresh.keyHeight = keyHeight;
+    s_pendingKeyboardLayoutFontRefresh.keyboardScale = keyboardScale;
+}
+
+void ApplyPendingKeyboardLayoutFontRefresh() {
+    std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
+    if (!s_pendingKeyboardLayoutFontRefresh.pending || ImGui::GetCurrentContext() == nullptr) { return; }
+
+    const KeyboardLayoutFontRefreshRequest request = s_pendingKeyboardLayoutFontRefresh;
+    s_pendingKeyboardLayoutFontRefresh.pending = false;
+    s_pendingKeyboardLayoutFontRefresh.force = false;
+
+    const float guiScaleFactor = ComputeGuiScaleFactorFromCachedWindowSize();
+    const float baseFontSize = 16.0f * guiScaleFactor;
+    const std::string fontPath = ResolveGuiFontPath(baseFontSize);
+
+    const float widthScale = request.windowSize.x / 1180.0f;
+    const float heightScale = request.windowSize.y / 720.0f;
+    const float windowFactor = std::clamp((std::min)(widthScale, heightScale), 0.85f, 1.08f);
+
+    float desiredPrimary = roundf(request.keyHeight * (0.50f + 0.02f * request.keyboardScale) * windowFactor);
+    float desiredSecondary = roundf(request.keyHeight * (0.34f + 0.02f * request.keyboardScale) * windowFactor);
+
+    desiredPrimary = std::clamp(desiredPrimary, baseFontSize * 1.00f, baseFontSize * 2.05f);
+    desiredSecondary = std::clamp(desiredSecondary, baseFontSize * 0.82f, (std::max)(baseFontSize * 0.82f, desiredPrimary - 2.0f));
+
+    const bool settingsChanged = !s_keyboardLayoutFontRefreshState.valid || request.force ||
+        fabsf(desiredPrimary - s_keyboardLayoutFontRefreshState.primarySize) > 0.5f ||
+        fabsf(desiredSecondary - s_keyboardLayoutFontRefreshState.secondarySize) > 0.5f ||
+        fabsf(guiScaleFactor - s_keyboardLayoutFontRefreshState.guiScaleFactor) > 0.001f ||
+        fontPath != s_keyboardLayoutFontRefreshState.fontPath;
+    if (!settingsChanged) { return; }
+
+    RebuildImGuiFontAtlas(guiScaleFactor, desiredPrimary, desiredSecondary);
+
+    s_keyboardLayoutFontRefreshState.valid = true;
+    s_keyboardLayoutFontRefreshState.fontPath = fontPath;
+    s_keyboardLayoutFontRefreshState.windowSize = request.windowSize;
+    s_keyboardLayoutFontRefreshState.guiScaleFactor = guiScaleFactor;
+    s_keyboardLayoutFontRefreshState.keyHeight = request.keyHeight;
+    s_keyboardLayoutFontRefreshState.keyboardScale = request.keyboardScale;
+    s_keyboardLayoutFontRefreshState.primarySize = desiredPrimary;
+    s_keyboardLayoutFontRefreshState.secondarySize = desiredSecondary;
+
+    InvalidateImGuiCache();
+}
+
 void HandleImGuiContextReset() {
     std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
     if (s_mainThreadImGuiContext) {
@@ -108,6 +256,10 @@ void HandleImGuiContextReset() {
         ClearSupporterTierTextureCache();
         g_keyboardLayoutPrimaryFont = nullptr;
         g_keyboardLayoutSecondaryFont = nullptr;
+        s_pendingMainGuiFontRefresh = {};
+        s_pendingKeyboardLayoutFontRefresh = {};
+        s_keyboardLayoutFontRefreshState = {};
+        s_mainGuiFontRefreshState = {};
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext(s_mainThreadImGuiContext);

@@ -1392,6 +1392,9 @@ void KeyRebindToToml(const KeyRebind& cfg, toml::table& out) {
     out.insert("customOutputVK", static_cast<int64_t>(cfg.customOutputVK));
     out.insert("customOutputUnicode", static_cast<int64_t>(cfg.customOutputUnicode));
     out.insert("customOutputScanCode", static_cast<int64_t>(cfg.customOutputScanCode));
+    out.insert("shiftLayerEnabled", cfg.shiftLayerEnabled);
+    out.insert("shiftLayerOutputVK", static_cast<int64_t>(cfg.shiftLayerOutputVK));
+    out.insert("shiftLayerOutputShifted", cfg.shiftLayerOutputShifted);
 }
 
 static bool TryParseUnicodeCodepointString(const std::string& in, uint32_t& outCp) {
@@ -1474,6 +1477,11 @@ void KeyRebindFromToml(const toml::table& tbl, KeyRebind& cfg) {
     }
     cfg.customOutputScanCode =
         static_cast<DWORD>(GetOr<int64_t>(tbl, "customOutputScanCode", ConfigDefaults::KEY_REBIND_CUSTOM_OUTPUT_SCANCODE));
+    cfg.shiftLayerEnabled = GetOr(tbl, "shiftLayerEnabled", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_ENABLED);
+    cfg.shiftLayerOutputVK =
+        static_cast<DWORD>(GetOr<int64_t>(tbl, "shiftLayerOutputVK", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_VK));
+    cfg.shiftLayerOutputShifted =
+        GetOr(tbl, "shiftLayerOutputShifted", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_SHIFTED);
 }
 
 void KeyRebindsConfigToToml(const KeyRebindsConfig& cfg, toml::table& out) {

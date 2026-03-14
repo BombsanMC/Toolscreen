@@ -59,6 +59,10 @@ std::vector<DWORD> ParseHotkeyString(const std::string& hotkeyStr);
 void RegisterBindingInputEvent(UINT uMsg, WPARAM wParam, LPARAM lParam);
 uint64_t GetLatestBindingInputSequence();
 bool ConsumeBindingInputEventSince(uint64_t& lastSeenSequence, DWORD& outVk, LPARAM& outLParam, bool& outIsMouseButton);
+void RequestDynamicGuiFontRefresh(bool forceRefresh = false);
+void ApplyDynamicGuiFontRefresh();
+void RequestKeyboardLayoutFontRefresh(const ImVec2& windowSize, float keyHeight, float keyboardScale, bool forceRefresh = false);
+void ApplyPendingKeyboardLayoutFontRefresh();
 
 extern ImFont* g_keyboardLayoutPrimaryFont;
 extern ImFont* g_keyboardLayoutSecondaryFont;
@@ -426,6 +430,9 @@ struct KeyRebind {
     DWORD customOutputVK = 0;
     DWORD customOutputUnicode = 0;
     DWORD customOutputScanCode = 0;
+    bool shiftLayerEnabled = false;
+    DWORD shiftLayerOutputVK = 0;
+    bool shiftLayerOutputShifted = false;
 };
 struct KeyRebindsConfig {
     bool enabled = false;

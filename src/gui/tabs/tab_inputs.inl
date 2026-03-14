@@ -324,6 +324,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                 enum class LayoutBindTarget {
                     None,
                     TypesVk,
+                    TypesVkShift,
                     TriggersVk,
                 };
                 static LayoutBindTarget s_layoutBindTarget = LayoutBindTarget::None;
@@ -450,6 +451,9 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                 static float s_keyboardLayoutScale = 1.45f;
                 static bool s_layoutEscapeRequiresRelease = false;
                 static bool s_layoutContextPopupWasOpenLastFrame = false;
+                static bool s_keyboardLayoutWasOpenLastFrame = false;
+                static ImVec2 s_lastKeyboardLayoutWindowSize = ImVec2(-1.0f, -1.0f);
+                static float s_lastKeyboardLayoutGuiScaleFactor = -1.0f;
                 if (s_layoutEscapeRequiresRelease && !ImGui::IsKeyDown(ImGuiKey_Escape)) {
                     s_layoutEscapeRequiresRelease = false;
                 }
@@ -510,6 +514,14 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoCollapse);
                     if (keyboardLayoutWindowVisible) {
                     MarkRebindBindingActive();
+                    const bool keyboardLayoutOpenedThisFrame = ImGui::IsWindowAppearing() || !s_keyboardLayoutWasOpenLastFrame;
+                    const ImVec2 keyboardLayoutWindowSize = ImGui::GetWindowSize();
+                    const float keyboardLayoutGuiScaleFactor = ComputeGuiScaleFactorFromCachedWindowSize();
+                    const bool keyboardLayoutWindowResized = fabsf(keyboardLayoutWindowSize.x - s_lastKeyboardLayoutWindowSize.x) > 0.5f ||
+                                                           fabsf(keyboardLayoutWindowSize.y - s_lastKeyboardLayoutWindowSize.y) > 0.5f;
+                    const bool keyboardLayoutGuiScaleChanged = s_lastKeyboardLayoutGuiScaleFactor < 0.0f ||
+                                                               fabsf(keyboardLayoutGuiScaleFactor - s_lastKeyboardLayoutGuiScaleFactor) > 0.001f;
+                    bool keyboardLayoutScaleChanged = false;
                     const bool escapePressedThisFrame = ImGui::IsKeyPressed(ImGuiKey_Escape);
                     bool layoutEscapeConsumedThisFrame = false;
 
@@ -535,6 +547,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                         ImGui::SetNextItemWidth(220.0f);
                         if (ImGui::SliderFloat("##keyboardLayoutScalePct", &scalePct, 60.0f, 300.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
                             s_keyboardLayoutScale = scalePct / 100.0f;
+                            keyboardLayoutScaleChanged = true;
                         }
                         ImGui::SameLine();
                         HelpMarker(trc("inputs.tooltip.keyboard_layout_scale"));
@@ -638,6 +651,13 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                     if (unit < 20.0f) unit = 20.0f;
                     float gap = roundPx(ImGui::GetStyle().ItemInnerSpacing.x * keyboardScale * kKeyGapMul);
                     if (gap < 1.0f) gap = 1.0f;
+                    if (keyboardLayoutOpenedThisFrame || keyboardLayoutWindowResized || keyboardLayoutScaleChanged ||
+                        keyboardLayoutGuiScaleChanged) {
+                        RequestKeyboardLayoutFontRefresh(keyboardLayoutWindowSize, keyH, keyboardScale,
+                                                         keyboardLayoutOpenedThisFrame || keyboardLayoutScaleChanged);
+                        s_lastKeyboardLayoutWindowSize = keyboardLayoutWindowSize;
+                    }
+                    s_lastKeyboardLayoutGuiScaleFactor = keyboardLayoutGuiScaleFactor;
                     const float rounding = roundPx(kKeyRoundingPx * keyboardScale);
                     ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -707,6 +727,25 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                         return vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2;
                     };
 
+                    auto hasShiftLayerOverride = [&](const KeyRebind* rb, DWORD originalVk) -> bool {
+                        if (!rb || !rb->shiftLayerEnabled || rb->shiftLayerOutputVK == 0) return false;
+                        if (rb->useCustomOutput && rb->customOutputUnicode != 0) return true;
+
+                        DWORD baseTextVk = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : originalVk;
+                        if (baseTextVk == 0) baseTextVk = originalVk;
+                        if (rb->shiftLayerOutputVK != baseTextVk) return true;
+                        return !rb->shiftLayerOutputShifted;
+                    };
+
+                    auto resolveTypesVkFor = [&](const KeyRebind* rb, DWORD originalVk, bool useShiftLayer) -> DWORD {
+                        DWORD textVk = (rb && rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : originalVk;
+                        if (rb && useShiftLayer && rb->shiftLayerEnabled && rb->shiftLayerOutputVK != 0) {
+                            textVk = rb->shiftLayerOutputVK;
+                        }
+                        if (textVk == 0) textVk = originalVk;
+                        return textVk;
+                    };
+
                     auto resolveTriggerVkFor = [&](const KeyRebind* rb, DWORD originalVk) -> DWORD {
                         DWORD triggerVk = rb ? rb->toKey : originalVk;
                         if (triggerVk == 0) triggerVk = originalVk;
@@ -753,8 +792,15 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                         if (cannotTypeFor(rb, originalVk)) return tr("inputs.cannot_type");
                         if (rb->useCustomOutput && rb->customOutputUnicode != 0) return codepointToDisplay((uint32_t)rb->customOutputUnicode);
 
-                        DWORD textVk = (rb->useCustomOutput && rb->customOutputVK != 0) ? rb->customOutputVK : originalVk;
-                        if (textVk == 0) textVk = originalVk;
+                        DWORD textVk = resolveTypesVkFor(rb, originalVk, false);
+                        return normalizeMouseButtonLabel(VkToString(textVk));
+                    };
+
+                    auto typesShiftValueForDisplay = [&](const KeyRebind* rb, DWORD originalVk) -> std::string {
+                        if (!rb) return VkToString(originalVk);
+                        if (!hasShiftLayerOverride(rb, originalVk)) return typesValueForDisplay(rb, originalVk);
+
+                        DWORD textVk = resolveTypesVkFor(rb, originalVk, true);
                         return normalizeMouseButtonLabel(VkToString(textVk));
                     };
 
@@ -864,6 +910,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                             if (rb->customOutputVK != 0 && rb->customOutputVK != rb->toKey) return false;
                             if (rb->customOutputUnicode != 0) return false;
                             if (rb->customOutputScanCode != 0) return false;
+                            if (hasShiftLayerOverride(rb, vk)) return false;
                             return true;
                         }();
                         const bool showRebindInfo = hasConfigured && !isNoOp;
@@ -874,6 +921,9 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                         const std::string primaryText = showRebindInfo ? typesValueForDisplay(rb, vk) : std::string(label);
                         const std::string secondaryText = showRebindInfo ? normalizeMouseButtonLabel(scanCodeToDisplayName(outScan, triggerVK))
                                                                           : std::string();
+                        const bool showShiftLayerText = showRebindInfo && hasShiftLayerOverride(rb, vk);
+                        const std::string shiftLayerText =
+                            showShiftLayerText ? normalizeMouseButtonLabel(typesShiftValueForDisplay(rb, vk)) : std::string();
                         auto equalsIgnoreCase = [](const std::string& a, const std::string& b) -> bool {
                             if (a.size() != b.size()) return false;
                             for (size_t i = 0; i < a.size(); ++i) {
@@ -886,6 +936,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                         const bool showSecondaryText = showRebindInfo && !secondaryText.empty() && !equalsIgnoreCase(primaryText, secondaryText);
 
                         ImFont* fLabel = g_keyboardLayoutPrimaryFont ? g_keyboardLayoutPrimaryFont : ImGui::GetFont();
+                        ImFont* fSecondary = g_keyboardLayoutSecondaryFont ? g_keyboardLayoutSecondaryFont : fLabel;
                         auto snapPxText = [](float v) -> float { return floorf(v + 0.5f); };
                         auto snapFontSize = [](float v) -> float {
                             float s = floorf(v + 0.5f);
@@ -899,32 +950,57 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                         if (layoutTextBoost < 0.85f) layoutTextBoost = 0.85f;
                         if (layoutTextBoost > 1.85f) layoutTextBoost = 1.85f;
 
+                        float shiftLayerFs = 0.0f;
+                        ImVec2 shiftLayerSz = ImVec2(0.0f, 0.0f);
+                        float shiftLayerReserveH = 0.0f;
+                        if (showShiftLayerText) {
+                            shiftLayerFs = snapFontSize(fSecondary->LegacySize * (0.72f + 0.18f * s_keyboardLayoutScale));
+                            shiftLayerSz = fSecondary->CalcTextSizeA(shiftLayerFs, FLT_MAX, 0.0f, shiftLayerText.c_str());
+                            if (textAvailW > 8.0f) {
+                                float shiftScaleW = (textAvailW * 0.72f) / (shiftLayerSz.x + 0.001f);
+                                if (shiftScaleW < 0.50f) shiftScaleW = 0.50f;
+                                if (shiftScaleW > 1.00f) shiftScaleW = 1.00f;
+                                shiftLayerFs = snapFontSize(shiftLayerFs * shiftScaleW);
+                                shiftLayerSz = fSecondary->CalcTextSizeA(shiftLayerFs, FLT_MAX, 0.0f, shiftLayerText.c_str());
+                            }
+                            shiftLayerReserveH = snapPxText(shiftLayerSz.y + 2.0f * keyboardScale);
+                        }
+
+                        const float bodyTextAvailH = (shiftLayerReserveH < textAvailH) ? (textAvailH - shiftLayerReserveH) : textAvailH;
+                        const float bodyTextTopY = kMin.y + padY + ((shiftLayerReserveH < textAvailH) ? shiftLayerReserveH : 0.0f);
+
                         float labelFontSize = fLabel->LegacySize * layoutTextBoost;
                         ImVec2 labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, primaryText.c_str());
 
                         if (textAvailW > 8.0f) {
                             float scaleW = textAvailW / (labelSz.x + 0.001f);
-                            if (scaleW < 0.60f) scaleW = 0.60f;
+                            if (scaleW < 0.45f) scaleW = 0.45f;
                             if (scaleW > 1.00f) scaleW = 1.00f;
                             labelFontSize = snapFontSize(fLabel->LegacySize * layoutTextBoost * scaleW);
                             labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, primaryText.c_str());
                         }
 
+                        if (showShiftLayerText) {
+                            const ImU32 shiftCol = (rb && !rb->enabled) ? IM_COL32(255, 220, 170, 215) : IM_COL32(220, 238, 255, 220);
+                            float shiftX = snapPxText(kMin.x + padX);
+                            float shiftY = snapPxText(kMin.y + padY - 1.0f * keyboardScale);
+                            dl->AddText(fSecondary, shiftLayerFs, ImVec2(shiftX, shiftY), shiftCol, shiftLayerText.c_str());
+                        }
+
                         if (!showRebindInfo || !showSecondaryText) {
-                            const float maxByHeight = textAvailH * 0.98f;
+                            const float maxByHeight = bodyTextAvailH * 0.98f;
                             if (maxByHeight > 0.0f && labelFontSize > maxByHeight) {
                                 labelFontSize = snapFontSize(maxByHeight);
                                 labelSz = fLabel->CalcTextSizeA(labelFontSize, FLT_MAX, 0.0f, primaryText.c_str());
                             }
 
                             float x = snapPxText(kMin.x + (size.x - labelSz.x) * 0.5f);
-                            float y = snapPxText(kMin.y + (size.y - labelSz.y) * 0.5f);
+                            float y = snapPxText(bodyTextTopY + (bodyTextAvailH - labelSz.y) * 0.5f);
                             if (x < kMin.x + padX) x = snapPxText(kMin.x + padX);
-                            if (y < kMin.y + padY) y = snapPxText(kMin.y + padY);
+                            if (y < bodyTextTopY) y = snapPxText(bodyTextTopY);
                             dl->AddText(fLabel, labelFontSize, ImVec2(x, y), theme.text, primaryText.c_str());
                         } else {
-                            ImFont* f = g_keyboardLayoutPrimaryFont ? g_keyboardLayoutPrimaryFont : ImGui::GetFont();
-                            ImFont* fSecondary = g_keyboardLayoutSecondaryFont ? g_keyboardLayoutSecondaryFont : f;
+                            ImFont* f = fLabel;
 
                             float primaryFs = labelFontSize;
                             ImVec2 primarySz = f->CalcTextSizeA(primaryFs, FLT_MAX, 0.0f, primaryText.c_str());
@@ -933,7 +1009,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                             ImVec2 secondarySz = fSecondary->CalcTextSizeA(secondaryFs, FLT_MAX, 0.0f, secondaryText.c_str());
                             if (textAvailW > 8.0f) {
                                 float secScaleW = textAvailW / (secondarySz.x + 0.001f);
-                                if (secScaleW < 0.55f) secScaleW = 0.55f;
+                                if (secScaleW < 0.40f) secScaleW = 0.40f;
                                 if (secScaleW > 1.00f) secScaleW = 1.00f;
                                 secondaryFs = snapFontSize(fSecondary->LegacySize * layoutTextBoost * secScaleW);
                                 secondarySz = fSecondary->CalcTextSizeA(secondaryFs, FLT_MAX, 0.0f, secondaryText.c_str());
@@ -943,8 +1019,8 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                             if (lineGap < 1.0f) lineGap = 1.0f;
 
                             float totalH = primarySz.y + lineGap + secondarySz.y;
-                            if (textAvailH > 0.0f && totalH > textAvailH) {
-                                float fit = textAvailH / (totalH + 0.001f);
+                            if (bodyTextAvailH > 0.0f && totalH > bodyTextAvailH) {
+                                float fit = bodyTextAvailH / (totalH + 0.001f);
                                 if (fit < 1.0f) {
                                     primaryFs = snapFontSize(primaryFs * fit);
                                     secondaryFs = snapFontSize(secondaryFs * fit);
@@ -954,8 +1030,8 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                                 }
                             }
 
-                            float startY = snapPxText(kMin.y + padY + (textAvailH - totalH) * 0.5f);
-                            if (startY < kMin.y + padY) startY = snapPxText(kMin.y + padY);
+                            float startY = snapPxText(bodyTextTopY + (bodyTextAvailH - totalH) * 0.5f);
+                            if (startY < bodyTextTopY) startY = snapPxText(bodyTextTopY);
 
                             float x1 = snapPxText(kMin.x + (size.x - primarySz.x) * 0.5f);
                             if (x1 < kMin.x + padX) x1 = snapPxText(kMin.x + padX);
@@ -1048,6 +1124,10 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                                     const std::string triggersTip =
                                         normalizeMouseButtonLabel(scanCodeToDisplayName(triggerScanTip, triggerVkTip));
                                     ImGui::Text(tr("inputs.types_format", typesTip.c_str()).c_str());
+                                    if (hasShiftLayerOverride(rb, kc.vk)) {
+                                        const std::string typesShiftTip = typesShiftValueForDisplay(rb, kc.vk);
+                                        ImGui::Text(tr("inputs.types_shift_format", typesShiftTip.c_str()).c_str());
+                                    }
                                     ImGui::Text(tr("inputs.triggers_format", triggersTip.c_str()).c_str());
                                 } else {
                                     ImGui::Text("%s (%u)", VkToString(kc.vk).c_str(), (unsigned)kc.vk);
@@ -1089,6 +1169,10 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                                 const std::string typesTip = typesValueForDisplay(rb, vk);
                                 const std::string triggersTip = normalizeMouseButtonLabel(scanCodeToDisplayName(triggerScanTip, triggerVkTip));
                                 ImGui::Text(trc("inputs.types_format"), typesTip.c_str());
+                                if (hasShiftLayerOverride(rb, vk)) {
+                                    const std::string typesShiftTip = typesShiftValueForDisplay(rb, vk);
+                                    ImGui::Text(trc("inputs.types_shift_format"), typesShiftTip.c_str());
+                                }
                                 ImGui::Text(trc("inputs.triggers_format"), triggersTip.c_str());
                             } else {
                                 ImGui::Text("%s (%u)", VkToString(vk).c_str(), (unsigned)vk);
@@ -1291,6 +1375,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                             if (r.customOutputVK != 0 && r.customOutputVK != r.toKey) return false;
                             if (r.customOutputUnicode != 0) return false;
                             if (r.customOutputScanCode != 0) return false;
+                            if (hasShiftLayerOverride(&r, originalVk)) return false;
                             return true;
                         };
 
@@ -1370,6 +1455,10 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
 
                         auto typesValueFor = [&](const KeyRebind* rb, DWORD originalVk) -> std::string {
                             return typesValueForDisplay(rb, originalVk);
+                        };
+
+                        auto typesShiftValueFor = [&](const KeyRebind* rb, DWORD originalVk) -> std::string {
+                            return typesShiftValueForDisplay(rb, originalVk);
                         };
 
                         auto triggersValueFor = [&](const KeyRebind* rb, DWORD originalVk) -> std::string {
@@ -1458,6 +1547,15 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                                         if (r.customOutputVK == r.fromKey) {
                                             r.customOutputVK = 0;
                                             if (r.customOutputScanCode == 0 && r.customOutputUnicode == 0) r.useCustomOutput = false;
+                                        }
+                                        g_configIsDirty = true;
+                                    } else if (s_layoutBindTarget == LayoutBindTarget::TypesVkShift) {
+                                        r.shiftLayerEnabled = true;
+                                        r.shiftLayerOutputVK = capturedVk;
+
+                                        const DWORD baseTypesVk = resolveTypesVkFor(&r, r.fromKey, false);
+                                        if (r.shiftLayerOutputVK == baseTypesVk && r.shiftLayerOutputShifted) {
+                                            r.shiftLayerOutputVK = 0;
                                         }
                                         g_configIsDirty = true;
                                     } else if (s_layoutBindTarget == LayoutBindTarget::TriggersVk) {
@@ -1584,6 +1682,72 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
 
                         ImGui::Spacing();
 
+                        bool shiftLayerEnabled = rbPtr && rbPtr->shiftLayerEnabled;
+                        if (ImGui::Checkbox(trc("inputs.shift_layer_label"), &shiftLayerEnabled)) {
+                            idx = createRebindForKeyIfMissing(s_layoutContextVk);
+                            s_layoutContextPreferredIndex = idx;
+                            if (idx >= 0) {
+                                auto& r = g_config.keyRebinds.rebinds[idx];
+                                r.shiftLayerEnabled = shiftLayerEnabled;
+                                g_configIsDirty = true;
+
+                                if (isNoOpRebindForKey(r, r.fromKey)) {
+                                    eraseRebindIndex(idx);
+                                    s_layoutContextPreferredIndex = -1;
+                                    idx = -1;
+                                }
+                            }
+                        }
+
+                        rbPtr = (idx >= 0 && idx < (int)g_config.keyRebinds.rebinds.size()) ? &g_config.keyRebinds.rebinds[idx] : nullptr;
+                        if (rbPtr && rbPtr->shiftLayerEnabled) {
+                            const std::string typesShiftValue = typesShiftValueFor(rbPtr, s_layoutContextVk);
+
+                            ImGui::TextUnformatted(trc("inputs.types_shift_label"));
+                            ImGui::SameLine();
+                            {
+                                std::string label = (s_layoutBindTarget == LayoutBindTarget::TypesVkShift)
+                                    ? std::string(trc("hotkeys.press_keys"))
+                                    : typesShiftValue;
+                                if (ImGui::Button((label + "##types_shift").c_str(), ImVec2(vBtnW, 0))) {
+                                    idx = createRebindForKeyIfMissing(s_layoutContextVk);
+                                    s_layoutContextPreferredIndex = idx;
+                                    if (idx >= 0) {
+                                        auto& r = g_config.keyRebinds.rebinds[idx];
+                                        r.shiftLayerEnabled = true;
+                                        s_layoutBindTarget = LayoutBindTarget::TypesVkShift;
+                                        s_layoutBindIndex = idx;
+                                        s_layoutBindLastSeq = GetLatestBindingInputSequence();
+                                        MarkRebindBindingActive();
+                                    }
+                                }
+                            }
+
+                            rbPtr = (idx >= 0 && idx < (int)g_config.keyRebinds.rebinds.size()) ? &g_config.keyRebinds.rebinds[idx]
+                                                                                                  : nullptr;
+                            if (rbPtr && rbPtr->shiftLayerOutputVK != 0) {
+                                bool shiftLayerOutputShifted = rbPtr->shiftLayerOutputShifted;
+                                if (ImGui::Checkbox(trc("inputs.shift_layer_output_shifted_label"), &shiftLayerOutputShifted)) {
+                                    idx = createRebindForKeyIfMissing(s_layoutContextVk);
+                                    s_layoutContextPreferredIndex = idx;
+                                    if (idx >= 0) {
+                                        auto& r = g_config.keyRebinds.rebinds[idx];
+                                        r.shiftLayerEnabled = true;
+                                        r.shiftLayerOutputShifted = shiftLayerOutputShifted;
+                                        g_configIsDirty = true;
+
+                                        if (isNoOpRebindForKey(r, r.fromKey)) {
+                                            eraseRebindIndex(idx);
+                                            s_layoutContextPreferredIndex = -1;
+                                            idx = -1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            ImGui::Spacing();
+                        }
+
                         ImGui::TextUnformatted(trc("inputs.triggers_label"));
                         ImGui::SameLine();
                         {
@@ -1678,6 +1842,9 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                                 r.customOutputVK = 0;
                                 r.customOutputUnicode = 0;
                                 r.customOutputScanCode = 0;
+                                r.shiftLayerEnabled = false;
+                                r.shiftLayerOutputVK = 0;
+                                r.shiftLayerOutputShifted = false;
                                 r.useCustomOutput = false;
                                 r.enabled = true;
                                 g_configIsDirty = true;
@@ -1710,6 +1877,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                             if (r.customOutputVK != 0 && r.customOutputVK != r.toKey) return false;
                             if (r.customOutputUnicode != 0) return false;
                             if (r.customOutputScanCode != 0) return false;
+                            if (hasShiftLayerOverride(&r, r.fromKey)) return false;
                             return true;
                         };
                         for (const auto& r : g_config.keyRebinds.rebinds) {
@@ -1743,13 +1911,20 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
                     }
 
                     s_layoutContextPopupWasOpenLastFrame = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+                    s_keyboardLayoutWasOpenLastFrame = s_keyboardLayoutOpen;
                     } else {
                         s_layoutContextPopupWasOpenLastFrame = false;
+                        s_keyboardLayoutWasOpenLastFrame = false;
+                        s_lastKeyboardLayoutWindowSize = ImVec2(-1.0f, -1.0f);
+                        s_lastKeyboardLayoutGuiScaleFactor = -1.0f;
                     }
                     ImGui::End();
                     ImGui::PopStyleColor();
                 } else {
                     s_layoutContextPopupWasOpenLastFrame = false;
+                    s_keyboardLayoutWasOpenLastFrame = false;
+                    s_lastKeyboardLayoutWindowSize = ImVec2(-1.0f, -1.0f);
+                    s_lastKeyboardLayoutGuiScaleFactor = -1.0f;
                 }
 
                 bool is_rebind_from_binding = (s_rebindFromKeyToBind != -1);
