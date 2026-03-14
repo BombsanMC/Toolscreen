@@ -1,5 +1,6 @@
 #include "obs_thread.h"
 #include "common/profiler.h"
+#include "gui/gui.h"
 #include "mirror_thread.h"
 #include "render_thread.h"
 #include "common/utils.h"
@@ -42,6 +43,19 @@ struct ObsRedirectValidationEntry {
 static constexpr size_t OBS_REDIRECT_VALIDATION_CACHE_SIZE = 8;
 static ObsRedirectValidationEntry g_obsRedirectValidationCache[OBS_REDIRECT_VALIDATION_CACHE_SIZE]{};
 static size_t g_obsRedirectValidationCacheNext = 0;
+static std::atomic<uint64_t> g_obsNextTextureUpdateTickMs{ 0 };
+
+static int ClampObsFramerateValue(int value) {
+    if (value < 15) { return 15; }
+    if (value > 120) { return 120; }
+    return value;
+}
+
+static int GetConfiguredObsFramerate() {
+    auto cfgSnapshot = GetConfigSnapshot();
+    if (!cfgSnapshot) { return ConfigDefaults::CONFIG_OBS_FRAMERATE; }
+    return ClampObsFramerateValue(cfgSnapshot->obsFramerate);
+}
 
 static bool IsObsRedirectAttachmentValidated(GLuint texture, int width, int height) {
     for (const auto& entry : g_obsRedirectValidationCache) {
@@ -64,6 +78,27 @@ static void ClearObsRedirectAttachmentValidationCache() {
         entry.height = 0;
     }
     g_obsRedirectValidationCacheNext = 0;
+}
+
+bool ShouldUpdateObsTextureNow() {
+    const uint64_t nowMs = GetTickCount64();
+    const uint64_t intervalMs = (1000ull + static_cast<uint64_t>(GetConfiguredObsFramerate()) - 1ull) /
+                                static_cast<uint64_t>(GetConfiguredObsFramerate());
+
+    uint64_t expectedMs = g_obsNextTextureUpdateTickMs.load(std::memory_order_acquire);
+    for (;;) {
+        if (expectedMs != 0 && nowMs < expectedMs) { return false; }
+
+        const uint64_t desiredMs = nowMs + intervalMs;
+        if (g_obsNextTextureUpdateTickMs.compare_exchange_weak(expectedMs, desiredMs, std::memory_order_acq_rel,
+                                                               std::memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
+void ResetObsTextureUpdateSchedule() {
+    g_obsNextTextureUpdateTickMs.store(0, std::memory_order_release);
 }
 
 static GLuint SelectObsRedirectTexture(bool allowDedicatedObsTexture, GLsync& outFence, bool& outNeedsFenceWait) {
@@ -201,6 +236,7 @@ void ClearObsOverride() {
     g_obsOverrideTexture.store(0, std::memory_order_release);
     g_obsOverrideWidth.store(0, std::memory_order_release);
     g_obsOverrideHeight.store(0, std::memory_order_release);
+    ResetObsTextureUpdateSchedule();
     g_obsRedirectAttachedTexture = 0;
     g_obsRedirectAttachedWidth = 0;
     g_obsRedirectAttachedHeight = 0;

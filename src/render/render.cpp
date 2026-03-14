@@ -269,10 +269,13 @@ static GLsizeiptr g_vboCapacityBytes = 0;
 
 int g_sceneW = 0;
 int g_sceneH = 0;
-static GLuint g_sameThreadObsComposeFBO = 0;
-static GLuint g_sameThreadObsComposeTexture = 0;
+static constexpr int SAME_THREAD_OBS_BUFFER_COUNT = 2;
+static GLuint g_sameThreadObsComposeFBOs[SAME_THREAD_OBS_BUFFER_COUNT] = {};
+static GLuint g_sameThreadObsComposeTextures[SAME_THREAD_OBS_BUFFER_COUNT] = {};
 static int g_sameThreadObsComposeW = 0;
 static int g_sameThreadObsComposeH = 0;
+static int g_sameThreadObsComposePublishedIndex = -1;
+static int g_sameThreadObsComposeWriteIndex = 0;
 
 GLuint g_fullscreenQuadVAO = 0;
 GLuint g_fullscreenQuadVBO = 0;
@@ -1382,10 +1385,12 @@ void CleanupGPUResources() {
             while (glGetError() != GL_NO_ERROR) {}
             g_sceneFBO = 0;
         }
-        if (g_sameThreadObsComposeFBO) {
-            glDeleteFramebuffers(1, &g_sameThreadObsComposeFBO);
-            while (glGetError() != GL_NO_ERROR) {}
-            g_sameThreadObsComposeFBO = 0;
+        for (int i = 0; i < SAME_THREAD_OBS_BUFFER_COUNT; ++i) {
+            if (g_sameThreadObsComposeFBOs[i]) {
+                glDeleteFramebuffers(1, &g_sameThreadObsComposeFBOs[i]);
+                while (glGetError() != GL_NO_ERROR) {}
+                g_sameThreadObsComposeFBOs[i] = 0;
+            }
         }
     } catch (...) { Log("CleanupGPUResources: Exception during FBO cleanup"); }
 
@@ -1424,11 +1429,17 @@ void CleanupGPUResources() {
             while (glGetError() != GL_NO_ERROR) {}
             g_sceneTexture = 0;
         }
-        if (g_sameThreadObsComposeTexture) {
-            glDeleteTextures(1, &g_sameThreadObsComposeTexture);
-            while (glGetError() != GL_NO_ERROR) {}
-            g_sameThreadObsComposeTexture = 0;
+        for (int i = 0; i < SAME_THREAD_OBS_BUFFER_COUNT; ++i) {
+            if (g_sameThreadObsComposeTextures[i]) {
+                glDeleteTextures(1, &g_sameThreadObsComposeTextures[i]);
+                while (glGetError() != GL_NO_ERROR) {}
+                g_sameThreadObsComposeTextures[i] = 0;
+            }
         }
+        g_sameThreadObsComposePublishedIndex = -1;
+        g_sameThreadObsComposeWriteIndex = 0;
+        g_sameThreadObsComposeW = 0;
+        g_sameThreadObsComposeH = 0;
 
         DiscardAllGPUImages();
 
@@ -3327,30 +3338,38 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
 static void EnsureSameThreadObsComposeTarget(int fullW, int fullH) {
     if (fullW <= 0 || fullH <= 0) { return; }
 
-    if (g_sameThreadObsComposeFBO == 0) { glGenFramebuffers(1, &g_sameThreadObsComposeFBO); }
+    const bool needsResize = g_sameThreadObsComposeW != fullW || g_sameThreadObsComposeH != fullH;
+    const bool hasAllTargets = g_sameThreadObsComposeFBOs[0] != 0 && g_sameThreadObsComposeFBOs[1] != 0 &&
+                               g_sameThreadObsComposeTextures[0] != 0 && g_sameThreadObsComposeTextures[1] != 0;
+    if (!needsResize && hasAllTargets) { return; }
 
-    if (g_sameThreadObsComposeTexture != 0 && g_sameThreadObsComposeW == fullW && g_sameThreadObsComposeH == fullH) { return; }
+    ClearObsOverride();
 
-    if (g_sameThreadObsComposeTexture != 0) {
-        glDeleteTextures(1, &g_sameThreadObsComposeTexture);
-        g_sameThreadObsComposeTexture = 0;
+    for (int i = 0; i < SAME_THREAD_OBS_BUFFER_COUNT; ++i) {
+        if (g_sameThreadObsComposeFBOs[i] == 0) { glGenFramebuffers(1, &g_sameThreadObsComposeFBOs[i]); }
+        if (g_sameThreadObsComposeTextures[i] != 0) {
+            glDeleteTextures(1, &g_sameThreadObsComposeTextures[i]);
+            g_sameThreadObsComposeTextures[i] = 0;
+        }
+
+        glGenTextures(1, &g_sameThreadObsComposeTextures[i]);
+        BindTextureDirect(GL_TEXTURE_2D, g_sameThreadObsComposeTextures[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, fullW, fullH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, g_sameThreadObsComposeFBOs[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadObsComposeTextures[i], 0);
     }
-
-    glGenTextures(1, &g_sameThreadObsComposeTexture);
-    BindTextureDirect(GL_TEXTURE_2D, g_sameThreadObsComposeTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, fullW, fullH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, g_sameThreadObsComposeFBO);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadObsComposeTexture, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     BindTextureDirect(GL_TEXTURE_2D, 0);
 
     g_sameThreadObsComposeW = fullW;
     g_sameThreadObsComposeH = fullH;
+    g_sameThreadObsComposePublishedIndex = -1;
+    g_sameThreadObsComposeWriteIndex = 0;
 }
 
 static GLuint ResolveModeBackgroundTextureId(const std::string& modeId) {
@@ -3487,7 +3506,11 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
         PROFILE_SCOPE_CAT("Prepare OBS Compose Target", "OBS");
         EnsureSameThreadObsComposeTarget(fullW, fullH);
     }
-    if (g_sameThreadObsComposeFBO == 0 || g_sameThreadObsComposeTexture == 0) { return false; }
+    const int composeIndex = g_sameThreadObsComposeWriteIndex;
+    if (composeIndex < 0 || composeIndex >= SAME_THREAD_OBS_BUFFER_COUNT || g_sameThreadObsComposeFBOs[composeIndex] == 0 ||
+        g_sameThreadObsComposeTextures[composeIndex] == 0) {
+        return false;
+    }
 
     ModeTransitionState transitionState;
     bool isAnimating = false;
@@ -3550,9 +3573,9 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
     }
 
     GLState obsState = s;
-    obsState.fb = g_sameThreadObsComposeFBO;
-    obsState.read_fb = g_sameThreadObsComposeFBO;
-    obsState.draw_fb = g_sameThreadObsComposeFBO;
+    obsState.fb = g_sameThreadObsComposeFBOs[composeIndex];
+    obsState.read_fb = g_sameThreadObsComposeFBOs[composeIndex];
+    obsState.draw_fb = g_sameThreadObsComposeFBOs[composeIndex];
     obsState.draw_buffer = GL_COLOR_ATTACHMENT0;
     obsState.read_buffer = GL_COLOR_ATTACHMENT0;
 
@@ -3697,7 +3720,9 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
 
     {
         PROFILE_SCOPE_CAT("Publish OBS Override", "OBS");
-        SetObsOverrideTexture(g_sameThreadObsComposeTexture, fullW, fullH);
+        SetObsOverrideTexture(g_sameThreadObsComposeTextures[composeIndex], fullW, fullH);
+        g_sameThreadObsComposePublishedIndex = composeIndex;
+        g_sameThreadObsComposeWriteIndex = (composeIndex + 1) % SAME_THREAD_OBS_BUFFER_COUNT;
     }
 
     return true;

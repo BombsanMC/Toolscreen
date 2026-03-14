@@ -30,6 +30,10 @@ void SetObsOverrideTexture(GLuint texture, int width, int height);
 
 void ClearObsOverride();
 
+bool ShouldUpdateObsTextureNow();
+
+void ResetObsTextureUpdateSchedule();
+
 void EnableObsOverride();
 
 bool IsObsHookDetected();

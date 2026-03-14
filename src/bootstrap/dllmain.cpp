@@ -249,10 +249,13 @@ std::chrono::steady_clock::time_point g_lastGraphicsHookCheck = std::chrono::ste
 extern const int GRAPHICS_HOOK_CHECK_INTERVAL_MS = 2000;
 
 std::atomic<bool> g_obsCaptureReady{ false };
-static GLuint g_sameThreadObsCaptureFBO = 0;
-static GLuint g_sameThreadObsCaptureTexture = 0;
+static constexpr int SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT = 2;
+static GLuint g_sameThreadObsCaptureFBOs[SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT] = {};
+static GLuint g_sameThreadObsCaptureTextures[SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT] = {};
 static int g_sameThreadObsCaptureWidth = 0;
 static int g_sameThreadObsCaptureHeight = 0;
+static int g_sameThreadObsCapturePublishedIndex = -1;
+static int g_sameThreadObsCaptureWriteIndex = 0;
 
 void LoadConfig();
 void SaveConfig();
@@ -272,31 +275,51 @@ void CaptureBackbufferForObs(int width, int height) {
 
     if (width <= 0 || height <= 0) {
         ClearObsOverride();
+        g_sameThreadObsCapturePublishedIndex = -1;
+        g_sameThreadObsCaptureWriteIndex = 0;
         return;
     }
 
-    if (g_sameThreadObsCaptureFBO == 0 || width != g_sameThreadObsCaptureWidth || height != g_sameThreadObsCaptureHeight) {
-        if (g_sameThreadObsCaptureTexture != 0) {
-            glDeleteTextures(1, &g_sameThreadObsCaptureTexture);
-            g_sameThreadObsCaptureTexture = 0;
+    const bool needsResize = width != g_sameThreadObsCaptureWidth || height != g_sameThreadObsCaptureHeight;
+    const bool hasAllTargets = g_sameThreadObsCaptureFBOs[0] != 0 && g_sameThreadObsCaptureFBOs[1] != 0 &&
+                               g_sameThreadObsCaptureTextures[0] != 0 && g_sameThreadObsCaptureTextures[1] != 0;
+    if (needsResize || !hasAllTargets) {
+        ClearObsOverride();
+        for (int i = 0; i < SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT; ++i) {
+            if (g_sameThreadObsCaptureFBOs[i] == 0) { glGenFramebuffers(1, &g_sameThreadObsCaptureFBOs[i]); }
+            if (g_sameThreadObsCaptureTextures[i] != 0) {
+                glDeleteTextures(1, &g_sameThreadObsCaptureTextures[i]);
+                g_sameThreadObsCaptureTextures[i] = 0;
+            }
+
+            glGenTextures(1, &g_sameThreadObsCaptureTextures[i]);
+            BindTextureDirect(GL_TEXTURE_2D, g_sameThreadObsCaptureTextures[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, g_sameThreadObsCaptureFBOs[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadObsCaptureTextures[i], 0);
         }
-        if (g_sameThreadObsCaptureFBO == 0) { glGenFramebuffers(1, &g_sameThreadObsCaptureFBO); }
-
-        glGenTextures(1, &g_sameThreadObsCaptureTexture);
-        BindTextureDirect(GL_TEXTURE_2D, g_sameThreadObsCaptureTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, g_sameThreadObsCaptureFBO);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadObsCaptureTexture, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         BindTextureDirect(GL_TEXTURE_2D, 0);
 
         g_sameThreadObsCaptureWidth = width;
         g_sameThreadObsCaptureHeight = height;
+        g_sameThreadObsCapturePublishedIndex = -1;
+        g_sameThreadObsCaptureWriteIndex = 0;
+    }
+
+    if (!ShouldUpdateObsTextureNow()) {
+        return;
+    }
+
+    const int captureIndex = g_sameThreadObsCaptureWriteIndex;
+    if (captureIndex < 0 || captureIndex >= SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT || g_sameThreadObsCaptureFBOs[captureIndex] == 0 ||
+        g_sameThreadObsCaptureTextures[captureIndex] == 0) {
+        return;
     }
 
     GLint prevReadFBO = 0;
@@ -305,19 +328,26 @@ void CaptureBackbufferForObs(int width, int height) {
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFBO);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sameThreadObsCaptureFBO);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sameThreadObsCaptureFBOs[captureIndex]);
     ObsBlitFramebufferDirect(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFBO);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFBO);
 
-    SetObsOverrideTexture(g_sameThreadObsCaptureTexture, width, height);
+    SetObsOverrideTexture(g_sameThreadObsCaptureTextures[captureIndex], width, height);
+    g_sameThreadObsCapturePublishedIndex = captureIndex;
+    g_sameThreadObsCaptureWriteIndex = (captureIndex + 1) % SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT;
 }
 
-GLuint GetObsCaptureTexture() { return g_sameThreadObsCaptureTexture; }
+GLuint GetObsCaptureTexture() {
+    if (g_sameThreadObsCapturePublishedIndex < 0 || g_sameThreadObsCapturePublishedIndex >= SAME_THREAD_OBS_CAPTURE_BUFFER_COUNT) {
+        return 0;
+    }
+    return g_sameThreadObsCaptureTextures[g_sameThreadObsCapturePublishedIndex];
+}
 
-int GetObsCaptureWidth() { return g_sameThreadObsCaptureWidth; }
+int GetObsCaptureWidth() { return g_sameThreadObsCapturePublishedIndex >= 0 ? g_sameThreadObsCaptureWidth : 0; }
 
-int GetObsCaptureHeight() { return g_sameThreadObsCaptureHeight; }
+int GetObsCaptureHeight() { return g_sameThreadObsCapturePublishedIndex >= 0 ? g_sameThreadObsCaptureHeight : 0; }
 
 
 bool SubclassGameWindow(HWND hwnd) {
@@ -2035,39 +2065,40 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
                         if (gameContext) { StartRenderThread(gameContext); }
                     }
 
-                    // Build lightweight context struct (no lock-free reads needed here - values already captured)
-                    ObsFrameSubmission submission;
-                    submission.context.fullW = fullW;
-                    submission.context.fullH = fullH;
-                    submission.context.gameW = current_gameW;
-                    submission.context.gameH = current_gameH;
-                    submission.context.gameTextureId = g_cachedGameTextureId.load();
-                    submission.context.modeId = modeToRenderCopy.id;
-                    submission.context.relativeStretching = modeToRenderCopy.relativeStretching;
-                    submission.context.bgR = modeToRenderCopy.background.color.r;
-                    submission.context.bgG = modeToRenderCopy.background.color.g;
-                    submission.context.bgB = modeToRenderCopy.background.color.b;
-                    submission.context.shouldRenderGui = shouldRenderGui;
-                    submission.context.showPerformanceOverlay = showPerformanceOverlay;
-                    submission.context.showProfiler = showProfiler;
-                    submission.context.isEyeZoom = isEyeZoom;
-                    submission.context.isTransitioningFromEyeZoom = isTransitioningFromEyeZoom;
-                    submission.context.eyeZoomAnimatedViewportX = eyeZoomAnimatedViewportX;
-                    submission.context.eyeZoomSnapshotTexture = GetEyeZoomSnapshotTexture();
-                    submission.context.eyeZoomSnapshotWidth = GetEyeZoomSnapshotWidth();
-                    submission.context.eyeZoomSnapshotHeight = GetEyeZoomSnapshotHeight();
-                    submission.context.showTextureGrid = frameCfg.debug.showTextureGrid;
-                    submission.context.isWindowed = isWindowedPresentation;
-                    submission.context.isRawWindowedMode = false;
-                    submission.context.windowW = windowWidth;
-                    submission.context.windowH = windowHeight;
-                    submission.context.preferDirectGameTexture = false;
-                    submission.context.welcomeToastIsFullscreen = EqualsIgnoreCase(modeToRenderCopy.id, "Fullscreen");
-                    submission.context.showWelcomeToast = false;
-                    submission.isDualRenderingPath = hideAnimOnScreen;
+                    const bool shouldThrottleObsFrames = g_graphicsHookDetected.load(std::memory_order_acquire);
+                    if (!shouldThrottleObsFrames || ShouldUpdateObsTextureNow()) {
+                        ObsFrameSubmission submission;
+                        submission.context.fullW = fullW;
+                        submission.context.fullH = fullH;
+                        submission.context.gameW = current_gameW;
+                        submission.context.gameH = current_gameH;
+                        submission.context.gameTextureId = g_cachedGameTextureId.load();
+                        submission.context.modeId = modeToRenderCopy.id;
+                        submission.context.relativeStretching = modeToRenderCopy.relativeStretching;
+                        submission.context.bgR = modeToRenderCopy.background.color.r;
+                        submission.context.bgG = modeToRenderCopy.background.color.g;
+                        submission.context.bgB = modeToRenderCopy.background.color.b;
+                        submission.context.shouldRenderGui = shouldRenderGui;
+                        submission.context.showPerformanceOverlay = showPerformanceOverlay;
+                        submission.context.showProfiler = showProfiler;
+                        submission.context.isEyeZoom = isEyeZoom;
+                        submission.context.isTransitioningFromEyeZoom = isTransitioningFromEyeZoom;
+                        submission.context.eyeZoomAnimatedViewportX = eyeZoomAnimatedViewportX;
+                        submission.context.eyeZoomSnapshotTexture = GetEyeZoomSnapshotTexture();
+                        submission.context.eyeZoomSnapshotWidth = GetEyeZoomSnapshotWidth();
+                        submission.context.eyeZoomSnapshotHeight = GetEyeZoomSnapshotHeight();
+                        submission.context.showTextureGrid = frameCfg.debug.showTextureGrid;
+                        submission.context.isWindowed = isWindowedPresentation;
+                        submission.context.isRawWindowedMode = false;
+                        submission.context.windowW = windowWidth;
+                        submission.context.windowH = windowHeight;
+                        submission.context.preferDirectGameTexture = false;
+                        submission.context.welcomeToastIsFullscreen = EqualsIgnoreCase(modeToRenderCopy.id, "Fullscreen");
+                        submission.context.showWelcomeToast = false;
+                        submission.isDualRenderingPath = hideAnimOnScreen;
 
-                    // Submit lightweight context - render thread will call BuildObsFrameRequest
-                    SubmitObsFrameContext(submission);
+                        SubmitObsFrameContext(submission);
+                    }
                 }
 
                 PROFILE_SCOPE_CAT("Render for Screen", "Rendering");
@@ -2096,7 +2127,7 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
         }
 
         if (frameCfg.debug.sameThreadRenderPipeline && frameCfg.debug.sameThreadDedicatedObsTexture &&
-            g_graphicsHookDetected.load(std::memory_order_acquire)) {
+            g_graphicsHookDetected.load(std::memory_order_acquire) && ShouldUpdateObsTextureNow()) {
             PROFILE_SCOPE_CAT("Capture Same-Thread OBS Frame", "OBS");
             RenderSameThreadObsFrame(&modeToRenderCopy, s, current_gameW, current_gameH, false);
         }
