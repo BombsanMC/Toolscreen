@@ -300,7 +300,6 @@ extern std::atomic<HCURSOR> g_specialCursorHandle;
 void Log(const std::string& message);
 void Log(const std::wstring& message);
 void APIENTRY BindTextureDirect(GLenum target, GLuint texture);
-HCURSOR WINAPI SetCursorDirect(HCURSOR hCursor);
 void InvalidateTrackedGameTextureId(bool clearSwapThread = false);
 
 void StartLogThread(); // Start background log writer thread

@@ -680,13 +680,6 @@ void APIENTRY BindTextureDirect(GLenum target, GLuint texture) {
     glBindTexture(target, texture);
 }
 
-HCURSOR WINAPI SetCursorDirect(HCURSOR hCursor) {
-    if (oSetCursor) {
-        return oSetCursor(hCursor);
-    }
-    return SetCursor(hCursor);
-}
-
 static inline void UpdateTrackedTextureBinding(GLenum target, GLuint texture) {
     if (target != GL_TEXTURE_2D) {
         return;
