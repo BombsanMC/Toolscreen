@@ -686,6 +686,30 @@ void RenderImGuiWithStateProtection(bool useFullProtection) {
     }
 }
 
+void SyncImGuiDisplayMetrics(HWND hwnd) {
+    if (!ImGui::GetCurrentContext()) { return; }
+
+    int clientWidth = 0;
+    int clientHeight = 0;
+    if (hwnd != NULL) {
+        RECT clientRect{};
+        if (GetClientRect(hwnd, &clientRect)) {
+            clientWidth = clientRect.right - clientRect.left;
+            clientHeight = clientRect.bottom - clientRect.top;
+        }
+    }
+
+    if (clientWidth <= 0 || clientHeight <= 0) {
+        clientWidth = GetCachedWindowWidth();
+        clientHeight = GetCachedWindowHeight();
+    }
+
+    if (clientWidth <= 0 || clientHeight <= 0) { return; }
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(static_cast<float>(clientWidth), static_cast<float>(clientHeight));
+}
+
 void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC)) {
     (void)hDc;
     (void)oWglSwapBuffers;
@@ -702,6 +726,7 @@ void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC)) {
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    SyncImGuiDisplayMetrics(g_minecraftHwnd.load());
     ImGui::NewFrame();
 
     RenderConfigErrorGUI();

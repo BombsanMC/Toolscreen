@@ -1491,6 +1491,10 @@ static bool MT_ShouldUseSeparableDynamicBorder(const ThreadedMirrorConfig& conf,
     return !useRawOutput && conf.borderType == MirrorBorderType::Dynamic && conf.dynamicBorderThickness > 1;
 }
 
+static bool MT_SameThreadMirrorNeedsFinalTarget(const ThreadedMirrorConfig& conf, bool useRawOutput) {
+    return !MT_CanCompositeDynamicBorderOnScreen(conf, useRawOutput, false);
+}
+
 static bool MT_EnsureTempCaptureTexture(MirrorInstance* inst, int width, int height) {
     if (!inst || width <= 0 || height <= 0) { return false; }
 
@@ -2922,80 +2926,103 @@ bool RenderMirrorCapturesOnCurrentThread(const std::vector<ThreadedMirrorConfig>
 
         inst->desiredRawOutput.store(conf.rawOutput, std::memory_order_relaxed);
 
-        int borderPadding = (conf.borderType == MirrorBorderType::Dynamic) ? conf.dynamicBorderThickness : 0;
-        int requiredFboW = conf.captureWidth + 2 * borderPadding;
-        int requiredFboH = conf.captureHeight + 2 * borderPadding;
+        const bool needsFinalTarget = MT_SameThreadMirrorNeedsFinalTarget(conf, conf.rawOutput);
 
-        if (inst->fbo_w != requiredFboW || inst->fbo_h != requiredFboH) {
-            inst->fbo_w = requiredFboW;
-            inst->fbo_h = requiredFboH;
-            inst->forceUpdateFrames = 3;
-            inst->cachedRenderState.isValid = false;
+        {
+            PROFILE_SCOPE_CAT("Prepare Mirror Capture Targets", "Rendering");
+            int borderPadding = (conf.borderType == MirrorBorderType::Dynamic) ? conf.dynamicBorderThickness : 0;
+            int requiredFboW = conf.captureWidth + 2 * borderPadding;
+            int requiredFboH = conf.captureHeight + 2 * borderPadding;
 
-            BindTextureDirect(GL_TEXTURE_2D, inst->fboTexture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, inst->fbo_w, inst->fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            BindTextureDirect(GL_TEXTURE_2D, 0);
-        }
+            if (inst->fbo_w != requiredFboW || inst->fbo_h != requiredFboH) {
+                inst->fbo_w = requiredFboW;
+                inst->fbo_h = requiredFboH;
+                inst->forceUpdateFrames = 3;
+                inst->cachedRenderState.isValid = false;
 
-        float finalScaleX = conf.outputSeparateScale ? conf.outputScaleX : conf.outputScale;
-        float finalScaleY = conf.outputSeparateScale ? conf.outputScaleY : conf.outputScale;
-        int requiredFinalW = static_cast<int>(inst->fbo_w * finalScaleX);
-        int requiredFinalH = static_cast<int>(inst->fbo_h * finalScaleY);
-        if (inst->final_w != requiredFinalW || inst->final_h != requiredFinalH) {
-            BindTextureDirect(GL_TEXTURE_2D, inst->finalTexture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, requiredFinalW, requiredFinalH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            BindTextureDirect(GL_TEXTURE_2D, 0);
+                BindTextureDirect(GL_TEXTURE_2D, inst->fboTexture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, inst->fbo_w, inst->fbo_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+                BindTextureDirect(GL_TEXTURE_2D, 0);
+            }
 
-            inst->final_w = requiredFinalW;
-            inst->final_h = requiredFinalH;
-            inst->final_w_back = requiredFinalW;
-            inst->final_h_back = requiredFinalH;
-            inst->cachedRenderState.isValid = false;
-            inst->cachedRenderStateBack.isValid = false;
+            if (needsFinalTarget) {
+                float finalScaleX = conf.outputSeparateScale ? conf.outputScaleX : conf.outputScale;
+                float finalScaleY = conf.outputSeparateScale ? conf.outputScaleY : conf.outputScale;
+                int requiredFinalW = static_cast<int>(inst->fbo_w * finalScaleX);
+                int requiredFinalH = static_cast<int>(inst->fbo_h * finalScaleY);
+                if (inst->final_w != requiredFinalW || inst->final_h != requiredFinalH) {
+                    BindTextureDirect(GL_TEXTURE_2D, inst->finalTexture);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, requiredFinalW, requiredFinalH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+                    BindTextureDirect(GL_TEXTURE_2D, 0);
+
+                    inst->final_w = requiredFinalW;
+                    inst->final_h = requiredFinalH;
+                    inst->final_w_back = requiredFinalW;
+                    inst->final_h_back = requiredFinalH;
+                    inst->cachedRenderState.isValid = false;
+                    inst->cachedRenderStateBack.isValid = false;
+                }
+            }
         }
 
         MT_MirrorFbos& fb = g_sameThreadMirrorFbos[conf.name];
-        if (fb.backFbo == 0) { glGenFramebuffers(1, &fb.backFbo); }
-        if (fb.tempBackFbo == 0) { glGenFramebuffers(1, &fb.tempBackFbo); }
-        if (fb.finalBackFbo == 0) { glGenFramebuffers(1, &fb.finalBackFbo); }
+        {
+            PROFILE_SCOPE_CAT("Prepare Mirror Capture FBOs", "Rendering");
+            if (fb.backFbo == 0) { glGenFramebuffers(1, &fb.backFbo); }
+            if (fb.tempBackFbo == 0) { glGenFramebuffers(1, &fb.tempBackFbo); }
+            if (fb.finalBackFbo == 0) { glGenFramebuffers(1, &fb.finalBackFbo); }
+        }
 
         const bool needsContentDetection = MT_MirrorNeedsContentDetection(conf, conf.rawOutput);
-        if (needsContentDetection) {
-            bool hasContent = false;
-            if (MT_HarvestContentReadback(fb, hasContent)) {
-                inst->hasFrameContent = hasContent;
+        {
+            PROFILE_SCOPE_CAT("Mirror Content Detection", "Rendering");
+            if (needsContentDetection) {
+                bool hasContent = false;
+                if (MT_HarvestContentReadback(fb, hasContent)) {
+                    inst->hasFrameContent = hasContent;
+                }
+            } else {
+                MT_ReleaseContentDetectionResources(fb);
+                inst->hasFrameContent = true;
             }
-        } else {
-            MT_ReleaseContentDetectionResources(fb);
-            inst->hasFrameContent = true;
         }
 
-        if (fb.lastBackTex != inst->fboTexture) {
-            glBindFramebuffer(GL_FRAMEBUFFER, fb.backFbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, inst->fboTexture, 0);
-            fb.lastBackTex = inst->fboTexture;
-        }
-        if (fb.lastFinalBackTex != inst->finalTexture) {
-            glBindFramebuffer(GL_FRAMEBUFFER, fb.finalBackFbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, inst->finalTexture, 0);
-            fb.lastFinalBackTex = inst->finalTexture;
+        {
+            PROFILE_SCOPE_CAT("Attach Mirror Capture Textures", "Rendering");
+            if (fb.lastBackTex != inst->fboTexture) {
+                glBindFramebuffer(GL_FRAMEBUFFER, fb.backFbo);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, inst->fboTexture, 0);
+                fb.lastBackTex = inst->fboTexture;
+            }
+            if (needsFinalTarget && fb.lastFinalBackTex != inst->finalTexture) {
+                glBindFramebuffer(GL_FRAMEBUFFER, fb.finalBackFbo);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, inst->finalTexture, 0);
+                fb.lastFinalBackTex = inst->finalTexture;
+            }
         }
 
-        RenderMirrorToBuffer(inst, conf, sourceTexture, g_sameThreadCaptureVAO, g_sameThreadCaptureVBO,
-                             g_sameThreadSourceRectGpuCaches[conf.name], fb.backFbo, fb.tempBackFbo, &fb.lastTempTex,
-                             fb.finalBackFbo, gammaMode, gameW, gameH, false, &stateCache, true);
-
-        if (needsContentDetection) {
-            MT_QueueContentReadback(fb, fb.backFbo, inst->fbo_w, inst->fbo_h);
+        {
+            PROFILE_SCOPE_CAT("Capture Mirror Into Buffer", "Rendering");
+            const GLuint captureFinalFbo = needsFinalTarget ? fb.finalBackFbo : 0;
+            RenderMirrorToBuffer(inst, conf, sourceTexture, g_sameThreadCaptureVAO, g_sameThreadCaptureVBO,
+                                 g_sameThreadSourceRectGpuCaches[conf.name], fb.backFbo, fb.tempBackFbo, &fb.lastTempTex,
+                                 captureFinalFbo, gammaMode, gameW, gameH, false, &stateCache, true);
         }
-        ComputeMirrorRenderCache(inst, conf, gameW, gameH, screenW, screenH, finalX, finalY, finalW, finalH, false);
-        inst->capturedAsRawOutput = conf.rawOutput;
-        if (inst->gpuFence && glIsSync(inst->gpuFence)) { glDeleteSync(inst->gpuFence); }
-        inst->gpuFence = nullptr;
-        inst->hasValidContent = true;
-        inst->captureReady.store(false, std::memory_order_release);
-        inst->lastUpdateTime = now;
-        if (inst->forceUpdateFrames > 0) { inst->forceUpdateFrames--; }
+
+        {
+            PROFILE_SCOPE_CAT("Finalize Mirror Capture", "Rendering");
+            if (needsContentDetection) {
+                MT_QueueContentReadback(fb, fb.backFbo, inst->fbo_w, inst->fbo_h);
+            }
+            ComputeMirrorRenderCache(inst, conf, gameW, gameH, screenW, screenH, finalX, finalY, finalW, finalH, false);
+            inst->capturedAsRawOutput = conf.rawOutput;
+            if (inst->gpuFence && glIsSync(inst->gpuFence)) { glDeleteSync(inst->gpuFence); }
+            inst->gpuFence = nullptr;
+            inst->hasValidContent = true;
+            inst->captureReady.store(false, std::memory_order_release);
+            inst->lastUpdateTime = now;
+            if (inst->forceUpdateFrames > 0) { inst->forceUpdateFrames--; }
+        }
         renderedAny = true;
     }
 

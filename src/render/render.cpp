@@ -1127,6 +1127,7 @@ void DiscardAllGPUImages() {
     std::vector<GLuint> texturesToDelete;
 
     {
+
         std::lock_guard<std::mutex> bgLock(g_backgroundTexturesMutex);
         for (auto const& [id, inst] : g_backgroundTextures) {
             if (inst.isAnimated) {
@@ -1163,113 +1164,145 @@ void DiscardAllGPUImages() {
     Log("All background and user image textures have been queued for deletion.");
 }
 
-void SaveGLState(GLState* s) {
-    glGetIntegerv(GL_CURRENT_PROGRAM, &s->p);
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &s->va);
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &s->ab);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &s->read_fb);
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &s->draw_fb);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &s->at);
+struct PixelStoreStateGuard {
+    GLint unpackRowLength = 0;
+    GLint unpackSkipPixels = 0;
+    GLint unpackSkipRows = 0;
+    GLint packAlignment = 0;
+    GLint unpackAlignment = 0;
 
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t);
-    if (s->at == GL_TEXTURE0) {
-        s->t0 = s->t;
-    } else {
-        glActiveTexture(GL_TEXTURE0);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t0);
-        glActiveTexture(s->at);
+    PixelStoreStateGuard() {
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &unpackRowLength);
+        glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &unpackSkipPixels);
+        glGetIntegerv(GL_UNPACK_SKIP_ROWS, &unpackSkipRows);
+        glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackAlignment);
     }
 
-    s->fb = s->draw_fb;
+    ~PixelStoreStateGuard() {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, unpackRowLength);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, unpackSkipPixels);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, unpackSkipRows);
+        glPixelStorei(GL_PACK_ALIGNMENT, packAlignment);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlignment);
+    }
+};
 
-    s->be = glIsEnabled(GL_BLEND);
-    s->de = glIsEnabled(GL_DEPTH_TEST);
-    s->sc = glIsEnabled(GL_SCISSOR_TEST);
-    s->ce = glIsEnabled(GL_CULL_FACE);
-    s->ste = glIsEnabled(GL_STENCIL_TEST);
-    s->srgb_enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &s->depth_mask);
+void SaveGLState(GLState* s) {
+    {
+        PROFILE_SCOPE_CAT("Save GL Bindings", "SwapBuffers");
+        glGetIntegerv(GL_CURRENT_PROGRAM, &s->p);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &s->va);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &s->ab);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &s->read_fb);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &s->draw_fb);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &s->at);
 
-    glGetIntegerv(GL_BLEND_SRC_RGB, &s->blend_src_rgb);
-    glGetIntegerv(GL_BLEND_DST_RGB, &s->blend_dst_rgb);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &s->blend_src_alpha);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &s->blend_dst_alpha);
-    glGetIntegerv(GL_DRAW_BUFFER, &s->draw_buffer);
-    glGetIntegerv(GL_READ_BUFFER, &s->read_buffer);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t);
+        if (s->at == GL_TEXTURE0) {
+            s->t0 = s->t;
+        } else {
+            glActiveTexture(GL_TEXTURE0);
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t0);
+            glActiveTexture(s->at);
+        }
 
-    glGetIntegerv(GL_VIEWPORT, &s->vp[0]);
-    glGetIntegerv(GL_SCISSOR_BOX, s->sb);
+        s->fb = s->draw_fb;
+    }
 
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, s->cc);
-    glGetFloatv(GL_LINE_WIDTH, &s->lw);
-    glGetBooleanv(GL_COLOR_WRITEMASK, s->color_mask);
-    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &s->unpack_row_length);
-    glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &s->unpack_skip_pixels);
-    glGetIntegerv(GL_UNPACK_SKIP_ROWS, &s->unpack_skip_rows);
-    glGetIntegerv(GL_PACK_ALIGNMENT, &s->pack_alignment);
-    glGetIntegerv(GL_UNPACK_ALIGNMENT, &s->unpack_alignment);
+    {
+        PROFILE_SCOPE_CAT("Save GL Enable State", "SwapBuffers");
+        s->be = glIsEnabled(GL_BLEND);
+        s->de = glIsEnabled(GL_DEPTH_TEST);
+        s->sc = glIsEnabled(GL_SCISSOR_TEST);
+        s->ce = glIsEnabled(GL_CULL_FACE);
+        s->ste = glIsEnabled(GL_STENCIL_TEST);
+        s->srgb_enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &s->depth_mask);
+    }
+
+    {
+        PROFILE_SCOPE_CAT("Save GL Draw State", "SwapBuffers");
+        glGetIntegerv(GL_BLEND_SRC_RGB, &s->blend_src_rgb);
+        glGetIntegerv(GL_BLEND_DST_RGB, &s->blend_dst_rgb);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &s->blend_src_alpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &s->blend_dst_alpha);
+        glGetIntegerv(GL_DRAW_BUFFER, &s->draw_buffer);
+        glGetIntegerv(GL_READ_BUFFER, &s->read_buffer);
+
+        glGetIntegerv(GL_VIEWPORT, &s->vp[0]);
+        glGetIntegerv(GL_SCISSOR_BOX, s->sb);
+
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, s->cc);
+        glGetFloatv(GL_LINE_WIDTH, &s->lw);
+        glGetBooleanv(GL_COLOR_WRITEMASK, s->color_mask);
+    }
 }
 
 void RestoreGLState(const GLState& s) {
-    glUseProgram(s.p);
-    glBindVertexArray(s.va);
-    glBindBuffer(GL_ARRAY_BUFFER, s.ab);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, s.read_fb);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.draw_fb);
+    {
+        PROFILE_SCOPE_CAT("Restore GL Bindings", "SwapBuffers");
+        glUseProgram(s.p);
+        glBindVertexArray(s.va);
+        glBindBuffer(GL_ARRAY_BUFFER, s.ab);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, s.read_fb);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.draw_fb);
 
-    glActiveTexture(GL_TEXTURE0);
-    BindTextureDirect(GL_TEXTURE_2D, s.t0);
-    if (s.at != GL_TEXTURE0) {
-        glActiveTexture(s.at);
-        BindTextureDirect(GL_TEXTURE_2D, s.t);
-    } else {
-        glActiveTexture(s.at);
+        glActiveTexture(GL_TEXTURE0);
+        BindTextureDirect(GL_TEXTURE_2D, s.t0);
+        if (s.at != GL_TEXTURE0) {
+            glActiveTexture(s.at);
+            BindTextureDirect(GL_TEXTURE_2D, s.t);
+        } else {
+            glActiveTexture(s.at);
+        }
     }
 
-    if (s.be)
-        glEnable(GL_BLEND);
-    else
-        glDisable(GL_BLEND);
-    if (s.de)
-        glEnable(GL_DEPTH_TEST);
-    else
-        glDisable(GL_DEPTH_TEST);
-    if (s.sc)
-        glEnable(GL_SCISSOR_TEST);
-    else
-        glDisable(GL_SCISSOR_TEST);
-    if (s.ce)
-        glEnable(GL_CULL_FACE);
-    else
-        glDisable(GL_CULL_FACE);
-    if (s.ste)
-        glEnable(GL_STENCIL_TEST);
-    else
-        glDisable(GL_STENCIL_TEST);
-    if (s.srgb_enabled)
-        glEnable(GL_FRAMEBUFFER_SRGB);
-    else
-        glDisable(GL_FRAMEBUFFER_SRGB);
+    {
+        PROFILE_SCOPE_CAT("Restore GL Enable State", "SwapBuffers");
+        if (s.be)
+            glEnable(GL_BLEND);
+        else
+            glDisable(GL_BLEND);
+        if (s.de)
+            glEnable(GL_DEPTH_TEST);
+        else
+            glDisable(GL_DEPTH_TEST);
+        if (s.sc)
+            glEnable(GL_SCISSOR_TEST);
+        else
+            glDisable(GL_SCISSOR_TEST);
+        if (s.ce)
+            glEnable(GL_CULL_FACE);
+        else
+            glDisable(GL_CULL_FACE);
+        if (s.ste)
+            glEnable(GL_STENCIL_TEST);
+        else
+            glDisable(GL_STENCIL_TEST);
+        if (s.srgb_enabled)
+            glEnable(GL_FRAMEBUFFER_SRGB);
+        else
+            glDisable(GL_FRAMEBUFFER_SRGB);
+    }
 
-    glBlendFuncSeparate(s.blend_src_rgb, s.blend_dst_rgb, s.blend_src_alpha, s.blend_dst_alpha);
-    glDepthMask(s.depth_mask);
-    glDrawBuffer(s.draw_buffer);
-    glReadBuffer(s.read_buffer);
+    {
+        PROFILE_SCOPE_CAT("Restore GL Draw State", "SwapBuffers");
+        glBlendFuncSeparate(s.blend_src_rgb, s.blend_dst_rgb, s.blend_src_alpha, s.blend_dst_alpha);
+        glDepthMask(s.depth_mask);
+        glDrawBuffer(s.draw_buffer);
+        glReadBuffer(s.read_buffer);
 
-    if (oglViewport)
-        oglViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
-    else
-        glViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
-    glScissor(s.sb[0], s.sb[1], s.sb[2], s.sb[3]);
+        if (oglViewport)
+            oglViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
+        else
+            glViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
+        glScissor(s.sb[0], s.sb[1], s.sb[2], s.sb[3]);
 
-    glClearColor(s.cc[0], s.cc[1], s.cc[2], s.cc[3]);
-    glLineWidth(s.lw);
-    glColorMask(s.color_mask[0], s.color_mask[1], s.color_mask[2], s.color_mask[3]);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, s.unpack_row_length);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, s.unpack_skip_pixels);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, s.unpack_skip_rows);
-    glPixelStorei(GL_PACK_ALIGNMENT, s.pack_alignment);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, s.unpack_alignment);
+        glClearColor(s.cc[0], s.cc[1], s.cc[2], s.cc[3]);
+        glLineWidth(s.lw);
+        glColorMask(s.color_mask[0], s.color_mask[1], s.color_mask[2], s.color_mask[3]);
+    }
 }
 
 static void PrepareSameThreadOverlayState(const GLState& s, int fullW, int fullH) {
@@ -1457,6 +1490,8 @@ void CleanupGPUResources() {
 }
 void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
     PROFILE_SCOPE_CAT("GPU Image Upload", "GPU Operations");
+    PixelStoreStateGuard pixelStoreGuard;
+
     if (imgData.type == DecodedImageData::Type::Background) {
         std::lock_guard<std::mutex> bgLock(g_backgroundTexturesMutex);
 
@@ -2116,20 +2151,20 @@ static void DrawPassthroughTextureRegion(GLuint textureId, const float sourceRec
     glUniform4f(g_passthroughShaderLocs.sourceRect, sourceRect[0], sourceRect[1], sourceRect[2], sourceRect[3]);
     glUniform1f(g_passthroughShaderLocs.opacity, opacity);
 
-    glBindVertexArray(g_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-
-    float nx1 = (static_cast<float>(dstLeft) / fullW) * 2.0f - 1.0f;
-    float ny1 = (static_cast<float>(dstBottom) / fullH) * 2.0f - 1.0f;
-    float nx2 = (static_cast<float>(dstRight) / fullW) * 2.0f - 1.0f;
-    float ny2 = (static_cast<float>(dstTop) / fullH) * 2.0f - 1.0f;
-
-    float quad[] = {
-        nx1, ny1, 0, 0, nx2, ny1, 1, 0, nx2, ny2, 1, 1,
-        nx1, ny1, 0, 0, nx2, ny2, 1, 1, nx1, ny2, 0, 1,
-    };
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
+    glBindVertexArray(g_fullscreenQuadVAO);
+    const int regionW = dstRight - dstLeft;
+    const int regionH = dstTop - dstBottom;
+    if (oglViewport) {
+        oglViewport(dstLeft, dstBottom, regionW, regionH);
+    } else {
+        glViewport(dstLeft, dstBottom, regionW, regionH);
+    }
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    if (oglViewport) {
+        oglViewport(0, 0, fullW, fullH);
+    } else {
+        glViewport(0, 0, fullW, fullH);
+    }
 }
 
 static void AppendUniqueMirrorsByName(std::vector<MirrorConfig>& dest, const std::vector<MirrorConfig>& src) {
@@ -2197,6 +2232,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
     if (!sameThreadMirrorPipeline) { pendingFences.reserve(activeMirrors.size()); }
 
     {
+        PROFILE_SCOPE_CAT("Collect Mirror Render Data", "Rendering");
         std::shared_lock<std::shared_mutex> mirrorLock(g_mirrorInstancesMutex);
         for (const auto& conf : activeMirrors) {
             if (excludeOnlyOnMyScreen && conf.onlyOnMyScreen) continue;
@@ -2262,6 +2298,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
 
     const bool needsCrossContextMirrorSync = !pendingFences.empty();
     if (needsCrossContextMirrorSync) {
+        PROFILE_SCOPE_CAT("Wait Mirror Fences", "Rendering");
         for (GLsync fence : pendingFences) {
             if (fence && glIsSync(fence)) { glWaitSync(fence, 0, GL_TIMEOUT_IGNORED); }
         }
@@ -2299,90 +2336,95 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
         }
     };
 
-    for (auto& renderData : mirrorsToRender) {
-        const MirrorConfig& conf = *renderData.config;
-        const float effectiveOpacity = modeOpacity * conf.opacity;
-        if (effectiveOpacity <= 0.0f) continue;
-        if (!sameThreadMirrorPipeline && !IsSampleableTexture2DCached(renderData.texture, renderData.tex_w, renderData.tex_h)) {
-            LogInvalidTextureSampleThrottled("mirror_texture:" + conf.name, renderData.texture, renderData.tex_w, renderData.tex_h);
-            continue;
-        }
+    {
+        PROFILE_SCOPE_CAT("Render Mirror Textures", "Rendering");
+        for (auto& renderData : mirrorsToRender) {
+            const MirrorConfig& conf = *renderData.config;
+            const float effectiveOpacity = modeOpacity * conf.opacity;
+            if (effectiveOpacity <= 0.0f) continue;
+            if (!sameThreadMirrorPipeline && !IsSampleableTexture2DCached(renderData.texture, renderData.tex_w, renderData.tex_h)) {
+                LogInvalidTextureSampleThrottled("mirror_texture:" + conf.name, renderData.texture, renderData.tex_w, renderData.tex_h);
+                continue;
+            }
 
-        if (renderData.useDynamicBorderComposite) {
-            const float screenPixelX = 1.0f / static_cast<float>((std::max)(1, renderData.outW));
-            const float screenPixelY = 1.0f / static_cast<float>((std::max)(1, renderData.outH));
+            if (renderData.useDynamicBorderComposite) {
+                const float screenPixelX = 1.0f / static_cast<float>((std::max)(1, renderData.outW));
+                const float screenPixelY = 1.0f / static_cast<float>((std::max)(1, renderData.outH));
 
-            if (conf.colorPassthrough) {
-                bindMirrorProgram(g_renderPassthroughProgram);
-                const float borderColor[4] = { conf.colors.border.r, conf.colors.border.g, conf.colors.border.b,
-                                               conf.colors.border.a * effectiveOpacity };
-                if (!renderPassthroughUniformsValid || lastRenderPassthroughBorderWidth != conf.border.dynamicThickness) {
-                    glUniform1i(g_renderPassthroughShaderLocs.borderWidth, conf.border.dynamicThickness);
-                    lastRenderPassthroughBorderWidth = conf.border.dynamicThickness;
+                if (conf.colorPassthrough) {
+                    bindMirrorProgram(g_renderPassthroughProgram);
+                    const float borderColor[4] = { conf.colors.border.r, conf.colors.border.g, conf.colors.border.b,
+                                                   conf.colors.border.a * effectiveOpacity };
+                    if (!renderPassthroughUniformsValid || lastRenderPassthroughBorderWidth != conf.border.dynamicThickness) {
+                        glUniform1i(g_renderPassthroughShaderLocs.borderWidth, conf.border.dynamicThickness);
+                        lastRenderPassthroughBorderWidth = conf.border.dynamicThickness;
+                    }
+                    if (!renderPassthroughUniformsValid || lastRenderPassthroughBorderColor[0] != borderColor[0] ||
+                        lastRenderPassthroughBorderColor[1] != borderColor[1] ||
+                        lastRenderPassthroughBorderColor[2] != borderColor[2] ||
+                        lastRenderPassthroughBorderColor[3] != borderColor[3]) {
+                        glUniform4f(g_renderPassthroughShaderLocs.borderColor, borderColor[0], borderColor[1], borderColor[2],
+                                    borderColor[3]);
+                        memcpy(lastRenderPassthroughBorderColor, borderColor, sizeof(borderColor));
+                    }
+                    if (!renderPassthroughUniformsValid || lastRenderPassthroughScreenPixelX != screenPixelX ||
+                        lastRenderPassthroughScreenPixelY != screenPixelY) {
+                        glUniform2f(g_renderPassthroughShaderLocs.screenPixel, screenPixelX, screenPixelY);
+                        lastRenderPassthroughScreenPixelX = screenPixelX;
+                        lastRenderPassthroughScreenPixelY = screenPixelY;
+                    }
+                    if (!renderPassthroughUniformsValid || lastRenderPassthroughOpacity != effectiveOpacity) {
+                        glUniform1f(g_renderPassthroughShaderLocs.opacity, effectiveOpacity);
+                        lastRenderPassthroughOpacity = effectiveOpacity;
+                    }
+                    renderPassthroughUniformsValid = true;
+                } else {
+                    bindMirrorProgram(g_renderProgram);
+                    const float outputColor[4] = { conf.colors.output.r, conf.colors.output.g, conf.colors.output.b,
+                                                   conf.colors.output.a * effectiveOpacity };
+                    const float borderColor[4] = { conf.colors.border.r, conf.colors.border.g, conf.colors.border.b,
+                                                   conf.colors.border.a * effectiveOpacity };
+                    if (!renderUniformsValid || lastRenderBorderWidth != conf.border.dynamicThickness) {
+                        glUniform1i(g_renderShaderLocs.borderWidth, conf.border.dynamicThickness);
+                        lastRenderBorderWidth = conf.border.dynamicThickness;
+                    }
+                    if (!renderUniformsValid || lastRenderOutputColor[0] != outputColor[0] ||
+                        lastRenderOutputColor[1] != outputColor[1] || lastRenderOutputColor[2] != outputColor[2] ||
+                        lastRenderOutputColor[3] != outputColor[3]) {
+                        glUniform4f(g_renderShaderLocs.outputColor, outputColor[0], outputColor[1], outputColor[2], outputColor[3]);
+                        memcpy(lastRenderOutputColor, outputColor, sizeof(outputColor));
+                    }
+                    if (!renderUniformsValid || lastRenderBorderColor[0] != borderColor[0] ||
+                        lastRenderBorderColor[1] != borderColor[1] || lastRenderBorderColor[2] != borderColor[2] ||
+                        lastRenderBorderColor[3] != borderColor[3]) {
+                        glUniform4f(g_renderShaderLocs.borderColor, borderColor[0], borderColor[1], borderColor[2], borderColor[3]);
+                        memcpy(lastRenderBorderColor, borderColor, sizeof(borderColor));
+                    }
+                    if (!renderUniformsValid || lastRenderScreenPixelX != screenPixelX || lastRenderScreenPixelY != screenPixelY) {
+                        glUniform2f(g_renderShaderLocs.screenPixel, screenPixelX, screenPixelY);
+                        lastRenderScreenPixelX = screenPixelX;
+                        lastRenderScreenPixelY = screenPixelY;
+                    }
+                    renderUniformsValid = true;
                 }
-                if (!renderPassthroughUniformsValid || lastRenderPassthroughBorderColor[0] != borderColor[0] ||
-                    lastRenderPassthroughBorderColor[1] != borderColor[1] || lastRenderPassthroughBorderColor[2] != borderColor[2] ||
-                    lastRenderPassthroughBorderColor[3] != borderColor[3]) {
-                    glUniform4f(g_renderPassthroughShaderLocs.borderColor, borderColor[0], borderColor[1], borderColor[2],
-                                borderColor[3]);
-                    memcpy(lastRenderPassthroughBorderColor, borderColor, sizeof(borderColor));
-                }
-                if (!renderPassthroughUniformsValid || lastRenderPassthroughScreenPixelX != screenPixelX ||
-                    lastRenderPassthroughScreenPixelY != screenPixelY) {
-                    glUniform2f(g_renderPassthroughShaderLocs.screenPixel, screenPixelX, screenPixelY);
-                    lastRenderPassthroughScreenPixelX = screenPixelX;
-                    lastRenderPassthroughScreenPixelY = screenPixelY;
-                }
-                if (!renderPassthroughUniformsValid || lastRenderPassthroughOpacity != effectiveOpacity) {
-                    glUniform1f(g_renderPassthroughShaderLocs.opacity, effectiveOpacity);
-                    lastRenderPassthroughOpacity = effectiveOpacity;
-                }
-                renderPassthroughUniformsValid = true;
             } else {
-                bindMirrorProgram(g_renderProgram);
-                const float outputColor[4] = { conf.colors.output.r, conf.colors.output.g, conf.colors.output.b,
-                                               conf.colors.output.a * effectiveOpacity };
-                const float borderColor[4] = { conf.colors.border.r, conf.colors.border.g, conf.colors.border.b,
-                                               conf.colors.border.a * effectiveOpacity };
-                if (!renderUniformsValid || lastRenderBorderWidth != conf.border.dynamicThickness) {
-                    glUniform1i(g_renderShaderLocs.borderWidth, conf.border.dynamicThickness);
-                    lastRenderBorderWidth = conf.border.dynamicThickness;
+                bindMirrorProgram(g_backgroundProgram);
+                if (lastMirrorOpacity != effectiveOpacity) {
+                    glUniform1f(g_backgroundShaderLocs.opacity, effectiveOpacity);
+                    lastMirrorOpacity = effectiveOpacity;
                 }
-                if (!renderUniformsValid || lastRenderOutputColor[0] != outputColor[0] || lastRenderOutputColor[1] != outputColor[1] ||
-                    lastRenderOutputColor[2] != outputColor[2] || lastRenderOutputColor[3] != outputColor[3]) {
-                    glUniform4f(g_renderShaderLocs.outputColor, outputColor[0], outputColor[1], outputColor[2], outputColor[3]);
-                    memcpy(lastRenderOutputColor, outputColor, sizeof(outputColor));
-                }
-                if (!renderUniformsValid || lastRenderBorderColor[0] != borderColor[0] || lastRenderBorderColor[1] != borderColor[1] ||
-                    lastRenderBorderColor[2] != borderColor[2] || lastRenderBorderColor[3] != borderColor[3]) {
-                    glUniform4f(g_renderShaderLocs.borderColor, borderColor[0], borderColor[1], borderColor[2], borderColor[3]);
-                    memcpy(lastRenderBorderColor, borderColor, sizeof(borderColor));
-                }
-                if (!renderUniformsValid || lastRenderScreenPixelX != screenPixelX || lastRenderScreenPixelY != screenPixelY) {
-                    glUniform2f(g_renderShaderLocs.screenPixel, screenPixelX, screenPixelY);
-                    lastRenderScreenPixelX = screenPixelX;
-                    lastRenderScreenPixelY = screenPixelY;
-                }
-                renderUniformsValid = true;
             }
-        } else {
-            bindMirrorProgram(g_backgroundProgram);
-            if (lastMirrorOpacity != effectiveOpacity) {
-                glUniform1f(g_backgroundShaderLocs.opacity, effectiveOpacity);
-                lastMirrorOpacity = effectiveOpacity;
+
+            if (lastBoundMirrorTexture != renderData.texture) {
+                BindTextureDirect(GL_TEXTURE_2D, renderData.texture);
+                lastBoundMirrorTexture = renderData.texture;
             }
-        }
 
-        if (lastBoundMirrorTexture != renderData.texture) {
-            BindTextureDirect(GL_TEXTURE_2D, renderData.texture);
-            lastBoundMirrorTexture = renderData.texture;
-        }
-
-        if (renderData.cacheValid) {
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(renderData.vertices), renderData.vertices);
-        } else {
-            std::string anchor = conf.output.relativeTo;
-            bool isScreenRelative = false;
+            if (renderData.cacheValid) {
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(renderData.vertices), renderData.vertices);
+            } else {
+                std::string anchor = conf.output.relativeTo;
+                bool isScreenRelative = false;
             if (anchor.length() > 6 && anchor.substr(anchor.length() - 6) == "Screen") {
                 anchor = anchor.substr(0, anchor.length() - 6);
                 isScreenRelative = true;
@@ -2484,93 +2526,98 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
             glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
         }
 
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
     }
 
-    glUseProgram(g_staticBorderProgram);
+    {
+        PROFILE_SCOPE_CAT("Render Static Mirror Borders", "Rendering");
+        glUseProgram(g_staticBorderProgram);
 
-    bool staticBorderUniformsValid = false;
-    int lastStaticBorderShape = 0;
-    float lastStaticBorderColorR = 0.0f;
-    float lastStaticBorderColorG = 0.0f;
-    float lastStaticBorderColorB = 0.0f;
-    float lastStaticBorderColorA = 0.0f;
-    float lastStaticBorderThickness = 0.0f;
-    float lastStaticBorderRadius = 0.0f;
-    float lastStaticBorderBaseW = 0.0f;
-    float lastStaticBorderBaseH = 0.0f;
-    float lastStaticBorderQuadW = 0.0f;
-    float lastStaticBorderQuadH = 0.0f;
+        bool staticBorderUniformsValid = false;
+        int lastStaticBorderShape = 0;
+        float lastStaticBorderColorR = 0.0f;
+        float lastStaticBorderColorG = 0.0f;
+        float lastStaticBorderColorB = 0.0f;
+        float lastStaticBorderColorA = 0.0f;
+        float lastStaticBorderThickness = 0.0f;
+        float lastStaticBorderRadius = 0.0f;
+        float lastStaticBorderBaseW = 0.0f;
+        float lastStaticBorderBaseH = 0.0f;
+        float lastStaticBorderQuadW = 0.0f;
+        float lastStaticBorderQuadH = 0.0f;
 
-    for (const auto& renderData : mirrorsToRender) {
-        const MirrorConfig& conf = *renderData.config;
-        const MirrorBorderConfig& border = conf.border;
-        if (border.type != MirrorBorderType::Static || border.staticThickness <= 0 || !renderData.hasFrameContent ||
-            renderData.screenW <= 0 || renderData.screenH <= 0) {
-            continue;
-        }
+        for (const auto& renderData : mirrorsToRender) {
+            const MirrorConfig& conf = *renderData.config;
+            const MirrorBorderConfig& border = conf.border;
+            if (border.type != MirrorBorderType::Static || border.staticThickness <= 0 || !renderData.hasFrameContent ||
+                renderData.screenW <= 0 || renderData.screenH <= 0) {
+                continue;
+            }
 
-        int baseW = (border.staticWidth > 0) ? border.staticWidth : renderData.screenW;
-        int baseH = (border.staticHeight > 0) ? border.staticHeight : renderData.screenH;
-        int borderExtension = border.staticThickness + 1;
-        int quadW = baseW + borderExtension * 2;
-        int quadH = baseH + borderExtension * 2;
-        int centerOffsetX = (baseW - renderData.screenW) / 2;
-        int centerOffsetY = (baseH - renderData.screenH) / 2;
-        int quadX = renderData.screenX - centerOffsetX + border.staticOffsetX - borderExtension;
-        int quadY = renderData.screenY - centerOffsetY + border.staticOffsetY - borderExtension;
-        int quadYGl = fullH - (quadY + quadH);
-        const int shape = static_cast<int>(border.staticShape);
-        const float borderColorR = border.staticColor.r;
-        const float borderColorG = border.staticColor.g;
-        const float borderColorB = border.staticColor.b;
-        const float borderColorA = border.staticColor.a * conf.opacity * modeOpacity;
-        const float borderThickness = static_cast<float>(border.staticThickness);
-        const float borderRadius = static_cast<float>(border.staticRadius);
-        const float baseWF = static_cast<float>(baseW);
-        const float baseHF = static_cast<float>(baseH);
-        const float quadWF = static_cast<float>(quadW);
-        const float quadHF = static_cast<float>(quadH);
+            int baseW = (border.staticWidth > 0) ? border.staticWidth : renderData.screenW;
+            int baseH = (border.staticHeight > 0) ? border.staticHeight : renderData.screenH;
+            int borderExtension = border.staticThickness + 1;
+            int quadW = baseW + borderExtension * 2;
+            int quadH = baseH + borderExtension * 2;
+            int centerOffsetX = (baseW - renderData.screenW) / 2;
+            int centerOffsetY = (baseH - renderData.screenH) / 2;
+            int quadX = renderData.screenX - centerOffsetX + border.staticOffsetX - borderExtension;
+            int quadY = renderData.screenY - centerOffsetY + border.staticOffsetY - borderExtension;
+            int quadYGl = fullH - (quadY + quadH);
+            const int shape = static_cast<int>(border.staticShape);
+            const float borderColorR = border.staticColor.r;
+            const float borderColorG = border.staticColor.g;
+            const float borderColorB = border.staticColor.b;
+            const float borderColorA = border.staticColor.a * conf.opacity * modeOpacity;
+            const float borderThickness = static_cast<float>(border.staticThickness);
+            const float borderRadius = static_cast<float>(border.staticRadius);
+            const float baseWF = static_cast<float>(baseW);
+            const float baseHF = static_cast<float>(baseH);
+            const float quadWF = static_cast<float>(quadW);
+            const float quadHF = static_cast<float>(quadH);
 
-        if (!staticBorderUniformsValid || lastStaticBorderShape != shape) {
-            glUniform1i(g_staticBorderShaderLocs.shape, shape);
-            lastStaticBorderShape = shape;
-        }
-        if (!staticBorderUniformsValid || lastStaticBorderColorR != borderColorR || lastStaticBorderColorG != borderColorG ||
-            lastStaticBorderColorB != borderColorB || lastStaticBorderColorA != borderColorA) {
-            glUniform4f(g_staticBorderShaderLocs.borderColor, borderColorR, borderColorG, borderColorB, borderColorA);
-            lastStaticBorderColorR = borderColorR;
-            lastStaticBorderColorG = borderColorG;
-            lastStaticBorderColorB = borderColorB;
-            lastStaticBorderColorA = borderColorA;
-        }
-        if (!staticBorderUniformsValid || lastStaticBorderThickness != borderThickness) {
-            glUniform1f(g_staticBorderShaderLocs.thickness, borderThickness);
-            lastStaticBorderThickness = borderThickness;
-        }
-        if (!staticBorderUniformsValid || lastStaticBorderRadius != borderRadius) {
-            glUniform1f(g_staticBorderShaderLocs.radius, borderRadius);
-            lastStaticBorderRadius = borderRadius;
-        }
-        if (!staticBorderUniformsValid || lastStaticBorderBaseW != baseWF || lastStaticBorderBaseH != baseHF) {
-            glUniform2f(g_staticBorderShaderLocs.size, baseWF, baseHF);
-            lastStaticBorderBaseW = baseWF;
-            lastStaticBorderBaseH = baseHF;
-        }
-        if (!staticBorderUniformsValid || lastStaticBorderQuadW != quadWF || lastStaticBorderQuadH != quadHF) {
-            glUniform2f(g_staticBorderShaderLocs.quadSize, quadWF, quadHF);
-            lastStaticBorderQuadW = quadWF;
-            lastStaticBorderQuadH = quadHF;
-        }
-        staticBorderUniformsValid = true;
+            if (!staticBorderUniformsValid || lastStaticBorderShape != shape) {
+                glUniform1i(g_staticBorderShaderLocs.shape, shape);
+                lastStaticBorderShape = shape;
+            }
+            if (!staticBorderUniformsValid || lastStaticBorderColorR != borderColorR ||
+                lastStaticBorderColorG != borderColorG || lastStaticBorderColorB != borderColorB ||
+                lastStaticBorderColorA != borderColorA) {
+                glUniform4f(g_staticBorderShaderLocs.borderColor, borderColorR, borderColorG, borderColorB, borderColorA);
+                lastStaticBorderColorR = borderColorR;
+                lastStaticBorderColorG = borderColorG;
+                lastStaticBorderColorB = borderColorB;
+                lastStaticBorderColorA = borderColorA;
+            }
+            if (!staticBorderUniformsValid || lastStaticBorderThickness != borderThickness) {
+                glUniform1f(g_staticBorderShaderLocs.thickness, borderThickness);
+                lastStaticBorderThickness = borderThickness;
+            }
+            if (!staticBorderUniformsValid || lastStaticBorderRadius != borderRadius) {
+                glUniform1f(g_staticBorderShaderLocs.radius, borderRadius);
+                lastStaticBorderRadius = borderRadius;
+            }
+            if (!staticBorderUniformsValid || lastStaticBorderBaseW != baseWF || lastStaticBorderBaseH != baseHF) {
+                glUniform2f(g_staticBorderShaderLocs.size, baseWF, baseHF);
+                lastStaticBorderBaseW = baseWF;
+                lastStaticBorderBaseH = baseHF;
+            }
+            if (!staticBorderUniformsValid || lastStaticBorderQuadW != quadWF || lastStaticBorderQuadH != quadHF) {
+                glUniform2f(g_staticBorderShaderLocs.quadSize, quadWF, quadHF);
+                lastStaticBorderQuadW = quadWF;
+                lastStaticBorderQuadH = quadHF;
+            }
+            staticBorderUniformsValid = true;
 
-        float nx1 = (static_cast<float>(quadX) / fullW) * 2.0f - 1.0f;
-        float ny1 = (static_cast<float>(quadYGl) / fullH) * 2.0f - 1.0f;
-        float nx2 = (static_cast<float>(quadX + quadW) / fullW) * 2.0f - 1.0f;
-        float ny2 = (static_cast<float>(quadYGl + quadH) / fullH) * 2.0f - 1.0f;
-        float verts[] = { nx1, ny1, 0, 0, nx2, ny1, 1, 0, nx2, ny2, 1, 1, nx1, ny1, 0, 0, nx2, ny2, 1, 1, nx1, ny2, 0, 1 };
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+            float nx1 = (static_cast<float>(quadX) / fullW) * 2.0f - 1.0f;
+            float ny1 = (static_cast<float>(quadYGl) / fullH) * 2.0f - 1.0f;
+            float nx2 = (static_cast<float>(quadX + quadW) / fullW) * 2.0f - 1.0f;
+            float ny2 = (static_cast<float>(quadYGl + quadH) / fullH) * 2.0f - 1.0f;
+            float verts[] = { nx1, ny1, 0, 0, nx2, ny1, 1, 0, nx2, ny2, 1, 1, nx1, ny1, 0, 0, nx2, ny2, 1, 1, nx1, ny2, 0, 1 };
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
     }
 
     glDisable(GL_BLEND);
@@ -2933,10 +2980,12 @@ struct SameThreadOverlayState {
     bool toSlideMirrorsIn = false;
     float mirrorSlideProgress = 1.0f;
     bool allowMirrorCaptureReuse = false;
+    uint64_t mirrorCaptureFrameTag = 0;
 };
 
 struct SameThreadMirrorCaptureReuseState {
     bool available = false;
+    uint64_t frameTag = 0;
     uint64_t configVersion = 0;
     std::string modeId;
     std::string fromModeId;
@@ -2948,15 +2997,39 @@ struct SameThreadMirrorCaptureReuseState {
 };
 
 static SameThreadMirrorCaptureReuseState s_sameThreadMirrorCaptureReuseState;
+static uint64_t s_sameThreadMirrorCaptureFrameTag = 0;
 
-static void InvalidateSameThreadMirrorCaptureReuse() {
+static bool HasSameThreadOverlayWork(const SameThreadOverlayState& request, const Config& cfg) {
+    if (request.modeHasMirrors || request.modeHasImages || request.modeHasWindowOverlays || request.shouldRenderGui ||
+        request.showPerformanceOverlay || request.showProfiler || request.showTextureGrid || request.showEyeZoom ||
+        request.showWelcomeToast) {
+        return true;
+    }
+
+    if (request.isRawWindowedMode || request.skipAnimation) { return false; }
+
+    if (request.isTransitioningFromEyeZoom && cfg.eyezoom.slideMirrorsIn) {
+        return true;
+    }
+
+    return request.fromSlideMirrorsIn && !request.fromModeId.empty() && request.mirrorSlideProgress < 1.0f;
+}
+
+static uint64_t BeginSameThreadMirrorCaptureFrame() {
+    ++s_sameThreadMirrorCaptureFrameTag;
+    if (s_sameThreadMirrorCaptureFrameTag == 0) {
+        ++s_sameThreadMirrorCaptureFrameTag;
+    }
+
     s_sameThreadMirrorCaptureReuseState.available = false;
+    return s_sameThreadMirrorCaptureFrameTag;
 }
 
 static bool CanReuseSameThreadMirrorCapture(uint64_t configVersion, const SameThreadOverlayState& request,
                                             bool hasEyeZoomSlideOutMirrors, bool hasTransitionSlideOutMirrors,
                                             GLuint sourceTexture, int sourceW, int sourceH) {
-    return request.allowMirrorCaptureReuse && s_sameThreadMirrorCaptureReuseState.available &&
+    return request.allowMirrorCaptureReuse && request.mirrorCaptureFrameTag != 0 && s_sameThreadMirrorCaptureReuseState.available &&
+           s_sameThreadMirrorCaptureReuseState.frameTag == request.mirrorCaptureFrameTag &&
            s_sameThreadMirrorCaptureReuseState.configVersion == configVersion &&
            s_sameThreadMirrorCaptureReuseState.modeId == request.modeId &&
            s_sameThreadMirrorCaptureReuseState.fromModeId == request.fromModeId &&
@@ -2970,6 +3043,7 @@ static void CacheSameThreadMirrorCapture(uint64_t configVersion, const SameThrea
                                          bool hasEyeZoomSlideOutMirrors, bool hasTransitionSlideOutMirrors, GLuint sourceTexture,
                                          int sourceW, int sourceH) {
     s_sameThreadMirrorCaptureReuseState.available = true;
+    s_sameThreadMirrorCaptureReuseState.frameTag = request.mirrorCaptureFrameTag;
     s_sameThreadMirrorCaptureReuseState.configVersion = configVersion;
     s_sameThreadMirrorCaptureReuseState.modeId = request.modeId;
     s_sameThreadMirrorCaptureReuseState.fromModeId = request.fromModeId;
@@ -2996,6 +3070,7 @@ static void RenderSameThreadImGui(const SameThreadOverlayState& request) {
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    SyncImGuiDisplayMetrics(hwnd);
 
     // Feed queued input from the window thread into the main-thread ImGui context.
     ImGuiInputQueue_DrainToImGui();
@@ -3016,6 +3091,8 @@ static void RenderSameThreadImGui(const SameThreadOverlayState& request) {
 }
 
 static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, const Config& cfg, const GLState& s) {
+    if (!HasSameThreadOverlayWork(request, cfg)) { return false; }
+
     {
         PROFILE_SCOPE_CAT("Prepare Overlay GL State", "Rendering");
         PrepareSameThreadOverlayState(s, request.fullW, request.fullH);
@@ -3037,9 +3114,6 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
     static std::vector<MirrorConfig> s_cachedTransitionSlideOutMirrors;
     static uint64_t s_cachedSameThreadCaptureConfigVersion = 0;
     static std::string s_cachedSameThreadCaptureModeId;
-    static std::string s_cachedSameThreadCaptureFromModeId;
-    static bool s_cachedSameThreadCaptureHasEyeZoomSlideOut = false;
-    static bool s_cachedSameThreadCaptureHasTransitionSlideOut = false;
     static std::vector<ThreadedMirrorConfig> s_cachedSameThreadCaptureConfigs;
     static const std::vector<MirrorConfig> s_emptyMirrors;
     static const std::vector<ImageConfig> s_emptyImages;
@@ -3161,22 +3235,23 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
         int sourceH = 0;
         const bool hasEyeZoomSlideOutMirrors = !eyeZoomSlideOutMirrors->empty();
         const bool hasTransitionSlideOutMirrors = !transitionSlideOutMirrors->empty();
-        if (s_cachedSameThreadCaptureConfigVersion != cfgVersion || s_cachedSameThreadCaptureModeId != request.modeId ||
-            s_cachedSameThreadCaptureFromModeId != request.fromModeId ||
-            s_cachedSameThreadCaptureHasEyeZoomSlideOut != hasEyeZoomSlideOutMirrors ||
-            s_cachedSameThreadCaptureHasTransitionSlideOut != hasTransitionSlideOutMirrors) {
+        if (s_cachedSameThreadCaptureConfigVersion != cfgVersion || s_cachedSameThreadCaptureModeId != request.modeId) {
+            PROFILE_SCOPE_CAT("Build Same-Thread Capture Configs", "Rendering");
             std::vector<MirrorConfig> mirrorsForCapture = activeMirrors;
             BuildThreadedMirrorConfigs(mirrorsForCapture, s_cachedSameThreadCaptureConfigs);
 
             s_cachedSameThreadCaptureConfigVersion = cfgVersion;
             s_cachedSameThreadCaptureModeId = request.modeId;
-            s_cachedSameThreadCaptureFromModeId = request.fromModeId;
-            s_cachedSameThreadCaptureHasEyeZoomSlideOut = hasEyeZoomSlideOutMirrors;
-            s_cachedSameThreadCaptureHasTransitionSlideOut = hasTransitionSlideOutMirrors;
         }
 
-        if (!s_cachedSameThreadCaptureConfigs.empty() &&
-            SelectSameThreadGameTexture(request.gameTextureId, request.gameW, request.gameH, sourceTexture, sourceW, sourceH)) {
+        bool hasCaptureSource = false;
+        if (!s_cachedSameThreadCaptureConfigs.empty()) {
+            PROFILE_SCOPE_CAT("Resolve Mirror Capture Source", "Rendering");
+            hasCaptureSource =
+                SelectSameThreadGameTexture(request.gameTextureId, request.gameW, request.gameH, sourceTexture, sourceW, sourceH);
+        }
+
+        if (!s_cachedSameThreadCaptureConfigs.empty() && hasCaptureSource) {
             const bool reuseMirrorCaptures =
                 CanReuseSameThreadMirrorCapture(cfgVersion, request, hasEyeZoomSlideOutMirrors, hasTransitionSlideOutMirrors,
                                                 sourceTexture, sourceW, sourceH);
@@ -3306,15 +3381,8 @@ static GLuint ResolveModeBackgroundTextureId(const std::string& modeId) {
 static void DrawFullscreenSolidColor(const Color& color) {
     glUseProgram(g_solidColorProgram);
     glUniform4f(g_solidColorShaderLocs.color, color.r, color.g, color.b, color.a);
-    glBindVertexArray(g_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    glBindVertexArray(g_fullscreenQuadVAO);
     glDisable(GL_BLEND);
-
-    const float quad[] = {
-        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f,
-        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f, 0.0f,
-    };
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
@@ -3325,8 +3393,7 @@ static void DrawFullscreenGradient(const BackgroundConfig& bg) {
     }
 
     glUseProgram(g_gradientProgram);
-    glBindVertexArray(g_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    glBindVertexArray(g_fullscreenQuadVAO);
     glDisable(GL_BLEND);
 
     const int numStops = (std::min)(static_cast<int>(bg.gradientStops.size()), MAX_GRADIENT_STOPS);
@@ -3354,11 +3421,18 @@ static void DrawFullscreenGradient(const BackgroundConfig& bg) {
     glUniform1f(g_gradientShaderLocs.animationSpeed, bg.gradientAnimationSpeed);
     glUniform1i(g_gradientShaderLocs.colorFade, bg.gradientColorFade ? 1 : 0);
 
-    const float quad[] = {
-        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f,
-        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 1.0f,
-    };
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+static void DrawFullscreenPassthroughTexture(GLuint textureId, float opacity) {
+    if (textureId == 0) { return; }
+
+    glUseProgram(g_passthroughProgram);
+    BindTextureDirect(GL_TEXTURE_2D, textureId);
+    glUniform4f(g_passthroughShaderLocs.sourceRect, 0.0f, 0.0f, 1.0f, 1.0f);
+    glUniform1f(g_passthroughShaderLocs.opacity, opacity);
+    glBindVertexArray(g_fullscreenQuadVAO);
+    glDisable(GL_BLEND);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
@@ -3369,8 +3443,7 @@ static void RenderSameThreadObsBackground(const ModeConfig* modeToRender, int fu
     if (bg.selectedMode == "image") {
         const GLuint backgroundTexture = ResolveModeBackgroundTextureId(modeToRender->id);
         if (backgroundTexture != 0) {
-            const float sourceRect[] = { 0.0f, 0.0f, 1.0f, 1.0f };
-            DrawPassthroughTextureRegion(backgroundTexture, sourceRect, 0, 0, fullW, fullH, fullW, fullH, 1.0f);
+            DrawFullscreenPassthroughTexture(backgroundTexture, 1.0f);
             return;
         }
     }
@@ -3387,8 +3460,7 @@ static void RenderSameThreadObsBackgroundConfig(const BackgroundConfig& bg, GLui
     if (fullW <= 0 || fullH <= 0) { return; }
 
     if (bg.selectedMode == "image" && backgroundTexture != 0) {
-        const float sourceRect[] = { 0.0f, 0.0f, 1.0f, 1.0f };
-        DrawPassthroughTextureRegion(backgroundTexture, sourceRect, 0, 0, fullW, fullH, fullW, fullH, 1.0f);
+        DrawFullscreenPassthroughTexture(backgroundTexture, 1.0f);
         return;
     }
 
@@ -3403,59 +3475,79 @@ static void RenderSameThreadObsBackgroundConfig(const BackgroundConfig& bg, GLui
 bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH, bool skipAnimation) {
     if (!modeToRender) { return false; }
 
-    const int fullW = GetCachedWindowWidth();
-    const int fullH = GetCachedWindowHeight();
+    int fullW = 0;
+    int fullH = 0;
+    {
+        PROFILE_SCOPE_CAT("Resolve OBS Output Size", "OBS");
+        fullW = GetCachedWindowWidth();
+        fullH = GetCachedWindowHeight();
+    }
     if (fullW <= 0 || fullH <= 0) { return false; }
 
-    EnsureSameThreadObsComposeTarget(fullW, fullH);
+    {
+        PROFILE_SCOPE_CAT("Prepare OBS Compose Target", "OBS");
+        EnsureSameThreadObsComposeTarget(fullW, fullH);
+    }
     if (g_sameThreadObsComposeFBO == 0 || g_sameThreadObsComposeTexture == 0) { return false; }
 
-    ModeTransitionState transitionState = GetModeTransitionState();
-    const bool transitionEffectivelyComplete = transitionState.active && transitionState.width == transitionState.targetWidth &&
-                                               transitionState.height == transitionState.targetHeight &&
-                                               transitionState.x == transitionState.targetX && transitionState.y == transitionState.targetY;
-    const bool isAnimating = transitionState.active && !skipAnimation && !transitionEffectivelyComplete;
-    const std::string fromModeId = transitionState.fromModeId;
-    const bool transitioningToFullscreen = isAnimating && EqualsIgnoreCase(modeToRender->id, "Fullscreen");
-
-    int modeWidth = modeToRender->width;
-    int modeHeight = modeToRender->height;
-    int modeX = 0;
-    int modeY = 0;
-    if (isAnimating) {
-        modeWidth = transitionState.width;
-        modeHeight = transitionState.height;
-        modeX = transitionState.x;
-        modeY = transitionState.y;
-    }
-
+    ModeTransitionState transitionState;
+    bool isAnimating = false;
+    std::string fromModeId;
+    bool transitioningToFullscreen = false;
+    const ModeConfig* fromMode = nullptr;
     int finalX = 0;
     int finalY = 0;
     int finalW = 0;
     int finalH = 0;
-    if (isAnimating) {
-        finalX = modeX;
-        finalY = modeY;
-        finalW = modeWidth;
-        finalH = modeHeight;
-    } else if (modeToRender->stretch.enabled) {
-        finalX = modeToRender->stretch.x;
-        finalY = modeToRender->stretch.y;
-        finalW = modeToRender->stretch.width;
-        finalH = modeToRender->stretch.height;
-    } else {
-        finalW = modeWidth;
-        finalH = modeHeight;
-        finalX = (fullW - finalW) / 2;
-        finalY = (fullH - finalH) / 2;
+    {
+        PROFILE_SCOPE_CAT("Resolve OBS Frame Geometry", "OBS");
+        transitionState = GetModeTransitionState();
+        const bool transitionEffectivelyComplete =
+            transitionState.active && transitionState.width == transitionState.targetWidth &&
+            transitionState.height == transitionState.targetHeight && transitionState.x == transitionState.targetX &&
+            transitionState.y == transitionState.targetY;
+        isAnimating = transitionState.active && !skipAnimation && !transitionEffectivelyComplete;
+        fromModeId = transitionState.fromModeId;
+        transitioningToFullscreen = isAnimating && EqualsIgnoreCase(modeToRender->id, "Fullscreen");
+
+        int modeWidth = modeToRender->width;
+        int modeHeight = modeToRender->height;
+        int modeX = 0;
+        int modeY = 0;
+        if (isAnimating) {
+            modeWidth = transitionState.width;
+            modeHeight = transitionState.height;
+            modeX = transitionState.x;
+            modeY = transitionState.y;
+        }
+
+        if (isAnimating) {
+            finalX = modeX;
+            finalY = modeY;
+            finalW = modeWidth;
+            finalH = modeHeight;
+        } else if (modeToRender->stretch.enabled) {
+            finalX = modeToRender->stretch.x;
+            finalY = modeToRender->stretch.y;
+            finalW = modeToRender->stretch.width;
+            finalH = modeToRender->stretch.height;
+        } else {
+            finalW = modeWidth;
+            finalH = modeHeight;
+            finalX = (fullW - finalW) / 2;
+            finalY = (fullH - finalH) / 2;
+        }
     }
 
     GLuint gameTextureToUse = 0;
     int gameTextureW = 0;
     int gameTextureH = 0;
-    if (!SelectSameThreadGameTexture(g_cachedGameTextureId.load(std::memory_order_acquire), current_gameW, current_gameH,
-                                     gameTextureToUse, gameTextureW, gameTextureH)) {
-        return false;
+    {
+        PROFILE_SCOPE_CAT("Resolve OBS Source Texture", "OBS");
+        if (!SelectSameThreadGameTexture(g_cachedGameTextureId.load(std::memory_order_acquire), current_gameW, current_gameH,
+                                         gameTextureToUse, gameTextureW, gameTextureH)) {
+            return false;
+        }
     }
 
     GLState obsState = s;
@@ -3465,122 +3557,150 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
     obsState.draw_buffer = GL_COLOR_ATTACHMENT0;
     obsState.read_buffer = GL_COLOR_ATTACHMENT0;
 
-    PrepareSameThreadOverlayState(obsState, fullW, fullH);
-    glBindFramebuffer(GL_FRAMEBUFFER, g_sameThreadObsComposeFBO);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    {
+        PROFILE_SCOPE_CAT("Prepare OBS Compose State", "OBS");
+        PrepareSameThreadOverlayState(obsState, fullW, fullH);
+    }
 
     bool useFromBackground = false;
     BackgroundConfig fromBackground;
     BorderConfig fromBorder;
-    if (isAnimating && !fromModeId.empty()) {
-        if (const ModeConfig* fromMode = GetMode_Internal(fromModeId)) {
-            fromBackground = fromMode->background;
-            fromBorder = fromMode->border;
-            const bool fromHasSpecialBackground =
-                (fromBackground.selectedMode == "gradient" || fromBackground.selectedMode == "image");
-            useFromBackground = transitioningToFullscreen || fromHasSpecialBackground;
+    {
+        PROFILE_SCOPE_CAT("Resolve OBS Background Source", "OBS");
+        if (isAnimating && !fromModeId.empty()) {
+            fromMode = GetMode_Internal(fromModeId);
+            if (fromMode) {
+                fromBackground = fromMode->background;
+                fromBorder = fromMode->border;
+                const bool fromHasSpecialBackground =
+                    (fromBackground.selectedMode == "gradient" || fromBackground.selectedMode == "image");
+                useFromBackground = transitioningToFullscreen || fromHasSpecialBackground;
+            }
         }
     }
 
-    if (useFromBackground) {
-        RenderSameThreadObsBackgroundConfig(fromBackground, ResolveModeBackgroundTextureId(fromModeId), fullW, fullH);
-    } else {
-        RenderSameThreadObsBackground(modeToRender, fullW, fullH);
+    GLuint obsBackgroundTexture = 0;
+    {
+        PROFILE_SCOPE_CAT("Resolve OBS Background Texture", "OBS");
+        if (useFromBackground) {
+            if (fromBackground.selectedMode == "image") {
+                obsBackgroundTexture = ResolveModeBackgroundTextureId(fromModeId);
+            }
+        } else if (modeToRender->background.selectedMode == "image") {
+            obsBackgroundTexture = ResolveModeBackgroundTextureId(modeToRender->id);
+        }
     }
-    PrepareSameThreadOverlayState(obsState, fullW, fullH);
 
-    const float sourceRect[] = { 0.0f, 0.0f, 1.0f, 1.0f };
-    const int dstBottom = fullH - finalY - finalH;
-    DrawPassthroughTextureRegion(gameTextureToUse, sourceRect, finalX, dstBottom, finalX + finalW, dstBottom + finalH, fullW, fullH,
-                                 1.0f);
+    {
+        PROFILE_SCOPE_CAT("Render OBS Background", "OBS");
+        if (useFromBackground) {
+            RenderSameThreadObsBackgroundConfig(fromBackground, obsBackgroundTexture, fullW, fullH);
+        } else {
+            RenderSameThreadObsBackgroundConfig(modeToRender->background, obsBackgroundTexture, fullW, fullH);
+        }
+    }
 
-    if (transitioningToFullscreen && fromBorder.enabled && fromBorder.width > 0) {
-        RenderGameBorder(finalX, finalY, finalW, finalH, fromBorder.width, fromBorder.radius, fromBorder.color, fullW, fullH);
-    } else if (modeToRender->border.enabled && modeToRender->border.width > 0) {
-        RenderGameBorder(finalX, finalY, finalW, finalH, modeToRender->border.width, modeToRender->border.radius,
-                         modeToRender->border.color, fullW, fullH);
+    {
+        PROFILE_SCOPE_CAT("Render OBS Game View", "OBS");
+        const float sourceRect[] = { 0.0f, 0.0f, 1.0f, 1.0f };
+        const int dstBottom = fullH - finalY - finalH;
+        DrawPassthroughTextureRegion(gameTextureToUse, sourceRect, finalX, dstBottom, finalX + finalW, dstBottom + finalH, fullW,
+                                     fullH, 1.0f);
+    }
+
+    {
+        PROFILE_SCOPE_CAT("Render OBS Border", "OBS");
+        if (transitioningToFullscreen && fromBorder.enabled && fromBorder.width > 0) {
+            RenderGameBorder(finalX, finalY, finalW, finalH, fromBorder.width, fromBorder.radius, fromBorder.color, fullW, fullH);
+        } else if (modeToRender->border.enabled && modeToRender->border.width > 0) {
+            RenderGameBorder(finalX, finalY, finalW, finalH, modeToRender->border.width, modeToRender->border.radius,
+                             modeToRender->border.color, fullW, fullH);
+        }
     }
 
     if (auto cfgSnap = GetConfigSnapshot()) {
         SameThreadOverlayState request;
-        request.fullW = fullW;
-        request.fullH = fullH;
-        request.gameW = current_gameW;
-        request.gameH = current_gameH;
-        request.finalX = finalX;
-        request.finalY = finalY;
-        request.finalW = finalW;
-        request.finalH = finalH;
-        request.gameTextureId = gameTextureToUse;
-        request.modeId = modeToRender->id;
-        request.isAnimating = isAnimating;
-        request.overlayOpacity = 1.0f;
-        request.excludeOnlyOnMyScreen = false;
-        request.skipAnimation = skipAnimation;
-        request.relativeStretching = modeToRender->relativeStretching;
+        {
+            PROFILE_SCOPE_CAT("Build OBS Overlay Request", "OBS");
+            request.fullW = fullW;
+            request.fullH = fullH;
+            request.gameW = current_gameW;
+            request.gameH = current_gameH;
+            request.finalX = finalX;
+            request.finalY = finalY;
+            request.finalW = finalW;
+            request.finalH = finalH;
+            request.gameTextureId = gameTextureToUse;
+            request.modeId = modeToRender->id;
+            request.isAnimating = isAnimating;
+            request.overlayOpacity = 1.0f;
+            request.excludeOnlyOnMyScreen = false;
+            request.skipAnimation = skipAnimation;
+            request.relativeStretching = modeToRender->relativeStretching;
 
-        const bool transitionEffectivelyCompleteForOverlays = transitionState.active && transitionState.moveProgress >= 1.0f;
-        const bool overlaysShouldLerp = transitionState.active && !transitionEffectivelyCompleteForOverlays &&
-                                        transitionState.overlayTransition != OverlayTransitionType::Cut;
-        if (overlaysShouldLerp) {
-            request.transitionProgress = transitionState.moveProgress;
-            request.fromW = transitionState.fromWidth;
-            request.fromH = transitionState.fromHeight;
-            request.fromX = transitionState.fromX;
-            request.fromY = transitionState.fromY;
-            request.toW = transitionState.targetWidth;
-            request.toH = transitionState.targetHeight;
-            request.toX = transitionState.targetX;
-            request.toY = transitionState.targetY;
-        } else {
-            request.transitionProgress = 1.0f;
-            request.fromX = finalX;
-            request.fromY = finalY;
-            request.fromW = finalW;
-            request.fromH = finalH;
-            request.toX = finalX;
-            request.toY = finalY;
-            request.toW = finalW;
-            request.toH = finalH;
-        }
-
-        request.isTransitioningFromEyeZoom = g_isTransitioningFromEyeZoom.load(std::memory_order_acquire);
-        request.shouldRenderGui = g_shouldRenderGui.load(std::memory_order_relaxed);
-        request.showPerformanceOverlay = false;
-        request.showProfiler = false;
-        request.showEyeZoom = g_showEyeZoom.load(std::memory_order_relaxed);
-        request.eyeZoomFadeOpacity = g_eyeZoomFadeOpacity.load(std::memory_order_relaxed);
-        request.eyeZoomAnimatedViewportX = skipAnimation ? -1 : g_eyeZoomAnimatedViewportX.load(std::memory_order_relaxed);
-        request.eyeZoomSnapshotTexture = GetEyeZoomSnapshotTexture();
-        request.eyeZoomSnapshotWidth = GetEyeZoomSnapshotWidth();
-        request.eyeZoomSnapshotHeight = GetEyeZoomSnapshotHeight();
-        request.showTextureGrid = false;
-        request.textureGridModeWidth = 0;
-        request.textureGridModeHeight = 0;
-        request.showWelcomeToast = false;
-        request.welcomeToastIsFullscreen = false;
-        request.modeHasMirrors = !modeToRender->mirrorIds.empty() || !modeToRender->mirrorGroupIds.empty();
-        request.modeHasImages = g_imageOverlaysVisible.load(std::memory_order_acquire) && !modeToRender->imageIds.empty();
-        request.modeHasWindowOverlays = g_windowOverlaysVisible.load(std::memory_order_acquire) &&
-                                        !modeToRender->windowOverlayIds.empty();
-        request.isRawWindowedMode = false;
-        request.fromModeId = transitionState.fromModeId;
-        if (!transitionState.fromModeId.empty()) {
-            if (const ModeConfig* fromMode = GetMode_Internal(transitionState.fromModeId)) {
-                request.fromSlideMirrorsIn = fromMode->slideMirrorsIn;
+            const bool transitionEffectivelyCompleteForOverlays = transitionState.active && transitionState.moveProgress >= 1.0f;
+            const bool overlaysShouldLerp = transitionState.active && !transitionEffectivelyCompleteForOverlays &&
+                                            transitionState.overlayTransition != OverlayTransitionType::Cut;
+            if (overlaysShouldLerp) {
+                request.transitionProgress = transitionState.moveProgress;
+                request.fromW = transitionState.fromWidth;
+                request.fromH = transitionState.fromHeight;
+                request.fromX = transitionState.fromX;
+                request.fromY = transitionState.fromY;
+                request.toW = transitionState.targetWidth;
+                request.toH = transitionState.targetHeight;
+                request.toX = transitionState.targetX;
+                request.toY = transitionState.targetY;
+            } else {
+                request.transitionProgress = 1.0f;
+                request.fromX = finalX;
+                request.fromY = finalY;
+                request.fromW = finalW;
+                request.fromH = finalH;
+                request.toX = finalX;
+                request.toY = finalY;
+                request.toW = finalW;
+                request.toH = finalH;
             }
-        }
-        request.toSlideMirrorsIn = modeToRender->slideMirrorsIn;
-        request.mirrorSlideProgress =
-            (transitionState.active && transitionState.moveProgress < 1.0f) ? transitionState.moveProgress : 1.0f;
-        request.allowMirrorCaptureReuse = true;
 
+            request.isTransitioningFromEyeZoom = g_isTransitioningFromEyeZoom.load(std::memory_order_acquire);
+            request.shouldRenderGui = g_shouldRenderGui.load(std::memory_order_relaxed);
+            request.showPerformanceOverlay = false;
+            request.showProfiler = false;
+            request.showEyeZoom = g_showEyeZoom.load(std::memory_order_relaxed);
+            request.eyeZoomFadeOpacity = g_eyeZoomFadeOpacity.load(std::memory_order_relaxed);
+            request.eyeZoomAnimatedViewportX = skipAnimation ? -1 : g_eyeZoomAnimatedViewportX.load(std::memory_order_relaxed);
+            request.eyeZoomSnapshotTexture = GetEyeZoomSnapshotTexture();
+            request.eyeZoomSnapshotWidth = GetEyeZoomSnapshotWidth();
+            request.eyeZoomSnapshotHeight = GetEyeZoomSnapshotHeight();
+            request.showTextureGrid = false;
+            request.textureGridModeWidth = 0;
+            request.textureGridModeHeight = 0;
+            request.showWelcomeToast = false;
+            request.welcomeToastIsFullscreen = false;
+            request.modeHasMirrors = !modeToRender->mirrorIds.empty() || !modeToRender->mirrorGroupIds.empty();
+            request.modeHasImages = g_imageOverlaysVisible.load(std::memory_order_acquire) && !modeToRender->imageIds.empty();
+            request.modeHasWindowOverlays = g_windowOverlaysVisible.load(std::memory_order_acquire) &&
+                                            !modeToRender->windowOverlayIds.empty();
+            request.isRawWindowedMode = false;
+            request.fromModeId = transitionState.fromModeId;
+            request.fromSlideMirrorsIn = fromMode && fromMode->slideMirrorsIn;
+            request.toSlideMirrorsIn = modeToRender->slideMirrorsIn;
+            request.mirrorSlideProgress =
+                (transitionState.active && transitionState.moveProgress < 1.0f) ? transitionState.moveProgress : 1.0f;
+            request.allowMirrorCaptureReuse = true;
+            request.mirrorCaptureFrameTag = s_sameThreadMirrorCaptureFrameTag;
+        }
+
+        PROFILE_SCOPE_CAT("Render OBS Overlays", "OBS");
         RenderSameThreadOverlayPass(request, *cfgSnap, obsState);
     }
 
-    SetObsOverrideTexture(g_sameThreadObsComposeTexture, fullW, fullH);
-    PrepareSameThreadOverlayState(s, fullW, fullH);
+    {
+        PROFILE_SCOPE_CAT("Publish OBS Override", "OBS");
+        SetObsOverrideTexture(g_sameThreadObsComposeTexture, fullW, fullH);
+    }
+
     return true;
 }
 
@@ -4890,13 +5010,14 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
     };
 
     if (sameThreadRenderPipeline) {
+        const uint64_t mirrorCaptureFrameTag = BeginSameThreadMirrorCaptureFrame();
         if (wantAsyncOverlayThisFrame && configSnap) {
             PROFILE_SCOPE_CAT("Immediate Overlay Render", "Rendering");
 
-            InvalidateSameThreadMirrorCaptureReuse();
-
             SameThreadOverlayState request;
             populateOverlayState(request);
+            request.allowMirrorCaptureReuse = true;
+            request.mirrorCaptureFrameTag = mirrorCaptureFrameTag;
 
             const bool renderedOverlay = RenderSameThreadOverlayPass(request, *configSnap, s);
             if (renderedOverlay && g_config.debug.delayRenderingUntilBlitted) {

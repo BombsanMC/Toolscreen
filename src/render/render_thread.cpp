@@ -4025,6 +4025,7 @@ static void RenderThreadFunc(void* gameGLContext) {
 
                     ImGui_ImplOpenGL3_NewFrame();
                     ImGui_ImplWin32_NewFrame();
+                    SyncImGuiDisplayMetrics(g_minecraftHwnd.load());
 
                     // Feed queued input from the Win32 message thread into ImGui.
                     // Must happen before ImGui::NewFrame() to affect the current frame.

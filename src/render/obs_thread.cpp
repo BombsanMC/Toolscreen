@@ -33,6 +33,39 @@ static GLuint g_obsRedirectAttachedTexture = 0;
 static int g_obsRedirectAttachedWidth = 0;
 static int g_obsRedirectAttachedHeight = 0;
 
+struct ObsRedirectValidationEntry {
+    GLuint texture = 0;
+    int width = 0;
+    int height = 0;
+};
+
+static constexpr size_t OBS_REDIRECT_VALIDATION_CACHE_SIZE = 8;
+static ObsRedirectValidationEntry g_obsRedirectValidationCache[OBS_REDIRECT_VALIDATION_CACHE_SIZE]{};
+static size_t g_obsRedirectValidationCacheNext = 0;
+
+static bool IsObsRedirectAttachmentValidated(GLuint texture, int width, int height) {
+    for (const auto& entry : g_obsRedirectValidationCache) {
+        if (entry.texture == texture && entry.width == width && entry.height == height) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void CacheObsRedirectAttachmentValidation(GLuint texture, int width, int height) {
+    g_obsRedirectValidationCache[g_obsRedirectValidationCacheNext] = { texture, width, height };
+    g_obsRedirectValidationCacheNext = (g_obsRedirectValidationCacheNext + 1) % OBS_REDIRECT_VALIDATION_CACHE_SIZE;
+}
+
+static void ClearObsRedirectAttachmentValidationCache() {
+    for (auto& entry : g_obsRedirectValidationCache) {
+        entry.texture = 0;
+        entry.width = 0;
+        entry.height = 0;
+    }
+    g_obsRedirectValidationCacheNext = 0;
+}
+
 static GLuint SelectObsRedirectTexture(bool allowDedicatedObsTexture, GLsync& outFence, bool& outNeedsFenceWait) {
     outFence = nullptr;
     outNeedsFenceWait = false;
@@ -89,20 +122,23 @@ static void APIENTRY Hook_glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX
                 if (g_obsRedirectAttachedTexture != obsTexture || mustReattachOverride) {
                     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, obsTexture, 0);
 
-                    GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
-                    if (status != GL_FRAMEBUFFER_COMPLETE) {
-                        static GLenum lastLoggedStatus = GL_FRAMEBUFFER_COMPLETE;
-                        if (status != lastLoggedStatus) {
-                            Log("[OBS Hook] WARNING: Redirect FBO incomplete! Status: " + std::to_string(status) +
-                                ", Texture: " + std::to_string(obsTexture));
-                            lastLoggedStatus = status;
+                    if (!IsObsRedirectAttachmentValidated(obsTexture, overrideWidth, overrideHeight)) {
+                        GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+                        if (status != GL_FRAMEBUFFER_COMPLETE) {
+                            static GLenum lastLoggedStatus = GL_FRAMEBUFFER_COMPLETE;
+                            if (status != lastLoggedStatus) {
+                                Log("[OBS Hook] WARNING: Redirect FBO incomplete! Status: " + std::to_string(status) +
+                                    ", Texture: " + std::to_string(obsTexture));
+                                lastLoggedStatus = status;
+                            }
+                            g_obsRedirectAttachedTexture = 0;
+                            g_obsRedirectAttachedWidth = 0;
+                            g_obsRedirectAttachedHeight = 0;
+                            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+                            Real_glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+                            return;
                         }
-                        g_obsRedirectAttachedTexture = 0;
-                        g_obsRedirectAttachedWidth = 0;
-                        g_obsRedirectAttachedHeight = 0;
-                        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-                        Real_glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
-                        return;
+                        CacheObsRedirectAttachmentValidation(obsTexture, overrideWidth, overrideHeight);
                     }
 
                     g_obsRedirectAttachedTexture = obsTexture;
@@ -168,6 +204,7 @@ void ClearObsOverride() {
     g_obsRedirectAttachedTexture = 0;
     g_obsRedirectAttachedWidth = 0;
     g_obsRedirectAttachedHeight = 0;
+    ClearObsRedirectAttachmentValidationCache();
 }
 
 void EnableObsOverride() {
@@ -264,6 +301,8 @@ void StopObsHookThread() {
         g_obsRedirectFBO = 0;
         g_obsRedirectAttachedTexture = 0;
     }
+
+    ClearObsRedirectAttachmentValidationCache();
 
     g_obsHookInitialized.store(false);
     Log("OBS Hook: Stopped");

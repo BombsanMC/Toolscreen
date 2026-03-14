@@ -127,11 +127,6 @@ struct GLState {
     GLfloat cc[4];
     GLfloat lw;
     GLboolean color_mask[4];
-    GLint unpack_row_length;
-    GLint unpack_skip_pixels;
-    GLint unpack_skip_rows;
-    GLint pack_alignment;
-    GLint unpack_alignment;
 };
 
 extern GLuint g_filterProgram;

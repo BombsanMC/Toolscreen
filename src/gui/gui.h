@@ -696,6 +696,7 @@ void RenderWelcomeToast(bool isFullscreen);
 
 void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC));
 void RenderImGuiWithStateProtection(bool useFullProtection);
+void SyncImGuiDisplayMetrics(HWND hwnd);
 void SaveConfig();
 void SaveConfigImmediate();
 void ApplyAppearanceConfig();
