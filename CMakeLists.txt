@@ -343,7 +343,7 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     FetchContent_Declare(
         easyinjectbundled
         GIT_REPOSITORY https://github.com/jojoe77777/EasyInjectBundled.git
-        GIT_TAG main
+        GIT_TAG a8800d1565cf84079c1327bbf62b9904ffd114ab
         GIT_SHALLOW TRUE
     )
 
@@ -372,8 +372,17 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
 
     set(JAR_NAME "Toolscreen-${PROJECT_VERSION}-double-click-me.jar")
     set(JAR_OUTPUT "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/${JAR_NAME}")
+    set(DOWNLOADER_JAR_NAME "toolscreen-downloader.jar")
+    set(DOWNLOADER_JAR_OUTPUT "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/${DOWNLOADER_JAR_NAME}")
     set(EXE_NAME "Toolscreen-${PROJECT_VERSION}-double-click-me.exe")
     set(EXE_OUTPUT "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/${EXE_NAME}")
+    set(DOWNLOADER_EXE_NAME "toolscreen-downloader.exe")
+    set(DOWNLOADER_EXE_OUTPUT "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/${DOWNLOADER_EXE_NAME}")
+
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
+        CONTENT "set(NEW_DOWNLOADER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\nset(TYPO_DOWNLOADER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\nset(LEGACY_INSTALLER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\nset(DOWNLOADER_JAR_OUTPUT \"${DOWNLOADER_JAR_OUTPUT}\")\nif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\nelseif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\nelseif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\nelse()\n  message(FATAL_ERROR \"Expected downloader jar at '${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}', typo downloader jar at '${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar', or legacy installer jar at '${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${DOWNLOADER_JAR_SOURCE}\" \"\${DOWNLOADER_JAR_OUTPUT}\" RESULT_VARIABLE COPY_RESULT)\nif(NOT COPY_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to copy downloader jar from '\${DOWNLOADER_JAR_SOURCE}' to '\${DOWNLOADER_JAR_OUTPUT}'\")\nendif()\n"
+    )
 
     add_custom_target(jar ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_SOURCE_DIR}/custom-dlls"
@@ -382,14 +391,37 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
         COMMAND "${TOOLSCREEN_MAVEN_EXECUTABLE}" -f "${easyinjectbundled_SOURCE_DIR}/pom.xml" clean package -q
                 -Dbrand.name=Toolscreen
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${easyinjectbundled_SOURCE_DIR}/target/${JAR_NAME}" "${JAR_OUTPUT}"
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
         DEPENDS ${PROJECT_NAME}
-        COMMENT "Building ${JAR_NAME}"
+        COMMENT "Building ${JAR_NAME} and ${DOWNLOADER_JAR_NAME}"
         VERBATIM
     )
 
     file(MAKE_DIRECTORY "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls")
     add_subdirectory("${easyinjectbundled_exe_SOURCE_DIR}/exe" "${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-exe")
     toolscreen_configure_target_outputs(EasyInjectExe)
+
+    set(TOOLSCREEN_DOWNLOADER_SOURCE_DIR "${easyinjectbundled_SOURCE_DIR}/toolscreen-installer-exe")
+    if(EXISTS "${easyinjectbundled_SOURCE_DIR}/toolscreen-downloader-exe/CMakeLists.txt")
+        set(TOOLSCREEN_DOWNLOADER_SOURCE_DIR "${easyinjectbundled_SOURCE_DIR}/toolscreen-downloader-exe")
+    elseif(EXISTS "${easyinjectbundled_SOURCE_DIR}/tioolscrteen-downloader-exe/CMakeLists.txt")
+        set(TOOLSCREEN_DOWNLOADER_SOURCE_DIR "${easyinjectbundled_SOURCE_DIR}/tioolscrteen-downloader-exe")
+    endif()
+
+    add_subdirectory("${TOOLSCREEN_DOWNLOADER_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-toolscreen-downloader-exe")
+
+    if(TARGET ToolscreenDownloaderExe)
+        set(TOOLSCREEN_DOWNLOADER_TARGET ToolscreenDownloaderExe)
+    elseif(TARGET TioolscrteenDownloaderExe)
+        set(TOOLSCREEN_DOWNLOADER_TARGET TioolscrteenDownloaderExe)
+    elseif(TARGET ToolscreenInstallerExe)
+        set(TOOLSCREEN_DOWNLOADER_TARGET ToolscreenInstallerExe)
+    else()
+        message(FATAL_ERROR "Could not find the EasyInject downloader executable target after adding ${TOOLSCREEN_DOWNLOADER_SOURCE_DIR}")
+    endif()
+
+    set_target_properties(${TOOLSCREEN_DOWNLOADER_TARGET} PROPERTIES OUTPUT_NAME "toolscreen-downloader")
+    toolscreen_configure_target_outputs(${TOOLSCREEN_DOWNLOADER_TARGET})
 
     add_custom_target(toolscreen_prepare_easyinject_exe_inputs
         COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls"
@@ -406,14 +438,29 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
         COMMENT "Building ${EXE_NAME}"
     )
 
+    add_custom_target(downloader_exe ALL
+        DEPENDS ${TOOLSCREEN_DOWNLOADER_TARGET}
+        COMMENT "Building ${DOWNLOADER_EXE_NAME}"
+    )
+
     file(GENERATE
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_jar_$<CONFIG>.cmake"
         CONTENT "if(NOT EXISTS \"${JAR_OUTPUT}\")\n  message(FATAL_ERROR \"Expected Toolscreen jar at '${JAR_OUTPUT}'\")\nendif()\n"
     )
 
     file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_downloader_jar_$<CONFIG>.cmake"
+        CONTENT "if(NOT EXISTS \"${DOWNLOADER_JAR_OUTPUT}\")\n  message(FATAL_ERROR \"Expected Toolscreen downloader jar at '${DOWNLOADER_JAR_OUTPUT}'\")\nendif()\n"
+    )
+
+    file(GENERATE
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_exe_$<CONFIG>.cmake"
         CONTENT "if(NOT EXISTS \"${EXE_OUTPUT}\")\n  message(FATAL_ERROR \"Expected Toolscreen exe at '${EXE_OUTPUT}'\")\nendif()\n"
+    )
+
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_downloader_exe_$<CONFIG>.cmake"
+        CONTENT "if(NOT EXISTS \"${DOWNLOADER_EXE_OUTPUT}\")\n  message(FATAL_ERROR \"Expected Toolscreen downloader exe at '${DOWNLOADER_EXE_OUTPUT}'\")\nendif()\n"
     )
 
     file(GENERATE
@@ -427,8 +474,18 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     )
 
     add_test(
+        NAME toolscreen_downloader_jar_exists
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_downloader_jar_$<CONFIG>.cmake"
+    )
+
+    add_test(
         NAME toolscreen_exe_exists
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_exe_$<CONFIG>.cmake"
+    )
+
+    add_test(
+        NAME toolscreen_downloader_exe_exists
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_downloader_exe_$<CONFIG>.cmake"
     )
 
     add_test(

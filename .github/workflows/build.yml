@@ -29,13 +29,29 @@ jobs:
           $outputDir = 'out/build/bin/Release'
           $suffix = '-not-legal-for-speedruns'
 
+          function Get-SingleArtifactPath {
+            param(
+              [string]$Pattern,
+              [string]$Label
+            )
+
+            $matches = Get-ChildItem $outputDir -File -Filter $Pattern
+
+            if ($matches.Count -ne 1) {
+              throw "Expected exactly one $Label matching '$Pattern' in $outputDir, found $($matches.Count)"
+            }
+
+            return $matches[0].FullName
+          }
+
           $filesToRename = @(
             Join-Path $outputDir 'Toolscreen.dll'
             Join-Path $outputDir 'Toolscreen.pdb'
+            Get-SingleArtifactPath 'Toolscreen-*-double-click-me.jar' 'main installer jar'
+            Get-SingleArtifactPath 'Toolscreen-*-double-click-me.exe' 'main installer exe'
+            Join-Path $outputDir 'toolscreen-downloader.jar'
+            Join-Path $outputDir 'toolscreen-downloader.exe'
           )
-
-          $filesToRename += Get-ChildItem $outputDir -File -Filter '*.jar' | Select-Object -ExpandProperty FullName
-          $filesToRename += Get-ChildItem $outputDir -File -Filter '*.exe' | Select-Object -ExpandProperty FullName
 
           foreach ($filePath in $filesToRename) {
             if (-not (Test-Path $filePath)) {
@@ -56,5 +72,7 @@ jobs:
           path: |
             out/build/bin/Release/Toolscreen-not-legal-for-speedruns.dll
             out/build/bin/Release/Toolscreen-not-legal-for-speedruns.pdb
-            out/build/bin/Release/*-not-legal-for-speedruns.jar
-            out/build/bin/Release/*-not-legal-for-speedruns.exe
+            out/build/bin/Release/Toolscreen-*-double-click-me-not-legal-for-speedruns.jar
+            out/build/bin/Release/Toolscreen-*-double-click-me-not-legal-for-speedruns.exe
+            out/build/bin/Release/toolscreen-downloader-not-legal-for-speedruns.jar
+            out/build/bin/Release/toolscreen-downloader-not-legal-for-speedruns.exe
