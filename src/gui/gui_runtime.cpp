@@ -173,10 +173,11 @@ void ApplyDynamicGuiFontRefresh() {
 
     const float guiScaleFactor = ComputeGuiScaleFactorFromCachedWindowSize();
     const std::string fontPath = ResolveGuiFontPath(16.0f * guiScaleFactor);
+    const bool overlayFontReloadRequested = g_eyeZoomFontNeedsReload.exchange(false, std::memory_order_acq_rel);
     const bool hasPendingRequest = s_pendingMainGuiFontRefresh.pending;
     const bool scaleChanged = !s_mainGuiFontRefreshState.valid || fabsf(guiScaleFactor - s_mainGuiFontRefreshState.guiScaleFactor) > 0.001f;
     const bool fontPathChanged = !s_mainGuiFontRefreshState.valid || fontPath != s_mainGuiFontRefreshState.fontPath;
-    const bool mustRefresh = s_pendingMainGuiFontRefresh.force || scaleChanged || fontPathChanged;
+    const bool mustRefresh = s_pendingMainGuiFontRefresh.force || scaleChanged || fontPathChanged || overlayFontReloadRequested;
 
     s_pendingMainGuiFontRefresh.pending = false;
     s_pendingMainGuiFontRefresh.force = false;

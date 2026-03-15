@@ -2027,8 +2027,8 @@ static void RenderCachedEyeZoomTextLabels() {
     }
 
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
-    ImFont* font = ImGui::GetFont();
-    float fontSize = ImGui::GetFontSize();
+    ImFont* font = g_overlayTextFont ? g_overlayTextFont : ImGui::GetFont();
+    const float fontSize = (std::max)(1.0f, g_overlayTextFontSize);
 
     for (const auto& label : labels) {
         const std::string text = std::to_string(label.number);
@@ -3994,8 +3994,8 @@ void handleEyeZoomMode(const GLState& s, const EyeZoomConfig& zoomConfig, int fu
 
             float boxNdcLeft = (boxLeft / (float)fullW) * 2.0f - 1.0f;
             float boxNdcRight = (boxRight / (float)fullW) * 2.0f - 1.0f;
-            float boxNdcBottom = (boxBottom / (float)fullH) * 2.0f - 1.0f;
-            float boxNdcTop = (boxTop / (float)fullH) * 2.0f - 1.0f;
+            float boxNdcBottom = 1.0f - (boxTop / (float)fullH) * 2.0f;
+            float boxNdcTop = 1.0f - (boxBottom / (float)fullH) * 2.0f;
 
             auto& verts = (boxIndex % 2 == 0) ? evenVerts : oddVerts;
             float quad[] = {
@@ -5131,7 +5131,9 @@ void InitializeOverlayTextFont(const std::string& fontPath, float baseFontSize, 
     ImGuiIO& io = ImGui::GetIO();
     const float sizePixels = baseFontSize * 1.5f * scaleFactor;
 
-    std::string usePath = fontPath.empty() ? ConfigDefaults::CONFIG_FONT_PATH : fontPath;
+    const std::string configuredOverlayPath = g_config.eyezoom.textFontPath;
+    std::string usePath = configuredOverlayPath.empty() ? fontPath : configuredOverlayPath;
+    if (usePath.empty()) { usePath = ConfigDefaults::CONFIG_FONT_PATH; }
 
     auto isStable = [](const std::string& p, float sz) -> bool {
         if (p.empty()) return false;
@@ -5156,6 +5158,7 @@ void SetOverlayTextFontSize(int sizePixels) {
     if (sizePixels < 1) sizePixels = 1;
     if (sizePixels > 512) sizePixels = 512;
     g_overlayTextFontSize = static_cast<float>(sizePixels);
+    g_eyeZoomFontNeedsReload.store(true, std::memory_order_release);
 }
 
 
