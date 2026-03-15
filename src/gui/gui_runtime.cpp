@@ -121,6 +121,10 @@ static void RebuildImGuiFontAtlas(float scaleFactor, float keyboardPrimarySize, 
     if (!g_keyboardLayoutSecondaryFont) g_keyboardLayoutSecondaryFont = baseFont;
 
     InitializeOverlayTextFont(usePath, 16.0f, scaleFactor);
+
+    auto nbSnap = GetConfigSnapshot();
+    LoadNinjabrainFont(io.Fonts, nbSnap ? nbSnap->ninjabrainOverlay.customFontPath : std::string(), scaleFactor);
+
     io.Fonts->Build();
 
     if (io.BackendRendererUserData != nullptr) {

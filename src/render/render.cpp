@@ -14,10 +14,12 @@
 #include "features/window_overlay.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_win32.h"
+#include <Shlwapi.h>
 #include <cctype>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <shared_mutex>
@@ -2966,8 +2968,19 @@ static void CacheSameThreadMirrorCapture(uint64_t configVersion, const SameThrea
 }
 
 static void RenderSameThreadImGui(const SameThreadOverlayState& request) {
+    // Check ninjabrain overlay active state
+    const bool nbOverlayActive = [&]() {
+        auto nbCfg = GetConfigSnapshot();
+        if (!nbCfg || !nbCfg->ninjabrainOverlay.enabled) return false;
+        if (!g_windowOverlaysVisible.load(std::memory_order_acquire)) return false;
+        const auto& nb = nbCfg->ninjabrainOverlay;
+        if (request.excludeOnlyOnMyScreen && nb.onlyOnMyScreen) return false;
+        if (!request.excludeOnlyOnMyScreen && nb.onlyOnObs) return false;
+        return true;
+    }();
+
     const bool shouldRenderAnyImGui = request.shouldRenderGui || request.showPerformanceOverlay || request.showProfiler ||
-                                      request.showTextureGrid || request.showEyeZoom;
+                                      request.showTextureGrid || request.showEyeZoom || nbOverlayActive;
     if (!shouldRenderAnyImGui) return;
 
     std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
@@ -2996,6 +3009,13 @@ static void RenderSameThreadImGui(const SameThreadOverlayState& request) {
 
     if (request.shouldRenderGui) { RenderSettingsGUI(); }
     RenderPerformanceOverlay(request.showPerformanceOverlay);
+
+    // NinjabrainBot overlay (rendered in ImGui space)
+    if (nbOverlayActive) {
+        auto nbCfg = GetConfigSnapshot();
+        if (nbCfg) RenderNinjabrainOverlay(nbCfg->ninjabrainOverlay, GetNinjabrainFont());
+    }
+
     RenderProfilerOverlay(request.showProfiler, request.showPerformanceOverlay);
 
     ImGuiInputQueue_PublishCaptureState();
@@ -5965,6 +5985,110 @@ ModeTransitionState GetModeTransitionState() {
 
 
 // NinjabrainBot Overlay
+
+static ImFont* g_ninjabrainFont     = nullptr;
+static float   g_ninjabrainFontSize = 64.0f;
+
+ImFont* GetNinjabrainFont()     { return g_ninjabrainFont; }
+float   GetNinjabrainFontSize() { return g_ninjabrainFontSize; }
+
+static bool NB_IsFontStable(const std::string& fontPath, float /*sizePixels*/) {
+    if (fontPath.empty()) return false;
+    const DWORD attrs = GetFileAttributesA(fontPath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    std::ifstream f(fontPath, std::ios::binary);
+    if (!f) return false;
+    unsigned char sig[4] = { 0, 0, 0, 0 };
+    f.read(reinterpret_cast<char*>(sig), sizeof(sig));
+    if (!f) return false;
+    const unsigned char ttfSig[4] = { 0x00, 0x01, 0x00, 0x00 };
+    if (memcmp(sig, ttfSig, 4) == 0) return true;
+    if (memcmp(sig, "OTTO", 4) == 0) return true;
+    if (memcmp(sig, "ttcf", 4) == 0) return true;
+    if (memcmp(sig, "true", 4) == 0) return true;
+    if (memcmp(sig, "typ1", 4) == 0) return true;
+    return false;
+}
+
+static ImFont* NB_SafeAddFontFromFileTTF(ImFontAtlas* atlas, const char* path, float sizePixels,
+                                         const ImFontConfig* fontCfg = nullptr) {
+    if (!atlas || !path || !path[0]) return nullptr;
+    ImFont* font = nullptr;
+    __try {
+        font = atlas->AddFontFromFileTTF(path, sizePixels, fontCfg);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        font = nullptr;
+    }
+    return font;
+}
+
+void LoadNinjabrainFont(ImFontAtlas* atlas, const std::string& customFontPath, float scaleFactor) {
+    if (!atlas) return;
+    const float nbSize = 64.0f * scaleFactor;
+
+    ImFontConfig fontCfg;
+    fontCfg.OversampleH = 1;
+    fontCfg.OversampleV = 1;
+
+    // Resolve relative custom path against the toolscreen directory
+    auto resolvePath = [](const std::string& p) -> std::string {
+        if (p.empty()) return p;
+        std::wstring wp = Utf8ToWide(p);
+        if (PathIsRelativeW(wp.c_str()) && !g_toolscreenPath.empty())
+            return WideToUtf8(g_toolscreenPath + L"\\" + wp);
+        return p;
+    };
+
+    if (!customFontPath.empty()) {
+        std::string resolved = resolvePath(customFontPath);
+        if (NB_IsFontStable(resolved, nbSize)) {
+            if (ImFont* f = NB_SafeAddFontFromFileTTF(atlas, resolved.c_str(), nbSize, &fontCfg)) {
+                g_ninjabrainFont     = f;
+                g_ninjabrainFontSize = nbSize;
+                return;
+            }
+        }
+    }
+
+    // Try the embedded Minecraft TTF resource
+    HMODULE hModule = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)&LoadNinjabrainFont, &hModule);
+    if (hModule) {
+        HRSRC hResource = FindResourceW(hModule, MAKEINTRESOURCEW(IDR_MINECRAFT_FONT), RT_RCDATA);
+        if (hResource) {
+            HGLOBAL hData    = LoadResource(hModule, hResource);
+            DWORD   dataSize = hData ? SizeofResource(hModule, hResource) : 0;
+            const void* rawData = hData ? LockResource(hData) : nullptr;
+            if (rawData && dataSize > 0) {
+                void* buf = IM_ALLOC(dataSize);
+                if (buf) {
+                    memcpy(buf, rawData, dataSize);
+                    fontCfg.FontDataOwnedByAtlas = true;
+                    if (ImFont* f = atlas->AddFontFromMemoryTTF(buf, (int)dataSize, nbSize, &fontCfg)) {
+                        g_ninjabrainFont     = f;
+                        g_ninjabrainFontSize = nbSize;
+                        return;
+                    }
+                    IM_FREE(buf);
+                }
+            }
+        }
+    }
+
+    // Arial fallback
+    const std::string& arial = ConfigDefaults::CONFIG_FONT_PATH;
+    if (NB_IsFontStable(arial, nbSize)) {
+        if (ImFont* f = NB_SafeAddFontFromFileTTF(atlas, arial.c_str(), nbSize, &fontCfg)) {
+            g_ninjabrainFont     = f;
+            g_ninjabrainFontSize = nbSize;
+            return;
+        }
+    }
+
+    g_ninjabrainFont     = atlas->AddFontDefault();
+    g_ninjabrainFontSize = nbSize;
+}
 
 static ImU32 NBGradientColor(double probability)
 {
