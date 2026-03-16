@@ -4,6 +4,7 @@
 #include "runtime/logic_thread.h"
 #include "common/utils.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -30,6 +31,10 @@ const toml::table* GetTable(const toml::table& tbl, const std::string& key) {
 const toml::array* GetArray(const toml::table& tbl, const std::string& key) {
     if (auto node = tbl.get(key)) { return node->as_array(); }
     return nullptr;
+}
+
+static int ClampMirrorCaptureDimension(int value) {
+    return std::clamp(value, ConfigDefaults::MIRROR_CAPTURE_MIN_DIMENSION, ConfigDefaults::MIRROR_CAPTURE_MAX_DIMENSION);
 }
 
 void WriteTableOrdered(std::ostream& out, const toml::table& tbl, const std::vector<std::string>& orderedKeys) {
@@ -436,8 +441,8 @@ void MirrorBorderConfigFromToml(const toml::table& tbl, MirrorBorderConfig& cfg)
 
 void MirrorConfigToToml(const MirrorConfig& cfg, toml::table& out) {
     out.insert("name", cfg.name);
-    out.insert("captureWidth", cfg.captureWidth);
-    out.insert("captureHeight", cfg.captureHeight);
+    out.insert("captureWidth", ClampMirrorCaptureDimension(cfg.captureWidth));
+    out.insert("captureHeight", ClampMirrorCaptureDimension(cfg.captureHeight));
 
     toml::array inputArr;
     for (const auto& input : cfg.input) {
@@ -476,8 +481,8 @@ void MirrorConfigToToml(const MirrorConfig& cfg, toml::table& out) {
 
 void MirrorConfigFromToml(const toml::table& tbl, MirrorConfig& cfg) {
     cfg.name = GetStringOr(tbl, "name", "");
-    cfg.captureWidth = GetOr(tbl, "captureWidth", ConfigDefaults::MIRROR_CAPTURE_WIDTH);
-    cfg.captureHeight = GetOr(tbl, "captureHeight", ConfigDefaults::MIRROR_CAPTURE_HEIGHT);
+    cfg.captureWidth = ClampMirrorCaptureDimension(GetOr(tbl, "captureWidth", ConfigDefaults::MIRROR_CAPTURE_WIDTH));
+    cfg.captureHeight = ClampMirrorCaptureDimension(GetOr(tbl, "captureHeight", ConfigDefaults::MIRROR_CAPTURE_HEIGHT));
 
     cfg.input.clear();
     if (auto arr = GetArray(tbl, "input")) {
