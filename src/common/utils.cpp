@@ -945,28 +945,16 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
     std::string currentMode;
 
     LogCategory("mode_switch", "[MODE_SWITCH] Acquiring g_modeIdMutex...");
-    // Get current mode - keep lock minimal, no I/O inside
-    {
-        std::lock_guard<std::mutex> lock(g_modeIdMutex);
-        LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex acquired");
-        currentMode = g_currentModeId;
+    // Keep the mode ID publication serialized with StartModeTransition so render readers
+    // never observe the new mode before the transition snapshot is ready.
+    std::unique_lock<std::mutex> modeLock(g_modeIdMutex);
+    LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex acquired");
+    currentMode = g_currentModeId;
 
-        if (EqualsIgnoreCase(currentMode, newModeId)) {
-            Log("Mode switch to '" + newModeId + "' requested, but already in that mode.");
-            return false;
-        }
-
-        g_currentModeId = newModeId;
-        // Update lock-free double-buffer for input handlers
-        int nextIndex = 1 - g_currentModeIdIndex.load(std::memory_order_relaxed);
-        g_modeIdBuffers[nextIndex] = newModeId;
-        g_currentModeIdIndex.store(nextIndex, std::memory_order_release);
-        LogCategory("mode_switch", "[MODE_SWITCH] g_currentModeId updated to: " + newModeId);
+    if (EqualsIgnoreCase(currentMode, newModeId)) {
+        Log("Mode switch to '" + newModeId + "' requested, but already in that mode.");
+        return false;
     }
-    LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex released");
-
-    // Async file write OUTSIDE the mutex - never blocks
-    WriteCurrentModeToFile(newModeId);
 
     std::string logMessage = "[MODE] Switching from '" + currentMode + "' to '" + newModeId + "'";
     if (!source.empty()) { logMessage += " (source: " + source + ")"; }
@@ -1168,6 +1156,18 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
                     ", Bg:" + BackgroundTransitionTypeToString(toModeCopy.backgroundTransition));
     StartModeTransition(currentMode, newModeId, fromWidth, fromHeight, fromX, fromY, toWidth, toHeight, toX, toY, toModeCopy);
     LogCategory("mode_switch", "[MODE_SWITCH] StartModeTransition completed");
+
+    g_currentModeId = newModeId;
+    int nextIndex = 1 - g_currentModeIdIndex.load(std::memory_order_relaxed);
+    g_modeIdBuffers[nextIndex] = newModeId;
+    g_currentModeIdIndex.store(nextIndex, std::memory_order_release);
+    LogCategory("mode_switch", "[MODE_SWITCH] Published new active mode after transition setup: " + newModeId);
+
+    modeLock.unlock();
+    LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex released");
+
+    // Async file write OUTSIDE the mutex - never blocks
+    WriteCurrentModeToFile(newModeId);
 
     return true;
 }

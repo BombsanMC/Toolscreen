@@ -192,11 +192,15 @@ static bool IsShiftVk(DWORD vk) {
     return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
 }
 
+static bool IsShiftCurrentlyDown() {
+    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
 static bool IsShiftDownForIncomingEvent(DWORD incomingVk, DWORD incomingRawVk, bool isKeyDown) {
     if (IsShiftVk(incomingVk) || incomingRawVk == VK_SHIFT) {
         return isKeyDown;
     }
-    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    return IsShiftCurrentlyDown();
 }
 
 static bool HasShiftLayerOutputVk(const KeyRebind& rebind) {
@@ -1913,6 +1917,11 @@ static bool ResolvePreferredOutputShiftState(const KeyRebind& rebind, bool shift
 
 static void ApplyPreferredOutputShiftState(const KeyRebind& rebind, bool shiftLayerActive, BYTE keyboardState[256]) {
     if (!keyboardState) return;
+
+    // Rebind text output should only follow live Shift state or explicit rebind shift settings,
+    // not the toggle state from Caps Lock.
+    keyboardState[VK_CAPITAL] = 0;
+
     bool shouldOverrideShiftState = false;
     BYTE shiftState = 0;
     if (shiftLayerActive && HasShiftLayerOutputVk(rebind)) {
@@ -2630,19 +2639,17 @@ InputHandlerResult HandleCharRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         bool hasFromShifted = TryTranslateVkToChar(rebind.fromKey, true, fromShifted);
 
         bool matched = false;
-        bool matchedShifted = false;
 
         if (hasFromUnshifted && inputChar == fromUnshifted) {
             matched = true;
-            matchedShifted = false;
         } else if (hasFromShifted && inputChar == fromShifted) {
             matched = true;
-            matchedShifted = true;
         }
 
         if (matched) {
-            const bool shiftLayerActive = HasShiftLayerOutputOverride(rebind) && matchedShifted;
-            const bool preferShiftedText = ResolvePreferredOutputShiftState(rebind, shiftLayerActive, matchedShifted);
+            const bool shiftDown = IsShiftCurrentlyDown();
+            const bool shiftLayerActive = HasShiftLayerOutputOverride(rebind) && shiftDown;
+            const bool preferShiftedText = ResolvePreferredOutputShiftState(rebind, shiftLayerActive, shiftDown);
 
             if (shiftLayerActive && HasShiftLayerOutputUnicode(rebind)) {
                 LRESULT r = SendUnicodeScalarAsCharMessage(hWnd, uMsg, (uint32_t)rebind.shiftLayerOutputUnicode, lParam);

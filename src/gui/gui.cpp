@@ -339,6 +339,11 @@ void RenderSettingsGUI() {
             ImGui::CloseCurrentPopup();
         };
 
+        auto isModifierVk = [](DWORD key) {
+            return key == VK_CONTROL || key == VK_SHIFT || key == VK_MENU || key == VK_LCONTROL || key == VK_RCONTROL ||
+                   key == VK_LSHIFT || key == VK_RSHIFT || key == VK_LMENU || key == VK_RMENU;
+        };
+
         DWORD capturedVk = 0;
         LPARAM capturedLParam = 0;
         bool capturedIsMouse = false;
@@ -367,6 +372,15 @@ void RenderSettingsGUI() {
                 finalize_bind({});
                 ImGui::EndPopup();
                 return;
+            }
+
+            const bool canAddCapturedKey = !s_preHeldKeys.count(capturedVk) && (capturedIsMouse || !isModifierVk(capturedVk));
+            if (canAddCapturedKey && s_bindingKeySet.insert(capturedVk).second) {
+                s_bindingKeys.push_back(capturedVk);
+            }
+            if (canAddCapturedKey) {
+                if (!s_hadKeysPressed) s_hotkeyConflictMessage.clear();
+                s_hadKeysPressed = true;
             }
         }
 
@@ -408,8 +422,11 @@ void RenderSettingsGUI() {
             }
         }
 
-        std::vector<DWORD> currentlyPressed;
-        currentlyPressed.reserve(8);
+        std::vector<DWORD> currentlyDownKeys;
+        currentlyDownKeys.reserve(8);
+
+        std::vector<DWORD> modifierKeysToInsert;
+        modifierKeysToInsert.reserve(8);
 
         const bool lctrlDown = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
         const bool rctrlDown = (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
@@ -425,12 +442,30 @@ void RenderSettingsGUI() {
         const bool laltPreHeld = s_preHeldKeys.count(VK_LMENU) || s_preHeldKeys.count(VK_MENU);
         const bool raltPreHeld = s_preHeldKeys.count(VK_RMENU) || s_preHeldKeys.count(VK_MENU);
 
-        if (lctrlDown && !lctrlPreHeld) currentlyPressed.push_back(VK_LCONTROL);
-        if (rctrlDown && !rctrlPreHeld) currentlyPressed.push_back(VK_RCONTROL);
-        if (lshiftDown && !lshiftPreHeld) currentlyPressed.push_back(VK_LSHIFT);
-        if (rshiftDown && !rshiftPreHeld) currentlyPressed.push_back(VK_RSHIFT);
-        if (laltDown && !laltPreHeld) currentlyPressed.push_back(VK_LMENU);
-        if (raltDown && !raltPreHeld) currentlyPressed.push_back(VK_RMENU);
+        if (lctrlDown && !lctrlPreHeld) {
+            currentlyDownKeys.push_back(VK_LCONTROL);
+            modifierKeysToInsert.push_back(VK_LCONTROL);
+        }
+        if (rctrlDown && !rctrlPreHeld) {
+            currentlyDownKeys.push_back(VK_RCONTROL);
+            modifierKeysToInsert.push_back(VK_RCONTROL);
+        }
+        if (lshiftDown && !lshiftPreHeld) {
+            currentlyDownKeys.push_back(VK_LSHIFT);
+            modifierKeysToInsert.push_back(VK_LSHIFT);
+        }
+        if (rshiftDown && !rshiftPreHeld) {
+            currentlyDownKeys.push_back(VK_RSHIFT);
+            modifierKeysToInsert.push_back(VK_RSHIFT);
+        }
+        if (laltDown && !laltPreHeld) {
+            currentlyDownKeys.push_back(VK_LMENU);
+            modifierKeysToInsert.push_back(VK_LMENU);
+        }
+        if (raltDown && !raltPreHeld) {
+            currentlyDownKeys.push_back(VK_RMENU);
+            modifierKeysToInsert.push_back(VK_RMENU);
+        }
 
         for (int vk = 1; vk < 0xFF; ++vk) {
             // Skip escape (used for cancel), generic modifiers, and Windows keys
@@ -439,37 +474,29 @@ void RenderSettingsGUI() {
                 continue;
             }
             if (s_preHeldKeys.count(static_cast<DWORD>(vk))) continue;
-            if (GetAsyncKeyState(vk) & 0x8000) { currentlyPressed.push_back(vk); }
+            if (GetAsyncKeyState(vk) & 0x8000) { currentlyDownKeys.push_back(vk); }
         }
 
-        for (DWORD key : currentlyPressed) {
+        for (DWORD key : modifierKeysToInsert) {
             if (s_bindingKeySet.insert(key).second) {
-                bool isModifier = (key == VK_CONTROL || key == VK_SHIFT || key == VK_MENU || key == VK_LCONTROL || key == VK_RCONTROL ||
-                                   key == VK_LSHIFT || key == VK_RSHIFT || key == VK_LMENU || key == VK_RMENU);
-                if (isModifier) {
-                    auto insertPos = s_bindingKeys.begin();
-                    for (auto it = s_bindingKeys.begin(); it != s_bindingKeys.end(); ++it) {
-                        bool itIsModifier = (*it == VK_CONTROL || *it == VK_SHIFT || *it == VK_MENU || *it == VK_LCONTROL || *it == VK_RCONTROL ||
-                                             *it == VK_LSHIFT || *it == VK_RSHIFT || *it == VK_LMENU || *it == VK_RMENU);
-                        if (!itIsModifier) {
-                            insertPos = it;
-                            break;
-                        }
-                        insertPos = it + 1;
+                auto insertPos = s_bindingKeys.begin();
+                for (auto it = s_bindingKeys.begin(); it != s_bindingKeys.end(); ++it) {
+                    if (!isModifierVk(*it)) {
+                        insertPos = it;
+                        break;
                     }
-                    s_bindingKeys.insert(insertPos, key);
-                } else {
-                    s_bindingKeys.push_back(key);
+                    insertPos = it + 1;
                 }
+                s_bindingKeys.insert(insertPos, key);
             }
         }
 
-        if (!currentlyPressed.empty()) {
+        if (!currentlyDownKeys.empty()) {
             if (!s_hadKeysPressed) s_hotkeyConflictMessage.clear();
             s_hadKeysPressed = true;
         }
 
-        if (s_hadKeysPressed && currentlyPressed.empty()) {
+        if (s_hadKeysPressed && currentlyDownKeys.empty()) {
             finalize_bind(s_bindingKeys);
             if (s_hotkeyConflictMessage.empty()) {
                 ImGui::EndPopup();

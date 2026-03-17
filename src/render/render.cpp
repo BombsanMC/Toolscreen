@@ -2131,24 +2131,30 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
     const bool wantsEyeZoomSlide =
         cfg.eyezoom.slideMirrorsIn && hasEyeZoomAnimatedPosition && isEyeZoomMode && isEyeZoomTransitioning;
     const float eyeZoomSlideProgress = wantsEyeZoomSlide ? static_cast<float>(eyeZoomAnimatedViewportX) / targetViewportX : 1.0f;
-    std::unordered_set<std::string> sourceMirrorNames;
-    if (!fromModeId.empty() && (fromSlideMirrorsIn || toSlideMirrorsIn || cfg.eyezoom.slideMirrorsIn)) {
-        sourceMirrorNames.reserve(activeMirrors.size());
-        for (const auto& mode : cfg.modes) {
-            if (EqualsIgnoreCase(mode.id, fromModeId)) {
-                for (const auto& mirrorName : mode.mirrorIds) { sourceMirrorNames.insert(mirrorName); }
-                for (const auto& groupName : mode.mirrorGroupIds) {
-                    for (const auto& group : cfg.mirrorGroups) {
-                        if (group.name == groupName) {
-                            for (const auto& item : group.mirrors) { sourceMirrorNames.insert(item.mirrorId); }
-                            break;
-                        }
-                    }
-                }
-                break;
-            }
+    std::vector<MirrorConfig> sourceMirrors;
+    std::unordered_map<std::string, const MirrorConfig*> sourceMirrorConfigs;
+    if (!fromModeId.empty() && (isAnimating || fromSlideMirrorsIn || toSlideMirrorsIn || cfg.eyezoom.slideMirrorsIn)) {
+        std::vector<ImageConfig> unusedImages;
+        std::vector<const WindowOverlayConfig*> unusedWindowOverlays;
+        const uint64_t cfgVersion = g_configSnapshotVersion.load(std::memory_order_acquire);
+        CollectActiveElementsForMode(cfg, fromModeId, false, cfgVersion, sourceMirrors, unusedImages, unusedWindowOverlays);
+        sourceMirrorConfigs.reserve(sourceMirrors.size());
+        for (const auto& sourceMirror : sourceMirrors) {
+            sourceMirrorConfigs[sourceMirror.name] = &sourceMirror;
         }
     }
+    const bool allowCachedMirrorVertices = !isAnimating && !wantsTransitionSlide && !wantsEyeZoomSlide && sourceMirrorConfigs.empty();
+
+    auto splitRelativeAnchor = [](const std::string& relativeTo, std::string& anchorOut, bool& isScreenRelativeOut) {
+        anchorOut = relativeTo;
+        isScreenRelativeOut = false;
+        if (anchorOut.length() > 6 && anchorOut.substr(anchorOut.length() - 6) == "Screen") {
+            anchorOut = anchorOut.substr(0, anchorOut.length() - 6);
+            isScreenRelativeOut = true;
+        } else if (anchorOut.length() > 8 && anchorOut.substr(anchorOut.length() - 8) == "Viewport") {
+            anchorOut = anchorOut.substr(0, anchorOut.length() - 8);
+        }
+    };
 
     std::vector<MirrorRenderData> mirrorsToRender;
     mirrorsToRender.reserve(activeMirrors.size());
@@ -2194,7 +2200,8 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
 
             const auto& cache = inst.cachedRenderState;
             const bool cacheMatchesCurrentGeo =
-                cache.isValid && !isAnimating && cache.finalX == geo.finalX && cache.finalY == geo.finalY && cache.finalW == geo.finalW &&
+                allowCachedMirrorVertices && cache.isValid && cache.finalX == geo.finalX && cache.finalY == geo.finalY &&
+                cache.finalW == geo.finalW &&
                 cache.finalH == geo.finalH && cache.screenW == fullW && cache.screenH == fullH && cache.outputX == conf.output.x &&
                 cache.outputY == conf.output.y && cache.outputScale == conf.output.scale &&
                 cache.outputSeparateScale == conf.output.separateScale && cache.outputScaleX == conf.output.scaleX &&
@@ -2328,66 +2335,112 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
             if (renderData.cacheValid) {
                 glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(renderData.vertices), renderData.vertices);
             } else {
-                std::string anchor = conf.output.relativeTo;
-                bool isScreenRelative = false;
-            if (anchor.length() > 6 && anchor.substr(anchor.length() - 6) == "Screen") {
-                anchor = anchor.substr(0, anchor.length() - 6);
-                isScreenRelative = true;
-            } else if (anchor.length() > 8 && anchor.substr(anchor.length() - 8) == "Viewport") {
-                anchor = anchor.substr(0, anchor.length() - 8);
-            }
+                const MirrorConfig* sourceConf = nullptr;
+                if (isAnimating && !isSlideOutPass) {
+                    auto sourceIt = sourceMirrorConfigs.find(conf.name);
+                    if (sourceIt != sourceMirrorConfigs.end()) {
+                        sourceConf = sourceIt->second;
+                    }
+                }
 
-            int finalXScreen = 0;
-            int finalYScreen = 0;
-            int finalWScreen = renderData.outW;
-            int finalHScreen = renderData.outH;
-            int slideAnchorX = 0;
-            int slideAnchorW = renderData.outW;
+                std::string targetAnchor;
+                bool targetIsScreenRelative = false;
+                splitRelativeAnchor(conf.output.relativeTo, targetAnchor, targetIsScreenRelative);
 
-            if (isScreenRelative) {
-                GetRelativeCoords(anchor, conf.output.x, conf.output.y, renderData.outW, renderData.outH, fullW, fullH, finalXScreen,
-                                  finalYScreen);
-                slideAnchorX = finalXScreen;
-            } else {
-                const int toSizeW = relativeStretching ? static_cast<int>(renderData.outW * toScaleX) : renderData.outW;
-                const int toSizeH = relativeStretching ? static_cast<int>(renderData.outH * toScaleY) : renderData.outH;
-                const int fromSizeW = relativeStretching ? static_cast<int>(renderData.outW * fromScaleX) : renderData.outW;
-                const int fromSizeH = relativeStretching ? static_cast<int>(renderData.outH * fromScaleY) : renderData.outH;
+                std::string sourceAnchor = targetAnchor;
+                bool sourceIsScreenRelative = targetIsScreenRelative;
+                if (sourceConf) {
+                    splitRelativeAnchor(sourceConf->output.relativeTo, sourceAnchor, sourceIsScreenRelative);
+                }
 
-                int toOutX = 0;
-                int toOutY = 0;
-                GetRelativeCoords(anchor, conf.output.x, conf.output.y, toSizeW, toSizeH, toW, toH, toOutX, toOutY);
+                const float targetScaleBaseX = conf.output.separateScale ? conf.output.scaleX : conf.output.scale;
+                const float targetScaleBaseY = conf.output.separateScale ? conf.output.scaleY : conf.output.scale;
+                float sourceScaleBaseX = targetScaleBaseX;
+                float sourceScaleBaseY = targetScaleBaseY;
+                if (sourceConf) {
+                    sourceScaleBaseX = sourceConf->output.separateScale ? sourceConf->output.scaleX : sourceConf->output.scale;
+                    sourceScaleBaseY = sourceConf->output.separateScale ? sourceConf->output.scaleY : sourceConf->output.scale;
+                }
 
-                int fromOutX = 0;
-                int fromOutY = 0;
-                const int effectiveFromSizeH = isTransitioningFromEyeZoom ? toSizeH : fromSizeH;
-                GetRelativeCoords(anchor, conf.output.x, conf.output.y, fromSizeW, effectiveFromSizeH, fromW, effectiveFromH, fromOutX,
-                                  fromOutY);
+                int targetBaseW = renderData.outW;
+                int targetBaseH = renderData.outH;
+                int sourceBaseW = renderData.outW;
+                int sourceBaseH = renderData.outH;
+                if (sourceConf) {
+                    if (targetScaleBaseX > 0.0f) {
+                        sourceBaseW = static_cast<int>(renderData.outW * (sourceScaleBaseX / targetScaleBaseX));
+                    }
+                    if (targetScaleBaseY > 0.0f) {
+                        sourceBaseH = static_cast<int>(renderData.outH * (sourceScaleBaseY / targetScaleBaseY));
+                    }
+                }
 
-                const int toPosX = toX + toOutX;
-                const int toPosY = toY + toOutY;
-                const int fromPosX = fromX + fromOutX;
-                const int fromPosY = effectiveFromY + fromOutY;
+                const int targetSizeW = relativeStretching ? static_cast<int>(targetBaseW * toScaleX) : targetBaseW;
+                const int targetSizeH = relativeStretching ? static_cast<int>(targetBaseH * toScaleY) : targetBaseH;
+                const int sourceSizeW = relativeStretching ? static_cast<int>(sourceBaseW * fromScaleX) : sourceBaseW;
+                const int sourceSizeH = relativeStretching ? static_cast<int>(sourceBaseH * fromScaleY) : sourceBaseH;
+
+                int toPosX = 0;
+                int toPosY = 0;
+                if (targetIsScreenRelative) {
+                    GetRelativeCoords(targetAnchor, conf.output.x, conf.output.y, targetSizeW, targetSizeH, fullW, fullH, toPosX,
+                                      toPosY);
+                } else {
+                    int toOutX = 0;
+                    int toOutY = 0;
+                    GetRelativeCoords(targetAnchor, conf.output.x, conf.output.y, targetSizeW, targetSizeH, toW, toH, toOutX, toOutY);
+                    toPosX = toX + toOutX;
+                    toPosY = toY + toOutY;
+                }
+
+                int fromPosX = toPosX;
+                int fromPosY = toPosY;
+                if (sourceConf) {
+                    if (sourceIsScreenRelative) {
+                        GetRelativeCoords(sourceAnchor, sourceConf->output.x, sourceConf->output.y, sourceSizeW, sourceSizeH, fullW,
+                                          fullH, fromPosX, fromPosY);
+                    } else {
+                        int fromOutX = 0;
+                        int fromOutY = 0;
+                        const int effectiveFromSizeH = isTransitioningFromEyeZoom ? targetSizeH : sourceSizeH;
+                        GetRelativeCoords(sourceAnchor, sourceConf->output.x, sourceConf->output.y, sourceSizeW, effectiveFromSizeH,
+                                          fromW, effectiveFromH, fromOutX, fromOutY);
+                        fromPosX = fromX + fromOutX;
+                        fromPosY = effectiveFromY + fromOutY;
+                    }
+                } else if (!targetIsScreenRelative) {
+                    int fromOutX = 0;
+                    int fromOutY = 0;
+                    const int effectiveFromSizeH = isTransitioningFromEyeZoom ? targetSizeH : sourceSizeH;
+                    GetRelativeCoords(targetAnchor, conf.output.x, conf.output.y, sourceSizeW, effectiveFromSizeH, fromW, effectiveFromH,
+                                      fromOutX, fromOutY);
+                    fromPosX = fromX + fromOutX;
+                    fromPosY = effectiveFromY + fromOutY;
+                }
+
+                int finalXScreen = 0;
+                int finalYScreen = 0;
+                int finalWScreen = targetSizeW;
+                int finalHScreen = targetSizeH;
                 const float t = transitionProgress;
                 finalXScreen = static_cast<int>(fromPosX + (toPosX - fromPosX) * t);
                 finalYScreen = static_cast<int>(fromPosY + (toPosY - fromPosY) * t);
-                if (relativeStretching) {
-                    finalWScreen = static_cast<int>(fromSizeW + (toSizeW - fromSizeW) * t);
-                    finalHScreen = static_cast<int>(fromSizeH + (toSizeH - fromSizeH) * t);
+                if (sourceConf || relativeStretching) {
+                    finalWScreen = static_cast<int>(sourceSizeW + (targetSizeW - sourceSizeW) * t);
+                    finalHScreen = static_cast<int>(sourceSizeH + (targetSizeH - sourceSizeH) * t);
                 }
 
-                slideAnchorX = finalXScreen;
-                slideAnchorW = finalWScreen;
+                int slideAnchorX = finalXScreen;
+                int slideAnchorW = finalWScreen;
                 if (wantsTransitionSlide) {
                     if (fromSlideMirrorsIn && isSlideOutPass) {
                         slideAnchorX = fromPosX;
-                        slideAnchorW = relativeStretching ? fromSizeW : renderData.outW;
+                        slideAnchorW = sourceSizeW;
                     } else if (toSlideMirrorsIn && !isSlideOutPass) {
                         slideAnchorX = toPosX;
-                        slideAnchorW = relativeStretching ? toSizeW : renderData.outW;
+                        slideAnchorW = targetSizeW;
                     }
                 }
-            }
 
             bool shouldApplySlide = false;
             float slideProgress = 1.0f;
@@ -2406,7 +2459,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
                     slideProgress = 1.0f - mirrorSlideProgress;
                 }
             }
-            if (shouldApplySlide && !isSlideOutPass && sourceMirrorNames.count(conf.name) > 0) { shouldApplySlide = false; }
+            if (shouldApplySlide && !isSlideOutPass && sourceMirrorConfigs.count(conf.name) > 0) { shouldApplySlide = false; }
             if (shouldApplySlide) {
                 slideProgress = (std::max)(0.0f, (std::min)(1.0f, slideProgress));
                 bool isOnLeftSide = (slideAnchorX + slideAnchorW / 2) < (fullW / 2);
@@ -3685,6 +3738,16 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
                 request.toH = transitionState.targetHeight;
                 request.toX = transitionState.targetX;
                 request.toY = transitionState.targetY;
+            } else if (transitionState.active) {
+                request.transitionProgress = 1.0f;
+                request.fromX = transitionState.fromX;
+                request.fromY = transitionState.fromY;
+                request.fromW = transitionState.fromWidth;
+                request.fromH = transitionState.fromHeight;
+                request.toX = transitionState.targetX;
+                request.toY = transitionState.targetY;
+                request.toW = transitionState.targetWidth;
+                request.toH = transitionState.targetHeight;
             } else {
                 request.transitionProgress = 1.0f;
                 request.fromX = finalX;
@@ -4988,6 +5051,16 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
             target.toH = transitionState.targetHeight;
             target.toX = transitionState.targetX;
             target.toY = transitionState.targetY;
+        } else if (transitionState.active) {
+            target.transitionProgress = 1.0f;
+            target.fromX = transitionState.fromX;
+            target.fromY = transitionState.fromY;
+            target.fromW = transitionState.fromWidth;
+            target.fromH = transitionState.fromHeight;
+            target.toX = transitionState.targetX;
+            target.toY = transitionState.targetY;
+            target.toW = transitionState.targetWidth;
+            target.toH = transitionState.targetHeight;
         } else {
             target.transitionProgress = 1.0f;
             target.fromX = currentGeo.finalX;

@@ -224,51 +224,49 @@ void UpdateActiveMirrorConfigs() {
         }
     }
 
-    if (currentMirrorIds != s_lastActiveMirrorIds) {
-        std::vector<MirrorConfig> activeMirrorsForCapture;
-        activeMirrorsForCapture.reserve(currentMirrorIds.size());
-        for (const auto& mirrorId : currentMirrorIds) {
-            auto mirrorIt = s_mirrorByName.find(mirrorId);
-            if (mirrorIt == s_mirrorByName.end() || !mirrorIt->second) {
-                continue;
-            }
-
-            const MirrorConfig& mirror = *mirrorIt->second;
-            MirrorConfig activeMirror = mirror;
-
-            auto placementIt = mirrorPlacements.find(mirrorId);
-            if (placementIt != mirrorPlacements.end() && placementIt->second.group && placementIt->second.item) {
-                const MirrorGroupConfig& group = *placementIt->second.group;
-                const MirrorGroupItem& item = *placementIt->second.item;
-
-                int groupX = group.output.x;
-                int groupY = group.output.y;
-                if (group.output.useRelativePosition) {
-                    int screenW = GetCachedWindowWidth();
-                    int screenH = GetCachedWindowHeight();
-                    groupX = static_cast<int>(group.output.relativeX * screenW);
-                    groupY = static_cast<int>(group.output.relativeY * screenH);
-                }
-                activeMirror.output.x = groupX + item.offsetX;
-                activeMirror.output.y = groupY + item.offsetY;
-                activeMirror.output.relativeTo = group.output.relativeTo;
-                activeMirror.output.useRelativePosition = group.output.useRelativePosition;
-                activeMirror.output.relativeX = group.output.relativeX;
-                activeMirror.output.relativeY = group.output.relativeY;
-                if (item.widthPercent != 1.0f || item.heightPercent != 1.0f) {
-                    activeMirror.output.separateScale = true;
-                    float baseScaleX = mirror.output.separateScale ? mirror.output.scaleX : mirror.output.scale;
-                    float baseScaleY = mirror.output.separateScale ? mirror.output.scaleY : mirror.output.scale;
-                    activeMirror.output.scaleX = baseScaleX * item.widthPercent;
-                    activeMirror.output.scaleY = baseScaleY * item.heightPercent;
-                }
-            }
-
-            activeMirrorsForCapture.push_back(activeMirror);
+    std::vector<MirrorConfig> activeMirrorsForCapture;
+    activeMirrorsForCapture.reserve(currentMirrorIds.size());
+    for (const auto& mirrorId : currentMirrorIds) {
+        auto mirrorIt = s_mirrorByName.find(mirrorId);
+        if (mirrorIt == s_mirrorByName.end() || !mirrorIt->second) {
+            continue;
         }
-        UpdateMirrorCaptureConfigs(activeMirrorsForCapture);
-        s_lastActiveMirrorIds = currentMirrorIds;
+
+        const MirrorConfig& mirror = *mirrorIt->second;
+        MirrorConfig activeMirror = mirror;
+
+        auto placementIt = mirrorPlacements.find(mirrorId);
+        if (placementIt != mirrorPlacements.end() && placementIt->second.group && placementIt->second.item) {
+            const MirrorGroupConfig& group = *placementIt->second.group;
+            const MirrorGroupItem& item = *placementIt->second.item;
+
+            int groupX = group.output.x;
+            int groupY = group.output.y;
+            if (group.output.useRelativePosition) {
+                int screenW = GetCachedWindowWidth();
+                int screenH = GetCachedWindowHeight();
+                groupX = static_cast<int>(group.output.relativeX * screenW);
+                groupY = static_cast<int>(group.output.relativeY * screenH);
+            }
+            activeMirror.output.x = groupX + item.offsetX;
+            activeMirror.output.y = groupY + item.offsetY;
+            activeMirror.output.relativeTo = group.output.relativeTo;
+            activeMirror.output.useRelativePosition = group.output.useRelativePosition;
+            activeMirror.output.relativeX = group.output.relativeX;
+            activeMirror.output.relativeY = group.output.relativeY;
+            if (item.widthPercent != 1.0f || item.heightPercent != 1.0f) {
+                activeMirror.output.separateScale = true;
+                float baseScaleX = mirror.output.separateScale ? mirror.output.scaleX : mirror.output.scale;
+                float baseScaleY = mirror.output.separateScale ? mirror.output.scaleY : mirror.output.scale;
+                activeMirror.output.scaleX = baseScaleX * item.widthPercent;
+                activeMirror.output.scaleY = baseScaleY * item.heightPercent;
+            }
+        }
+
+        activeMirrorsForCapture.push_back(activeMirror);
     }
+    UpdateMirrorCaptureConfigs(activeMirrorsForCapture);
+    s_lastActiveMirrorIds = currentMirrorIds;
 
     s_lastMirrorConfigModeId = currentModeId;
     s_lastMirrorConfigSnapshotVersion = snapVer;
