@@ -1,5 +1,5 @@
 #include "logic_thread.h"
-#include "common/expression_parser.h"
+#include "common/mode_dimensions.h"
 #include "gui/gui.h"
 #include "render/mirror_thread.h"
 #include "common/profiler.h"
@@ -318,7 +318,7 @@ void UpdateCachedScreenMetrics() {
             beforeModeH = currentModeBefore->height;
         }
 
-        RecalculateExpressionDimensions();
+        RecalculateModeDimensions();
 
         int afterModeW = 0;
         int afterModeH = 0;
@@ -343,10 +343,14 @@ void UpdateCachedScreenMetrics() {
             }
         }
 
+        const bool fullscreenStretchMode = EqualsIgnoreCase(currentModeId, "Fullscreen");
         const bool shouldEnforceForExternalResize = clientSizeDiffersFromMode;
-        const bool shouldEnforceModeSize = startupShouldRunNow || modeSizeChanged || shouldEnforceForExternalResize;
+        const bool shouldSendStartupWmSize = startupShouldRunNow;
+        const bool shouldSendFullscreenModeSize = fullscreenStretchMode && modeSizeChanged;
+        const bool shouldEnforceModeSize = !fullscreenStretchMode && (modeSizeChanged || shouldEnforceForExternalResize);
+        const bool shouldSendWmSize = shouldSendStartupWmSize || shouldSendFullscreenModeSize || shouldEnforceModeSize;
 
-        if (afterModeW > 0 && afterModeH > 0 && shouldEnforceModeSize && IsResolutionChangeSupported(g_gameVersion)) {
+        if (afterModeW > 0 && afterModeH > 0 && shouldSendWmSize && IsResolutionChangeSupported(g_gameVersion)) {
             HWND hwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
             if (hwnd) { RequestWindowClientResize(hwnd, afterModeW, afterModeH, "logic_thread:screen_metrics"); }
         }
@@ -447,10 +451,17 @@ void UpdateCachedViewportMode() {
         cache.width = mode->width;
         cache.height = mode->height;
         cache.stretchEnabled = mode->stretch.enabled;
-        cache.stretchX = mode->stretch.x;
-        cache.stretchY = mode->stretch.y;
-        cache.stretchWidth = mode->stretch.width;
-        cache.stretchHeight = mode->stretch.height;
+        if (mode->stretch.enabled && EqualsIgnoreCase(mode->id, "Fullscreen")) {
+            cache.stretchX = 0;
+            cache.stretchY = 0;
+            cache.stretchWidth = screenW;
+            cache.stretchHeight = screenH;
+        } else {
+            cache.stretchX = mode->stretch.x;
+            cache.stretchY = mode->stretch.y;
+            cache.stretchWidth = mode->stretch.width;
+            cache.stretchHeight = mode->stretch.height;
+        }
         cache.valid = true;
     } else {
         cache.valid = false;
@@ -560,17 +571,17 @@ void ProcessPendingDimensionChange() {
 
     ModeConfig* mode = GetModeMutable(g_pendingDimensionChange.modeId);
     if (mode) {
+        const bool fullscreenStretchMode = EqualsIgnoreCase(mode->id, "Fullscreen");
+
         if (g_pendingDimensionChange.newWidth > 0) {
             mode->width = EqualsIgnoreCase(mode->id, "Thin") ? (std::max)(330, g_pendingDimensionChange.newWidth)
                                                                : g_pendingDimensionChange.newWidth;
             mode->manualWidth = mode->width;
-            mode->widthExpr.clear();
             mode->relativeWidth = -1.0f;
         }
         if (g_pendingDimensionChange.newHeight > 0) {
             mode->height = g_pendingDimensionChange.newHeight;
             mode->manualHeight = mode->height;
-            mode->heightExpr.clear();
             mode->relativeHeight = -1.0f;
         }
 
@@ -583,14 +594,23 @@ void ProcessPendingDimensionChange() {
         const bool hasRelativeHeight = (mode->relativeHeight >= 0.0f && mode->relativeHeight <= 1.0f);
         if (!hasRelativeWidth && !hasRelativeHeight) { mode->useRelativeSize = false; }
 
+        if (fullscreenStretchMode) {
+            int currentClientW = GetCachedWindowWidth();
+            int currentClientH = GetCachedWindowHeight();
+            if (currentClientW < 1) currentClientW = 1;
+            if (currentClientH < 1) currentClientH = 1;
+            mode->stretch.enabled = true;
+            mode->stretch.x = 0;
+            mode->stretch.y = 0;
+            mode->stretch.width = currentClientW;
+            mode->stretch.height = currentClientH;
+        }
+
         ModeConfig* eyezoomMode = GetModeMutable("EyeZoom");
         ModeConfig* preemptiveMode = GetModeMutable("Preemptive");
         bool preemptiveWasResynced = false;
         if (eyezoomMode && preemptiveMode) {
-            if (!preemptiveMode->widthExpr.empty() || !preemptiveMode->heightExpr.empty() || preemptiveMode->useRelativeSize ||
-                preemptiveMode->relativeWidth >= 0.0f || preemptiveMode->relativeHeight >= 0.0f) {
-                preemptiveMode->widthExpr.clear();
-                preemptiveMode->heightExpr.clear();
+            if (preemptiveMode->useRelativeSize || preemptiveMode->relativeWidth >= 0.0f || preemptiveMode->relativeHeight >= 0.0f) {
                 preemptiveMode->useRelativeSize = false;
                 preemptiveMode->relativeWidth = -1.0f;
                 preemptiveMode->relativeHeight = -1.0f;
@@ -609,7 +629,7 @@ void ProcessPendingDimensionChange() {
             }
         }
 
-        if (g_pendingDimensionChange.sendWmSize && g_currentModeId == g_pendingDimensionChange.modeId) {
+        if (g_pendingDimensionChange.sendWmSize && !fullscreenStretchMode && g_currentModeId == g_pendingDimensionChange.modeId) {
             HWND hwnd = g_minecraftHwnd.load();
             if (hwnd) { RequestWindowClientResize(hwnd, mode->width, mode->height, "logic_thread:pending_dimension"); }
         }

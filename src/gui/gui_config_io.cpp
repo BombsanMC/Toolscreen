@@ -1,6 +1,6 @@
 #include "gui_internal.h"
 
-#include "common/expression_parser.h"
+#include "common/mode_dimensions.h"
 #include "common/profiler.h"
 #include "common/utils.h"
 #include "config/config_toml.h"
@@ -459,8 +459,6 @@ void LoadConfig() {
                 preemptiveMode.manualWidth = eyezoomModePtr ? eyezoomModePtr->manualWidth : preemptiveMode.width;
                 preemptiveMode.manualHeight = eyezoomModePtr ? eyezoomModePtr->manualHeight : preemptiveMode.height;
                 preemptiveMode.useRelativeSize = false;
-                preemptiveMode.widthExpr.clear();
-                preemptiveMode.heightExpr.clear();
                 preemptiveMode.relativeWidth = -1.0f;
                 preemptiveMode.relativeHeight = -1.0f;
                 g_config.modes.push_back(preemptiveMode);
@@ -476,11 +474,6 @@ void LoadConfig() {
 
                 if (preemptiveModePtr) {
                     bool changed = false;
-                    if (!preemptiveModePtr->widthExpr.empty() || !preemptiveModePtr->heightExpr.empty()) {
-                        preemptiveModePtr->widthExpr.clear();
-                        preemptiveModePtr->heightExpr.clear();
-                        changed = true;
-                    }
                     if (preemptiveModePtr->relativeWidth >= 0.0f || preemptiveModePtr->relativeHeight >= 0.0f ||
                         preemptiveModePtr->useRelativeSize) {
                         preemptiveModePtr->relativeWidth = -1.0f;
@@ -551,8 +544,8 @@ void LoadConfig() {
         }
 
         for (auto& mode : g_config.modes) {
-            bool widthIsRelative = mode.widthExpr.empty() && mode.relativeWidth >= 0.0f && mode.relativeWidth <= 1.0f;
-            bool heightIsRelative = mode.heightExpr.empty() && mode.relativeHeight >= 0.0f && mode.relativeHeight <= 1.0f;
+            bool widthIsRelative = mode.relativeWidth >= 0.0f && mode.relativeWidth <= 1.0f;
+            bool heightIsRelative = mode.relativeHeight >= 0.0f && mode.relativeHeight <= 1.0f;
 
             if (widthIsRelative && hasClientMetrics) {
                 mode.width = static_cast<int>(std::lround(mode.relativeWidth * static_cast<float>(clientWidth)));
@@ -572,19 +565,21 @@ void LoadConfig() {
                 const int targetW = hasClientMetrics ? clientWidth : screenWidth;
                 const int targetH = hasClientMetrics ? clientHeight : screenHeight;
 
-                if (!mode.useRelativeSize || mode.relativeWidth != 1.0f || mode.relativeHeight != 1.0f) {
-                    mode.useRelativeSize = true;
-                    mode.relativeWidth = 1.0f;
-                    mode.relativeHeight = 1.0f;
-                    g_configIsDirty = true;
-                }
-
-                if (targetW > 0 && mode.width != targetW) {
+                if (targetW > 0 && mode.width < 1) {
                     mode.width = targetW;
                     g_configIsDirty = true;
                 }
-                if (targetH > 0 && mode.height != targetH) {
+                if (targetH > 0 && mode.height < 1) {
                     mode.height = targetH;
+                    g_configIsDirty = true;
+                }
+
+                if (mode.manualWidth < 1 && mode.width > 0) {
+                    mode.manualWidth = mode.width;
+                    g_configIsDirty = true;
+                }
+                if (mode.manualHeight < 1 && mode.height > 0) {
+                    mode.manualHeight = mode.height;
                     g_configIsDirty = true;
                 }
 
@@ -670,7 +665,7 @@ void LoadConfig() {
             HWND startupHwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
             const bool hasValidStartupClient = GetWindowClientRectInScreen(startupHwnd, startupClientRect);
             if (hasValidStartupClient) {
-                RecalculateExpressionDimensions();
+                RecalculateModeDimensions();
             } else {
                 Log("Deferring mode dimension recalculation until game client size is valid.");
             }

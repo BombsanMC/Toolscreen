@@ -1,7 +1,7 @@
 ﻿#include "gui.h"
 #include "gui_internal.h"
 #include "config/config_toml.h"
-#include "common/expression_parser.h"
+#include "common/mode_dimensions.h"
 #include "features/fake_cursor.h"
 #include "imgui_cache.h"
 #include "imgui_impl_opengl3.h"

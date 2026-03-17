@@ -854,24 +854,77 @@ HCURSOR WINAPI hkSetCursor_ThirdParty(HCURSOR hCursor) {
 static std::atomic<int> lastViewportW{ 0 };
 static std::atomic<int> lastViewportH{ 0 };
 
+static constexpr int kViewportHookRecentModeHistory = 6;
+
+struct ViewportHookCache {
+    uint64_t configVersion = UINT64_MAX;
+    std::string modeId;
+    int screenW = 0;
+    int screenH = 0;
+    int modeW = 0;
+    int modeH = 0;
+    bool stretchEnabled = false;
+    int stretchX = 0;
+    int stretchY = 0;
+    int stretchW = 0;
+    int stretchH = 0;
+    int recentModeW[kViewportHookRecentModeHistory] = {};
+    int recentModeH[kViewportHookRecentModeHistory] = {};
+    int recentModeCount = 0;
+    bool valid = false;
+};
+
+static ViewportHookCache& GetViewportHookCache() {
+    thread_local ViewportHookCache s_cache;
+    return s_cache;
+}
+
+static void RememberViewportHookModeSize(ViewportHookCache& cache, int modeW, int modeH) {
+    if (modeW < 1 || modeH < 1) { return; }
+
+    int existingIndex = -1;
+    for (int i = 0; i < cache.recentModeCount; ++i) {
+        if (cache.recentModeW[i] == modeW && cache.recentModeH[i] == modeH) {
+            existingIndex = i;
+            break;
+        }
+    }
+
+    if (existingIndex >= 0) {
+        for (int i = existingIndex; i + 1 < cache.recentModeCount; ++i) {
+            cache.recentModeW[i] = cache.recentModeW[i + 1];
+            cache.recentModeH[i] = cache.recentModeH[i + 1];
+        }
+        cache.recentModeW[cache.recentModeCount - 1] = modeW;
+        cache.recentModeH[cache.recentModeCount - 1] = modeH;
+        return;
+    }
+
+    if (cache.recentModeCount < kViewportHookRecentModeHistory) {
+        cache.recentModeW[cache.recentModeCount] = modeW;
+        cache.recentModeH[cache.recentModeCount] = modeH;
+        ++cache.recentModeCount;
+        return;
+    }
+
+    for (int i = 1; i < kViewportHookRecentModeHistory; ++i) {
+        cache.recentModeW[i - 1] = cache.recentModeW[i];
+        cache.recentModeH[i - 1] = cache.recentModeH[i];
+    }
+    cache.recentModeW[kViewportHookRecentModeHistory - 1] = modeW;
+    cache.recentModeH[kViewportHookRecentModeHistory - 1] = modeH;
+}
+
+static bool MatchesRecentViewportHookModeSize(const ViewportHookCache& cache, int modeW, int modeH) {
+    for (int i = 0; i < cache.recentModeCount; ++i) {
+        if (cache.recentModeW[i] == modeW && cache.recentModeH[i] == modeH) { return true; }
+    }
+    return false;
+}
+
 static bool GetLatestViewportForHook(int& outModeW, int& outModeH, bool& outStretchEnabled, int& outStretchX, int& outStretchY,
                                      int& outStretchW, int& outStretchH) {
-    struct ViewportHookCache {
-        uint64_t configVersion = UINT64_MAX;
-        std::string modeId;
-        int screenW = 0;
-        int screenH = 0;
-        int modeW = 0;
-        int modeH = 0;
-        bool stretchEnabled = false;
-        int stretchX = 0;
-        int stretchY = 0;
-        int stretchW = 0;
-        int stretchH = 0;
-        bool valid = false;
-    };
-
-    thread_local ViewportHookCache s_cache;
+    ViewportHookCache& s_cache = GetViewportHookCache();
 
     const uint64_t configVersion = g_configSnapshotVersion.load(std::memory_order_acquire);
     const int modeIdx = g_currentModeIdIndex.load(std::memory_order_acquire);
@@ -898,6 +951,12 @@ static bool GetLatestViewportForHook(int& outModeW, int& outModeH, bool& outStre
     const ModeConfig* mode = GetModeFromSnapshot(*cfgSnap, currentModeId);
     if (!mode) { return false; }
 
+    if (s_cache.valid && s_cache.modeId != currentModeId) {
+        s_cache.recentModeCount = 0;
+    } else if (s_cache.valid) {
+        RememberViewportHookModeSize(s_cache, s_cache.modeW, s_cache.modeH);
+    }
+
     // Single source of truth: logic-thread-recalculated mode dimensions.
     // Do not re-run relative/expression math in the hook; that can introduce
     // independent rounding/timing drift versus WM_SIZE enforcement.
@@ -914,10 +973,17 @@ static bool GetLatestViewportForHook(int& outModeW, int& outModeH, bool& outStre
     s_cache.modeH = modeH;
     s_cache.stretchEnabled = mode->stretch.enabled;
     if (mode->stretch.enabled) {
-        s_cache.stretchX = mode->stretch.x;
-        s_cache.stretchY = mode->stretch.y;
-        s_cache.stretchW = mode->stretch.width;
-        s_cache.stretchH = mode->stretch.height;
+        if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
+            s_cache.stretchX = 0;
+            s_cache.stretchY = 0;
+            s_cache.stretchW = screenW;
+            s_cache.stretchH = screenH;
+        } else {
+            s_cache.stretchX = mode->stretch.x;
+            s_cache.stretchY = mode->stretch.y;
+            s_cache.stretchW = mode->stretch.width;
+            s_cache.stretchH = mode->stretch.height;
+        }
     } else {
         s_cache.stretchX = screenW / 2 - modeW / 2;
         s_cache.stretchY = screenH / 2 - modeH / 2;
@@ -981,23 +1047,38 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
         return next(x, y, width, height);
     }
 
+    const ViewportHookCache& hookCache = GetViewportHookCache();
     const int lastViewportWValue = lastViewportW.load(std::memory_order_relaxed);
     const int lastViewportHValue = lastViewportH.load(std::memory_order_relaxed);
+    int requestedViewportW = 0;
+    int requestedViewportH = 0;
+    int previousRequestedViewportW = 0;
+    int previousRequestedViewportH = 0;
+    GetRecentRequestedWindowClientResizes(requestedViewportW, requestedViewportH, previousRequestedViewportW, previousRequestedViewportH);
 
     bool posValid = x == 0 && y == 0;
-    bool widthMatches = (width == modeWidth) || (width == lastViewportWValue);
-    bool heightMatches = (height == modeHeight) || (height == lastViewportHValue);
+    bool dimsMatch = (width == modeWidth && height == modeHeight) ||
+                     (width == lastViewportWValue && height == lastViewportHValue) ||
+                     (cachedMode.valid && width == cachedMode.width && height == cachedMode.height) ||
+                     (width == requestedViewportW && height == requestedViewportH) ||
+                     (width == previousRequestedViewportW && height == previousRequestedViewportH) ||
+                     MatchesRecentViewportHookModeSize(hookCache, static_cast<int>(width), static_cast<int>(height));
 
-    if (isTransitionActive && (!widthMatches || !heightMatches)) {
-        widthMatches = widthMatches || (width == transitionSnap.fromNativeWidth) || (width == transitionSnap.toNativeWidth);
-        heightMatches = heightMatches || (height == transitionSnap.fromNativeHeight) || (height == transitionSnap.toNativeHeight);
+    if (isTransitionActive && !dimsMatch) {
+        dimsMatch = (width == transitionSnap.fromNativeWidth && height == transitionSnap.fromNativeHeight) ||
+                    (width == transitionSnap.toNativeWidth && height == transitionSnap.toNativeHeight);
     }
 
-    if (!posValid || !widthMatches || !heightMatches) {
+    if (!posValid || !dimsMatch) {
         Log("Returning because viewport parameters don't match mode (x=" + std::to_string(x) + ", y=" + std::to_string(y) +
             ", width=" + std::to_string(width) + ", height=" + std::to_string(height) +
             "), lastViewportW=" + std::to_string(lastViewportWValue) + ", lastViewportH=" + std::to_string(lastViewportHValue) +
-            ", modeWidth=" + std::to_string(modeWidth) + ", modeHeight=" + std::to_string(modeHeight) + ")");
+            ", requestedViewportW=" + std::to_string(requestedViewportW) + ", requestedViewportH=" + std::to_string(requestedViewportH) +
+            ", previousRequestedViewportW=" + std::to_string(previousRequestedViewportW) +
+            ", previousRequestedViewportH=" + std::to_string(previousRequestedViewportH) +
+            ", cachedModeWidth=" + std::to_string(cachedMode.width) + ", cachedModeHeight=" + std::to_string(cachedMode.height) +
+            ", modeWidth=" + std::to_string(modeWidth) + ", modeHeight=" + std::to_string(modeHeight) +
+            ", recentModeCount=" + std::to_string(hookCache.recentModeCount) + ")");
         return next(x, y, width, height);
     }
 

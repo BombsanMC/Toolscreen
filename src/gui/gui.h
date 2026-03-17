@@ -200,11 +200,6 @@ struct ImageBackgroundConfig {
 struct StretchConfig {
     bool enabled = false;
     int width = 0, height = 0, x = 0, y = 0;
-
-    std::string widthExpr;
-    std::string heightExpr;
-    std::string xExpr;
-    std::string yExpr;
 };
 struct BorderConfig {
     bool enabled = false;
@@ -286,9 +281,6 @@ struct ModeConfig {
     bool useRelativeSize = false;
     float relativeWidth = 0.5f;
     float relativeHeight = 0.5f;
-
-    std::string widthExpr;
-    std::string heightExpr;
 
     BackgroundConfig background;
     std::vector<std::string> mirrorIds;

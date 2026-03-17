@@ -1058,10 +1058,17 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
         if (!useAnimatedPosition) {
             if (fromMode) {
                 if (fromMode->stretch.enabled) {
-                    fromWidth = fromMode->stretch.width;
-                    fromHeight = fromMode->stretch.height;
-                    fromX = fromMode->stretch.x;
-                    fromY = fromMode->stretch.y;
+                    if (EqualsIgnoreCase(fromMode->id, "Fullscreen")) {
+                        fromWidth = fullW;
+                        fromHeight = fullH;
+                        fromX = 0;
+                        fromY = 0;
+                    } else {
+                        fromWidth = fromMode->stretch.width;
+                        fromHeight = fromMode->stretch.height;
+                        fromX = fromMode->stretch.x;
+                        fromY = fromMode->stretch.y;
+                    }
                 } else {
                     fromWidth = fromMode->width;
                     fromHeight = fromMode->height;
@@ -1078,10 +1085,17 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
 
         if (toMode) {
             if (toMode->stretch.enabled) {
-                toWidth = toMode->stretch.width;
-                toHeight = toMode->stretch.height;
-                toX = toMode->stretch.x;
-                toY = toMode->stretch.y;
+                if (EqualsIgnoreCase(toMode->id, "Fullscreen")) {
+                    toWidth = fullW;
+                    toHeight = fullH;
+                    toX = 0;
+                    toY = 0;
+                } else {
+                    toWidth = toMode->stretch.width;
+                    toHeight = toMode->stretch.height;
+                    toX = toMode->stretch.x;
+                    toY = toMode->stretch.y;
+                }
             } else {
                 toWidth = toMode->width;
                 toHeight = toMode->height;
@@ -1297,10 +1311,17 @@ ModeViewportInfo GetCurrentModeViewport_Internal() {
 
     info.stretchEnabled = mode->stretch.enabled;
     if (mode->stretch.enabled) {
-        info.stretchX = mode->stretch.x;
-        info.stretchY = mode->stretch.y;
-        info.stretchWidth = mode->stretch.width;
-        info.stretchHeight = mode->stretch.height;
+        if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
+            info.stretchX = 0;
+            info.stretchY = 0;
+            info.stretchWidth = screenW;
+            info.stretchHeight = screenH;
+        } else {
+            info.stretchX = mode->stretch.x;
+            info.stretchY = mode->stretch.y;
+            info.stretchWidth = mode->stretch.width;
+            info.stretchHeight = mode->stretch.height;
+        }
     } else {
         info.stretchX = screenW / 2 - mode->width / 2;
         info.stretchY = screenH / 2 - mode->height / 2;
@@ -2227,6 +2248,19 @@ UINT GetToolscreenBorderlessToggleMessageId() {
     return s_msg;
 }
 
+static std::atomic<int> s_lastRequestedClientW{ 0 };
+static std::atomic<int> s_lastRequestedClientH{ 0 };
+static std::atomic<int> s_prevRequestedClientW{ 0 };
+static std::atomic<int> s_prevRequestedClientH{ 0 };
+
+bool GetRecentRequestedWindowClientResizes(int& outCurrentW, int& outCurrentH, int& outPreviousW, int& outPreviousH) {
+    outCurrentW = s_lastRequestedClientW.load(std::memory_order_relaxed);
+    outCurrentH = s_lastRequestedClientH.load(std::memory_order_relaxed);
+    outPreviousW = s_prevRequestedClientW.load(std::memory_order_relaxed);
+    outPreviousH = s_prevRequestedClientH.load(std::memory_order_relaxed);
+    return outCurrentW > 0 && outCurrentH > 0;
+}
+
 bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* source) {
     if (!hwnd || !IsWindow(hwnd) || width <= 0 || height <= 0) { return false; }
 
@@ -2239,6 +2273,15 @@ bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* sou
     const ULONGLONG nowMs = GetTickCount64();
 
     std::lock_guard<std::mutex> lock(s_resizeRequestMutex);
+
+    const int lastRequestedW = s_lastRequestedClientW.load(std::memory_order_relaxed);
+    const int lastRequestedH = s_lastRequestedClientH.load(std::memory_order_relaxed);
+    if (lastRequestedW != width || lastRequestedH != height) {
+        s_prevRequestedClientW.store(lastRequestedW, std::memory_order_relaxed);
+        s_prevRequestedClientH.store(lastRequestedH, std::memory_order_relaxed);
+        s_lastRequestedClientW.store(width, std::memory_order_relaxed);
+        s_lastRequestedClientH.store(height, std::memory_order_relaxed);
+    }
 
     if (s_lastHwnd == hwnd && s_lastWidth == width && s_lastHeight == height && (nowMs - s_lastPostedMs) <= 50) { return true; }
 
@@ -2257,6 +2300,26 @@ bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* sou
 
     InvalidateTrackedGameTextureId(false);
     return true;
+}
+
+static void RequestCurrentModeClientResizeSync(HWND hwnd, const char* source) {
+    if (!hwnd || !IsWindow(hwnd)) { return; }
+
+    auto cfgSnap = GetConfigSnapshot();
+    if (!cfgSnap) { return; }
+
+    const std::string currentModeId = g_modeIdBuffers[g_currentModeIdIndex.load(std::memory_order_acquire)];
+    const ModeConfig* mode = GetModeFromSnapshot(*cfgSnap, currentModeId);
+    if (!mode || mode->width <= 0 || mode->height <= 0) { return; }
+
+    if (EqualsIgnoreCase(mode->id, "Fullscreen") && mode->useRelativeSize) {
+        // Real window-size changes will trigger a logic-thread recalculation that reposts
+        // WM_SIZE with the freshly recomputed internal size. Avoid sending the stale
+        // pre-recalc fullscreen-relative dimensions here.
+        return;
+    }
+
+    RequestWindowClientResize(hwnd, mode->width, mode->height, source);
 }
 
 void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
@@ -2365,6 +2428,7 @@ void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
 
         InvalidateTrackedGameTextureId(false);
         state.active = true;
+        RequestCurrentModeClientResizeSync(hwnd, "window:borderless_on");
         Log("[WINDOW] Toggled borderless ON (" + std::to_string(targetW) + "x" + std::to_string(targetH) + ")");
     } else {
         if (IsIconic(hwnd) || IsZoomed(hwnd)) {
@@ -2400,6 +2464,7 @@ void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
 
         InvalidateTrackedGameTextureId(false);
         state.active = false;
+        RequestCurrentModeClientResizeSync(hwnd, "window:borderless_off");
         Log("[WINDOW] Toggled borderless OFF -> windowed centered (" + std::to_string(windowedW) + "x" + std::to_string(windowedH) + ")");
     }
 }

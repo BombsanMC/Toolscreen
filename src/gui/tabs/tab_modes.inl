@@ -2,7 +2,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
     g_currentlyEditingMirror = "";
     int mode_to_remove = -1;
     static std::string pendingDefaultModeId;
-    static std::string selectedDefaultModeId;
 
     g_imageDragMode.store(false);
     g_windowOverlayDragMode.store(false);
@@ -50,8 +49,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##Fullscreen").c_str(), &useManualPixelSize)) {
                     mode.useRelativeSize = !useManualPixelSize;
                     if (mode.useRelativeSize) {
-                        mode.widthExpr.clear();
-                        mode.heightExpr.clear();
                         mode.relativeWidth = (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.width) / static_cast<float>(modeScreenW)));
                         mode.relativeHeight =
                             (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.height) / static_cast<float>(modeScreenH)));
@@ -73,13 +70,12 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     widthPct = (std::max)(1.0f, (std::min)(100.0f, widthPct));
                     if (ImGui::SliderFloat("##WidthPercent", &widthPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.widthExpr.clear();
                         mode.relativeWidth = widthPct / 100.0f;
                         mode.width = (std::max)(1, static_cast<int>(mode.relativeWidth * static_cast<float>(modeScreenW)));
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:fullscreen_width_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -92,7 +88,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                         g_pendingDimensionChange.modeId = mode.id;
                         g_pendingDimensionChange.newWidth = tempWidth;
                         g_pendingDimensionChange.newHeight = 0;
-                        g_pendingDimensionChange.sendWmSize = (g_currentModeId == mode.id);
+                        g_pendingDimensionChange.sendWmSize = false;
                     }
                 }
                 ImGui::NextColumn();
@@ -106,13 +102,12 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     heightPct = (std::max)(1.0f, (std::min)(100.0f, heightPct));
                     if (ImGui::SliderFloat("##HeightPercent", &heightPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.heightExpr.clear();
                         mode.relativeHeight = heightPct / 100.0f;
                         mode.height = (std::max)(1, static_cast<int>(mode.relativeHeight * static_cast<float>(modeScreenH)));
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:fullscreen_height_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -125,7 +120,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                         g_pendingDimensionChange.modeId = mode.id;
                         g_pendingDimensionChange.newWidth = 0;
                         g_pendingDimensionChange.newHeight = tempHeight;
-                        g_pendingDimensionChange.sendWmSize = (g_currentModeId == mode.id);
+                        g_pendingDimensionChange.sendWmSize = false;
                     }
                 }
                 ImGui::Columns(1);
@@ -1510,8 +1505,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##Thin").c_str(), &useManualPixelSizeThin)) {
                     mode.useRelativeSize = !useManualPixelSizeThin;
                     if (mode.useRelativeSize) {
-                        mode.widthExpr.clear();
-                        mode.heightExpr.clear();
                         mode.relativeWidth = (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.width) / static_cast<float>(screenWidth)));
                         mode.relativeHeight =
                             (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.height) / static_cast<float>(screenHeight)));
@@ -1545,13 +1538,12 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     widthPct = (std::max)(thinMinWidthPct, (std::min)(100.0f, widthPct));
                     if (ImGui::SliderFloat("##ThinWidthPercent", &widthPct, thinMinWidthPct, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.widthExpr.clear();
                         mode.relativeWidth = widthPct / 100.0f;
                         mode.width = (std::max)(thinMinWidthPx, static_cast<int>(mode.relativeWidth * static_cast<float>(screenWidth)));
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:thin_width_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -1578,13 +1570,12 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     heightPct = (std::max)(1.0f, (std::min)(100.0f, heightPct));
                     if (ImGui::SliderFloat("##ThinHeightPercent", &heightPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.heightExpr.clear();
                         mode.relativeHeight = heightPct / 100.0f;
                         mode.height = (std::max)(1, static_cast<int>(mode.relativeHeight * static_cast<float>(screenHeight)));
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:thin_height_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -1940,8 +1931,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##Wide").c_str(), &useManualPixelSizeWide)) {
                     mode.useRelativeSize = !useManualPixelSizeWide;
                     if (mode.useRelativeSize) {
-                        mode.widthExpr.clear();
-                        mode.heightExpr.clear();
                         mode.relativeWidth = (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.width) / static_cast<float>(screenWidth)));
                         mode.relativeHeight =
                             (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.height) / static_cast<float>(screenHeight)));
@@ -1964,13 +1953,12 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     widthPct = (std::max)(1.0f, (std::min)(100.0f, widthPct));
                     if (ImGui::SliderFloat("##WideWidthPercent", &widthPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.widthExpr.clear();
                         mode.relativeWidth = widthPct / 100.0f;
                         mode.width = (std::max)(1, static_cast<int>(mode.relativeWidth * static_cast<float>(screenWidth)));
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:wide_width_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -1997,13 +1985,12 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     heightPct = (std::max)(1.0f, (std::min)(100.0f, heightPct));
                     if (ImGui::SliderFloat("##WideHeightPercent", &heightPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.heightExpr.clear();
                         mode.relativeHeight = heightPct / 100.0f;
                         mode.height = (std::max)(1, static_cast<int>(mode.relativeHeight * static_cast<float>(screenHeight)));
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:wide_height_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -2425,9 +2412,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     mode.useRelativeSize = !useManualPixelSize;
 
                     if (mode.useRelativeSize) {
-                        mode.widthExpr.clear();
-                        mode.heightExpr.clear();
-
                         float computedRelativeWidth = static_cast<float>(mode.width) / static_cast<float>(modeScreenW);
                         float computedRelativeHeight = static_cast<float>(mode.height) / static_cast<float>(modeScreenH);
 
@@ -2463,7 +2447,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
 
                     if (ImGui::SliderFloat("##WidthPercent", &widthPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.widthExpr.clear();
                         mode.relativeWidth = widthPct / 100.0f;
 
                         int newWidth = static_cast<int>(mode.relativeWidth * static_cast<float>(modeScreenW));
@@ -2473,7 +2456,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
 
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:eyezoom_width_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -2502,7 +2485,6 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
 
                     if (ImGui::SliderFloat("##HeightPercent", &heightPct, 1.0f, 100.0f, "%.1f%%")) {
                         mode.useRelativeSize = true;
-                        mode.heightExpr.clear();
                         mode.relativeHeight = heightPct / 100.0f;
 
                         int newHeight = static_cast<int>(mode.relativeHeight * static_cast<float>(modeScreenH));
@@ -2512,7 +2494,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
 
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { PostMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(mode.width, mode.height)); }
+                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:eyezoom_height_slider"); }
                         }
                     }
                     ImGui::SameLine();
@@ -2824,6 +2806,8 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 }
 
                 if (ImGui::TreeNode("Stretch Properties")) {
+                    ImGui::TextDisabled("Fullscreen stretch is always enabled and fills the game window.");
+                    ImGui::BeginDisabled();
                     if (ImGui::Checkbox("Enable Stretch", &mode.stretch.enabled)) g_configIsDirty = true;
                     ImGui::Columns(2, "stretch_cols", false);
                     ImGui::SetColumnWidth(0, 150);
@@ -2853,147 +2837,10 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                     ImGui::NextColumn();
                     if (Spinner("##StretchH", &mode.stretch.height, 1, 1)) g_configIsDirty = true;
                     ImGui::Columns(1);
+                    ImGui::EndDisabled();
                     ImGui::TreePop();
                 }
 
-                if (ImGui::TreeNode("Expressions")) {
-                    ImGui::TextWrapped("Use expressions for dynamic dimensions based on screen size.");
-                    ImGui::TextDisabled(trc("label.variables"));
-                    ImGui::TextDisabled(trc("label.functions"));
-                    ImGui::Separator();
-
-                    int screenW = GetCachedWindowWidth();
-                    int screenH = GetCachedWindowHeight();
-
-                    ImGui::Text("Mode Width:");
-                    ImGui::SetNextItemWidth(250);
-                    if (ImGui::InputText("##ModeWidthExpr", &mode.widthExpr)) {
-                        g_configIsDirty = true;
-                        if (!mode.widthExpr.empty()) {
-                            int val = EvaluateExpression(mode.widthExpr, screenW, screenH, mode.width);
-                            if (val > 0) mode.width = val;
-                        }
-                    }
-                    if (!mode.widthExpr.empty()) {
-                        std::string err;
-                        if (!ValidateExpression(mode.widthExpr, err)) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Invalid");
-                            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", err.c_str()); }
-                        } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled(trc("label.equals_format", mode.width));
-                        }
-                    }
-
-                    ImGui::Text("Mode Height:");
-                    ImGui::SetNextItemWidth(250);
-                    if (ImGui::InputText("##ModeHeightExpr", &mode.heightExpr)) {
-                        g_configIsDirty = true;
-                        if (!mode.heightExpr.empty()) {
-                            int val = EvaluateExpression(mode.heightExpr, screenW, screenH, mode.height);
-                            if (val > 0) mode.height = val;
-                        }
-                    }
-                    if (!mode.heightExpr.empty()) {
-                        std::string err;
-                        if (!ValidateExpression(mode.heightExpr, err)) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Invalid");
-                            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", err.c_str()); }
-                        } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled(trc("label.equals_format", mode.height));
-                        }
-                    }
-
-                    ImGui::Separator();
-                    ImGui::Text("Stretch Expressions:");
-
-                    ImGui::Text("Stretch Width:");
-                    ImGui::SetNextItemWidth(250);
-                    if (ImGui::InputText("##StretchWidthExpr", &mode.stretch.widthExpr)) {
-                        g_configIsDirty = true;
-                        if (!mode.stretch.widthExpr.empty()) {
-                            int val = EvaluateExpression(mode.stretch.widthExpr, screenW, screenH, mode.stretch.width);
-                            if (val >= 0) mode.stretch.width = val;
-                        }
-                    }
-                    if (!mode.stretch.widthExpr.empty()) {
-                        std::string err;
-                        if (!ValidateExpression(mode.stretch.widthExpr, err)) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Invalid");
-                            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", err.c_str()); }
-                        } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled(trc("label.equals_format", mode.stretch.width));
-                        }
-                    }
-
-                    ImGui::Text("Stretch Height:");
-                    ImGui::SetNextItemWidth(250);
-                    if (ImGui::InputText("##StretchHeightExpr", &mode.stretch.heightExpr)) {
-                        g_configIsDirty = true;
-                        if (!mode.stretch.heightExpr.empty()) {
-                            int val = EvaluateExpression(mode.stretch.heightExpr, screenW, screenH, mode.stretch.height);
-                            if (val >= 0) mode.stretch.height = val;
-                        }
-                    }
-                    if (!mode.stretch.heightExpr.empty()) {
-                        std::string err;
-                        if (!ValidateExpression(mode.stretch.heightExpr, err)) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Invalid");
-                            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", err.c_str()); }
-                        } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled(trc("label.equals_format", mode.stretch.height));
-                        }
-                    }
-
-                    ImGui::Text("Stretch X Position:");
-                    ImGui::SetNextItemWidth(250);
-                    if (ImGui::InputText("##StretchXExpr", &mode.stretch.xExpr)) {
-                        g_configIsDirty = true;
-                        if (!mode.stretch.xExpr.empty()) {
-                            mode.stretch.x = EvaluateExpression(mode.stretch.xExpr, screenW, screenH, mode.stretch.x);
-                        }
-                    }
-                    if (!mode.stretch.xExpr.empty()) {
-                        std::string err;
-                        if (!ValidateExpression(mode.stretch.xExpr, err)) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Invalid");
-                            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", err.c_str()); }
-                        } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled(trc("label.equals_format", mode.stretch.x));
-                        }
-                    }
-
-                    ImGui::Text("Stretch Y Position:");
-                    ImGui::SetNextItemWidth(250);
-                    if (ImGui::InputText("##StretchYExpr", &mode.stretch.yExpr)) {
-                        g_configIsDirty = true;
-                        if (!mode.stretch.yExpr.empty()) {
-                            mode.stretch.y = EvaluateExpression(mode.stretch.yExpr, screenW, screenH, mode.stretch.y);
-                        }
-                    }
-                    if (!mode.stretch.yExpr.empty()) {
-                        std::string err;
-                        if (!ValidateExpression(mode.stretch.yExpr, err)) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Invalid");
-                            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", err.c_str()); }
-                        } else {
-                            ImGui::SameLine();
-                            ImGui::TextDisabled(trc("label.equals_format", mode.stretch.y));
-                        }
-                    }
-
-                    ImGui::TreePop();
-                }
 
                 if (ImGui::TreeNode(trc("modes.sensitivity_override"))) {
                     if (ImGui::Checkbox(trc("modes.override_sensitivity"), &mode.sensitivityOverrideEnabled)) { g_configIsDirty = true; }
@@ -3073,51 +2920,43 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
 
     ImGui::Separator();
 
-    ImGui::Text(trc("modes.status.current_default_mode", g_config.defaultMode));
+    bool openDefaultModeConfirm = false;
+
+    ImGui::TextUnformatted(trc("modes.status.default_mode"));
     ImGui::SameLine();
-    if (ImGui::Button((tr("button.change") + "##modes_default_mode").c_str())) {
-        selectedDefaultModeId = g_config.defaultMode;
-        ImGui::OpenPopup((tr("modes.change_default_mode") + "##mode_picker").c_str());
+    const float defaultModeComboWidth =
+        (std::max)(120.0f, (std::min)(200.0f, ImGui::CalcTextSize(g_config.defaultMode.c_str()).x + ImGui::GetStyle().FramePadding.x * 10.0f));
+    ImGui::SetNextItemWidth(defaultModeComboWidth);
+    if (ImGui::BeginCombo("##default_mode_selector", g_config.defaultMode.c_str())) {
+        for (const auto& mode : g_config.modes) {
+            const bool isSelected = EqualsIgnoreCase(mode.id, g_config.defaultMode);
+            if (ImGui::Selectable(mode.id.c_str(), isSelected) && !isSelected) {
+                pendingDefaultModeId = mode.id;
+                openDefaultModeConfirm = true;
+            }
+            if (isSelected) { ImGui::SetItemDefaultFocus(); }
+        }
+        ImGui::EndCombo();
     }
 
-    if (ImGui::BeginPopupModal((tr("modes.change_default_mode") + "##mode_picker").c_str(), NULL,
+    if (openDefaultModeConfirm) {
+        ImGui::OpenPopup((tr("modes.change_default_mode_confirm") + "##confirm").c_str());
+    }
+
+    if (ImGuiViewport* viewport = ImGui::GetMainViewport()) {
+        ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    }
+    if (ImGui::BeginPopupModal((tr("modes.change_default_mode_confirm") + "##confirm").c_str(), NULL,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text(trc("modes.status.current_default_mode", g_config.defaultMode));
-
-        const char* comboPreview = selectedDefaultModeId.empty() ? g_config.defaultMode.c_str() : selectedDefaultModeId.c_str();
-        if (ImGui::BeginCombo("##default_mode_selector", comboPreview)) {
-            for (const auto& mode : g_config.modes) {
-                const bool isSelected = EqualsIgnoreCase(mode.id, selectedDefaultModeId);
-                if (ImGui::Selectable(mode.id.c_str(), isSelected)) {
-                    selectedDefaultModeId = mode.id;
-                    if (!EqualsIgnoreCase(mode.id, g_config.defaultMode)) {
-                        pendingDefaultModeId = mode.id;
-                        ImGui::OpenPopup((tr("modes.change_default_mode_confirm") + "##confirm").c_str());
-                    }
-                }
-                if (isSelected) { ImGui::SetItemDefaultFocus(); }
-            }
-            ImGui::EndCombo();
-        }
-
-        if (ImGui::BeginPopupModal((tr("modes.change_default_mode_confirm") + "##confirm").c_str(), NULL,
-                                   ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextWrapped(trc("modes.change_default_mode_confirm_message", pendingDefaultModeId));
-            ImGui::Separator();
-            if (ImGui::Button(trc("button.ok"), ImVec2(120, 0))) {
-                g_config.defaultMode = pendingDefaultModeId;
-                selectedDefaultModeId = pendingDefaultModeId;
-                g_configIsDirty = true;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(trc("button.cancel"), ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
-            ImGui::EndPopup();
-        }
-
+        ImGui::TextWrapped(trc("modes.change_default_mode_confirm_message", pendingDefaultModeId));
         ImGui::Separator();
-        if (ImGui::Button(trc("button.close"), ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
-
+        if (ImGui::Button(trc("button.ok"), ImVec2(120, 0))) {
+            g_config.defaultMode = pendingDefaultModeId;
+            g_configIsDirty = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(trc("button.cancel"), ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
         ImGui::EndPopup();
     }
 
@@ -3160,8 +2999,8 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
             if (screenH < 1) screenH = 1;
 
             for (auto& mode : g_config.modes) {
-                bool widthIsRelative = mode.widthExpr.empty() && mode.relativeWidth >= 0.0f && mode.relativeWidth <= 1.0f;
-                bool heightIsRelative = mode.heightExpr.empty() && mode.relativeHeight >= 0.0f && mode.relativeHeight <= 1.0f;
+                bool widthIsRelative = mode.relativeWidth >= 0.0f && mode.relativeWidth <= 1.0f;
+                bool heightIsRelative = mode.relativeHeight >= 0.0f && mode.relativeHeight <= 1.0f;
 
                 if (widthIsRelative) {
                     int w = static_cast<int>(mode.relativeWidth * screenW);
@@ -3175,7 +3014,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 }
             }
 
-            RecalculateExpressionDimensions();
+            RecalculateModeDimensions();
 
             g_configIsDirty = true;
             ImGui::CloseCurrentPopup();

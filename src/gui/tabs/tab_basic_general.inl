@@ -197,6 +197,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         ImGui::TableNextColumn();
         if (modeConfig) {
             ImGui::PushID((std::string(label) + "_width").c_str());
+            const float widthColumnAvail = ImGui::GetContentRegionAvail().x;
             if (relativeOnlySizing) {
                 float minWidthPct = 1.0f;
                 if (EqualsIgnoreCase(modeId, "Thin")) {
@@ -209,9 +210,9 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                                  100.0f;
                 widthPct = (std::max)(minWidthPct, (std::min)(100.0f, widthPct));
 
+                ImGui::SetNextItemWidth(widthColumnAvail);
                 if (ImGui::SliderFloat("##w_pct", &widthPct, minWidthPct, 100.0f, "%.1f%%")) {
                     modeConfig->useRelativeSize = true;
-                    if (!modeConfig->widthExpr.empty()) { modeConfig->widthExpr.clear(); }
                     modeConfig->relativeWidth = widthPct / 100.0f;
 
                     int computedWidth = static_cast<int>(modeConfig->relativeWidth * static_cast<float>(safeMaxWidth));
@@ -219,12 +220,25 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                         computedWidth = (std::max)(330, computedWidth);
                     }
                     modeConfig->width = (std::max)(1, computedWidth);
+                    if (EqualsIgnoreCase(modeId, "Fullscreen")) {
+                        modeConfig->stretch.enabled = true;
+                        modeConfig->stretch.x = 0;
+                        modeConfig->stretch.y = 0;
+                        modeConfig->stretch.width = safeMaxWidth;
+                        modeConfig->stretch.height = safeMaxHeight;
+                        if (g_currentModeId == modeId) {
+                            HWND hwnd = g_minecraftHwnd.load();
+                            if (hwnd) { RequestWindowClientResize(hwnd, modeConfig->width, modeConfig->height, "gui:basic_fullscreen_width_slider"); }
+                        }
+                    }
                     g_configIsDirty = true;
                 }
-            } else if (Spinner("##w", &modeConfig->width, 10, 1, maxWidth, 64, 3)) {
-                if (!modeConfig->widthExpr.empty()) { modeConfig->widthExpr.clear(); }
-                modeConfig->relativeWidth = -1.0f;
-                g_configIsDirty = true;
+            } else {
+                const float spinnerInputWidth = (std::max)(1.0f, widthColumnAvail - (ImGui::GetFrameHeight() * 2.0f) - 6.0f);
+                if (Spinner("##w", &modeConfig->width, 10, 1, maxWidth, spinnerInputWidth, 3)) {
+                    modeConfig->relativeWidth = -1.0f;
+                    g_configIsDirty = true;
+                }
             }
             ImGui::PopID();
         }
@@ -232,6 +246,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         ImGui::TableNextColumn();
         if (modeConfig) {
             ImGui::PushID((std::string(label) + "_height").c_str());
+            const float heightColumnAvail = ImGui::GetContentRegionAvail().x;
             if (relativeOnlySizing) {
                 float heightPct = ((modeConfig->relativeHeight >= 0.0f && modeConfig->relativeHeight <= 1.0f)
                                        ? modeConfig->relativeHeight
@@ -239,17 +254,30 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                                   100.0f;
                 heightPct = (std::max)(1.0f, (std::min)(100.0f, heightPct));
 
+                ImGui::SetNextItemWidth(heightColumnAvail);
                 if (ImGui::SliderFloat("##h_pct", &heightPct, 1.0f, 100.0f, "%.1f%%")) {
                     modeConfig->useRelativeSize = true;
-                    if (!modeConfig->heightExpr.empty()) { modeConfig->heightExpr.clear(); }
                     modeConfig->relativeHeight = heightPct / 100.0f;
                     modeConfig->height = (std::max)(1, static_cast<int>(modeConfig->relativeHeight * static_cast<float>(safeMaxHeight)));
+                    if (EqualsIgnoreCase(modeId, "Fullscreen")) {
+                        modeConfig->stretch.enabled = true;
+                        modeConfig->stretch.x = 0;
+                        modeConfig->stretch.y = 0;
+                        modeConfig->stretch.width = safeMaxWidth;
+                        modeConfig->stretch.height = safeMaxHeight;
+                        if (g_currentModeId == modeId) {
+                            HWND hwnd = g_minecraftHwnd.load();
+                            if (hwnd) { RequestWindowClientResize(hwnd, modeConfig->width, modeConfig->height, "gui:basic_fullscreen_height_slider"); }
+                        }
+                    }
                     g_configIsDirty = true;
                 }
-            } else if (Spinner("##h", &modeConfig->height, 10, 1, maxHeight, 64, 3)) {
-                if (!modeConfig->heightExpr.empty()) { modeConfig->heightExpr.clear(); }
-                modeConfig->relativeHeight = -1.0f;
-                g_configIsDirty = true;
+            } else {
+                const float spinnerInputWidth = (std::max)(1.0f, heightColumnAvail - (ImGui::GetFrameHeight() * 2.0f) - 6.0f);
+                if (Spinner("##h", &modeConfig->height, 10, 1, maxHeight, spinnerInputWidth, 3)) {
+                    modeConfig->relativeHeight = -1.0f;
+                    g_configIsDirty = true;
+                }
             }
             ImGui::PopID();
         }

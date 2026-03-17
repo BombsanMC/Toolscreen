@@ -342,6 +342,7 @@ bool GetWindowClientRectInScreen(HWND hwnd, RECT& outRect);
 
 UINT GetToolscreenBorderlessToggleMessageId();
 bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* source = nullptr);
+bool GetRecentRequestedWindowClientResizes(int& outCurrentW, int& outCurrentH, int& outPreviousW, int& outPreviousH);
 void ToggleBorderlessWindowedFullscreen(HWND hwnd);
 bool IsCursorVisible();
 void WriteCurrentModeToFile(const std::string& modeId);

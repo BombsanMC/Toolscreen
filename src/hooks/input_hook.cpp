@@ -1,6 +1,5 @@
 #include "input_hook.h"
 
-#include "common/expression_parser.h"
 #include "features/fake_cursor.h"
 #include "gui/gui.h"
 #include "gui/imgui_cache.h"
@@ -267,6 +266,19 @@ static bool TryGetClientSize(HWND hWnd, int& outW, int& outH) {
     return true;
 }
 
+static void ResendCurrentModeWmSize(HWND hWnd, const char* source) {
+    if (!hWnd || !IsWindow(hWnd)) { return; }
+
+    auto cfgSnap = GetConfigSnapshot();
+    if (!cfgSnap) { return; }
+
+    const std::string currentModeId = g_modeIdBuffers[g_currentModeIdIndex.load(std::memory_order_acquire)];
+    const ModeConfig* mode = GetModeFromSnapshot(*cfgSnap, currentModeId);
+    if (!mode || mode->width <= 0 || mode->height <= 0) { return; }
+
+    RequestWindowClientResize(hWnd, mode->width, mode->height, source);
+}
+
 static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     constexpr int kInactiveTransientClientMin = 32;
     bool shouldInvalidateScreenMetrics = false;
@@ -280,6 +292,7 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
     case WM_MOVE:
     case WM_MOVING:
         shouldInvalidateScreenMetrics = true;
+        shouldRequestRecalc = true;
         break;
 
     case WM_SIZE:
@@ -311,6 +324,7 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
             sizeMayHaveChanged = true;
         } else {
             shouldInvalidateScreenMetrics = true;
+            shouldRequestRecalc = true;
         }
         break;
     }
@@ -349,6 +363,10 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
     if (shouldInvalidateImGui) { InvalidateImGuiCache(); }
     if (shouldResetGameTexture && clientSizeChanged) { InvalidateTrackedGameTextureId(false); }
     if (clientSizeChanged) { shouldRecenterGui = true; }
+
+    if (clientSizeChanged) {
+        ResendCurrentModeWmSize(hWnd, "input_hook:external_resize");
+    }
     if (shouldRecenterGui) { g_guiNeedsRecenter = true; }
 }
 
@@ -1084,6 +1102,7 @@ InputHandlerResult HandleActivate(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
         RequestScreenMetricsRecalculation();
         InvalidateImGuiCache();
         g_guiNeedsRecenter = true;
+        ResendCurrentModeWmSize(hWnd, "input_hook:focus_regain");
     }
     return { false, 0 };
 }
@@ -1102,37 +1121,17 @@ InputHandlerResult HandleWmSizeModeDimensions(HWND hWnd, UINT uMsg, WPARAM wPara
     const ModeConfig* mode = cfgSnap ? GetModeFromSnapshot(*cfgSnap, currentModeId) : nullptr;
     if (!mode || mode->width <= 0 || mode->height <= 0) { return { false, 0 }; }
 
+    if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
+        // Fullscreen custom sizing is an internal render size with a live stretch
+        // rect over the current client area. Let WM_SIZE keep the real client size.
+        return { false, 0 };
+    }
+
     // IMPORTANT: use already-recalculated mode dimensions as authoritative target.
     // Re-applying relative/expression math against WM_SIZE repeatedly causes compounding
     // shrink (e.g. 98.4% of 900 -> 885, then 98.4% of 885 -> 870).
     int targetW = mode->width;
     int targetH = mode->height;
-
-    // Fullscreen can receive native WM_SIZE before logic-thread recalculation lands.
-    // Recompute only fullscreen dynamic dimensions from current WM_SIZE input so we still
-    // enforce OUR mode (including custom fixed fullscreen), while avoiding stale old values.
-    if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
-        const bool widthIsRelative = mode->widthExpr.empty() && mode->relativeWidth >= 0.0f && mode->relativeWidth <= 1.0f;
-        const bool heightIsRelative = mode->heightExpr.empty() && mode->relativeHeight >= 0.0f && mode->relativeHeight <= 1.0f;
-
-        if (widthIsRelative) {
-            targetW = static_cast<int>(std::lround(mode->relativeWidth * static_cast<float>(msgW)));
-            if (targetW < 1) targetW = 1;
-        }
-        if (heightIsRelative) {
-            targetH = static_cast<int>(std::lround(mode->relativeHeight * static_cast<float>(msgH)));
-            if (targetH < 1) targetH = 1;
-        }
-
-        if (!mode->widthExpr.empty()) {
-            const int evaluatedW = EvaluateExpression(mode->widthExpr, msgW, msgH, targetW);
-            if (evaluatedW > 0) { targetW = evaluatedW; }
-        }
-        if (!mode->heightExpr.empty()) {
-            const int evaluatedH = EvaluateExpression(mode->heightExpr, msgW, msgH, targetH);
-            if (evaluatedH > 0) { targetH = evaluatedH; }
-        }
-    }
 
     if (targetW <= 0 || targetH <= 0 || (msgW == targetW && msgH == targetH)) { return { false, 0 }; }
 
