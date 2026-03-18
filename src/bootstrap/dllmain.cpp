@@ -1128,7 +1128,7 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
     }
 
     if (!posValid || !dimsMatch) {
-        Log("Returning because viewport parameters don't match mode (x=" + std::to_string(x) + ", y=" + std::to_string(y) +
+        /*Log("Returning because viewport parameters don't match mode (x=" + std::to_string(x) + ", y=" + std::to_string(y) +
             ", width=" + std::to_string(width) + ", height=" + std::to_string(height) +
             "), lastViewportW=" + std::to_string(lastViewportWValue) + ", lastViewportH=" + std::to_string(lastViewportHValue) +
             ", requestedViewportW=" + std::to_string(requestedViewportW) + ", requestedViewportH=" + std::to_string(requestedViewportH) +
@@ -1136,7 +1136,7 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
             ", previousRequestedViewportH=" + std::to_string(previousRequestedViewportH) +
             ", cachedModeWidth=" + std::to_string(cachedMode.width) + ", cachedModeHeight=" + std::to_string(cachedMode.height) +
             ", modeWidth=" + std::to_string(modeWidth) + ", modeHeight=" + std::to_string(modeHeight) +
-            ", recentModeCount=" + std::to_string(hookCache.recentModeCount) + ")");
+            ", recentModeCount=" + std::to_string(hookCache.recentModeCount) + ")");*/
         return next(x, y, width, height);
     }
 
@@ -1197,11 +1197,11 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
 
     // Convert Y coordinate from Windows screen space (top-left origin) to OpenGL viewport space (bottom-left origin)
     int stretchY_gl = screenH - stretchY - stretchHeight;
-    Log("Applying viewport hook with parameters: x=" + std::to_string(stretchX) + ", y=" + std::to_string(stretchY_gl) +
+    /*Log("Applying viewport hook with parameters: x=" + std::to_string(stretchX) + ", y=" + std::to_string(stretchY_gl) +
         ", width=" + std::to_string(stretchWidth) + ", height=" + std::to_string(stretchHeight) +
         ", modeWidth=" + std::to_string(modeWidth) + ", modeHeight=" + std::to_string(modeHeight) +
         ", screenW=" + std::to_string(screenW) + ", screenH=" + std::to_string(screenH) +
-        (useAnimatedDimensions ? ", animated" : ""));
+        (useAnimatedDimensions ? ", animated" : ""));*/
 
     return next(stretchX, stretchY_gl, stretchWidth, stretchHeight);
 }
