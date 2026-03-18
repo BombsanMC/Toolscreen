@@ -266,6 +266,55 @@ void InvalidateTrackedGameTextureId(bool clearSwapThread) {
     }
 }
 
+static void SyncVirtualCameraRuntimeState(bool enabled) {
+    static constexpr auto kVirtualCameraRetryInterval = std::chrono::milliseconds(100);
+    static auto s_lastStartAttempt = std::chrono::steady_clock::time_point{};
+    static uint32_t s_lastAttemptWidth = 0;
+    static uint32_t s_lastAttemptHeight = 0;
+
+    if (!enabled) {
+        if (IsVirtualCameraActive()) { StopVirtualCamera(); }
+        s_lastStartAttempt = std::chrono::steady_clock::time_point{};
+        s_lastAttemptWidth = 0;
+        s_lastAttemptHeight = 0;
+        return;
+    }
+
+    if (!IsVirtualCameraDriverInstalled()) { return; }
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!GetPreferredVirtualCameraResolution(width, height)) { return; }
+
+    // Flush any debounced resize from OnGameWindowResized
+    FlushPendingVirtualCameraResize();
+
+    if (IsVirtualCameraActive()) {
+        // If already active but at a different preferred resolution, resize in-place
+        uint32_t activeWidth = 0, activeHeight = 0;
+        if (GetVirtualCameraResolution(activeWidth, activeHeight) &&
+            (activeWidth != width || activeHeight != height)) {
+            EnsureVirtualCameraSize(width, height);
+        }
+        s_lastStartAttempt = std::chrono::steady_clock::time_point{};
+        return;
+    }
+
+    if (IsVirtualCameraInUseByOBS()) { return; }
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool dimensionsChanged = width != s_lastAttemptWidth || height != s_lastAttemptHeight;
+    if (!dimensionsChanged && s_lastStartAttempt.time_since_epoch().count() != 0 &&
+        (now - s_lastStartAttempt) < kVirtualCameraRetryInterval) {
+        return;
+    }
+
+    s_lastStartAttempt = now;
+    s_lastAttemptWidth = width;
+    s_lastAttemptHeight = height;
+    StartVirtualCamera(width, height);
+}
+
 void CaptureBackbufferForObs(int width, int height) {
     PROFILE_SCOPE_CAT("Capture Backbuffer for OBS", "OBS");
 
@@ -1643,6 +1692,8 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
         if (!hwnd) { return next(hDc); }
         if (hwnd != g_minecraftHwnd.load()) { g_minecraftHwnd.store(hwnd); }
 
+        SyncVirtualCameraRuntimeState(frameCfg.debug.virtualCameraEnabled);
+
         // This copy is expensive: it blits the full game texture + inserts fences + flushes.
         {
             const bool needCaptureForMirrors = (g_activeMirrorCaptureCount.load(std::memory_order_acquire) > 0);
@@ -2026,9 +2077,15 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
         const bool shouldRenderObsHookFrame =
             g_graphicsHookDetected.load(std::memory_order_acquire) && ShouldUpdateObsTextureNow();
         const bool shouldRenderVirtualCameraFrame = IsVirtualCameraActive() && ShouldCaptureVirtualCameraFrame();
-        if (needsDualRendering && (shouldRenderObsHookFrame || shouldRenderVirtualCameraFrame)) {
+        if (shouldRenderObsHookFrame) {
             PROFILE_SCOPE_CAT("Capture Same-Thread OBS Frame", "OBS");
-            RenderSameThreadObsFrame(&modeToRenderCopy, s, current_gameW, current_gameH, false, shouldRenderVirtualCameraFrame);
+            RenderSameThreadObsFrame(&modeToRenderCopy, s, current_gameW, current_gameH, false);
+        }
+        if (shouldRenderVirtualCameraFrame) {
+            PROFILE_SCOPE_CAT("Capture Virtual Camera Frame", "VirtualCamera");
+            const int virtualCameraSourceW = hasWindowClientSize ? windowWidth : fullW;
+            const int virtualCameraSourceH = hasWindowClientSize ? windowHeight : fullH;
+            CaptureSameThreadVirtualCameraBackbufferFrame(virtualCameraSourceW, virtualCameraSourceH, true);
         }
 
         {

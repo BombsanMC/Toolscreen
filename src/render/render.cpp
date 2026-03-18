@@ -210,6 +210,7 @@ GLuint g_imageRenderProgram = 0;
 GLuint g_passthroughProgram = 0;
 GLuint g_gradientProgram = 0;
 static GLuint g_staticBorderProgram = 0;
+static GLuint g_virtualCameraNv12Program = 0;
 
 FilterShaderLocs g_filterShaderLocs;
 RenderShaderLocs g_renderShaderLocs;
@@ -227,6 +228,11 @@ static struct {
     GLint size = -1;
     GLint quadSize = -1;
 } g_staticBorderShaderLocs;
+static struct {
+    GLint screenTexture = -1;
+    GLint sourceTexelSize = -1;
+    GLint outputMode = -1;
+} g_virtualCameraNv12ShaderLocs;
 
 std::atomic<bool> g_shouldRenderGui{ false };
 std::atomic<bool> g_showPerformanceOverlay{ false };
@@ -281,7 +287,35 @@ static GLuint g_sameThreadVirtualCameraScaleTexture = 0;
 static int g_sameThreadVirtualCameraScaleW = 0;
 static int g_sameThreadVirtualCameraScaleH = 0;
 static GLuint g_sameThreadVirtualCameraReadFBO = 0;
-static std::vector<uint8_t> g_sameThreadVirtualCameraPixels;
+static GLuint g_sameThreadVirtualCameraConvertFBO = 0;
+static GLuint g_sameThreadVirtualCameraLumaTexture = 0;
+static GLuint g_sameThreadVirtualCameraChromaTexture = 0;
+static int g_sameThreadVirtualCameraNv12W = 0;
+static int g_sameThreadVirtualCameraNv12H = 0;
+static int g_sameThreadVirtualCameraSynchronousRecoveryFrames = 0;
+static constexpr int SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT = 3;
+struct SameThreadVirtualCameraReadbackSlot {
+    GLuint yPbo = 0;
+    GLuint uvPbo = 0;
+    GLuint yTexture = 0;
+    GLuint uvTexture = 0;
+    GLsync fence = nullptr;
+    uint64_t timestamp = 0;
+    int width = 0;
+    int height = 0;
+    int textureWidth = 0;
+    int textureHeight = 0;
+    bool pending = false;
+};
+static SameThreadVirtualCameraReadbackSlot g_sameThreadVirtualCameraReadbackSlots[SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT] = {};
+static int g_sameThreadVirtualCameraReadbackW = 0;
+static int g_sameThreadVirtualCameraReadbackH = 0;
+static int g_sameThreadVirtualCameraReadbackWriteIndex = 0;
+static int g_sameThreadVirtualCameraCaptureSourceW = 0;
+static int g_sameThreadVirtualCameraCaptureSourceH = 0;
+
+static bool ConvertSameThreadVirtualCameraTextureToNv12(GLuint srcTexture, int srcW, int srcH,
+                                                        const SameThreadVirtualCameraReadbackSlot& slot);
 
 GLuint g_fullscreenQuadVAO = 0;
 GLuint g_fullscreenQuadVBO = 0;
@@ -318,6 +352,288 @@ struct EyeZoomTextLabel {
     Color color;
 };
 static std::vector<EyeZoomTextLabel> s_eyezoomTextLabels;
+
+static void DiscardSameThreadVirtualCameraReadbacks() {
+    for (auto& slot : g_sameThreadVirtualCameraReadbackSlots) {
+        if (slot.fence && glIsSync(slot.fence)) { glDeleteSync(slot.fence); }
+        slot.fence = nullptr;
+        slot.pending = false;
+        slot.timestamp = 0;
+        slot.width = 0;
+        slot.height = 0;
+    }
+
+    g_sameThreadVirtualCameraReadbackWriteIndex = 0;
+    g_sameThreadVirtualCameraCaptureSourceW = 0;
+    g_sameThreadVirtualCameraCaptureSourceH = 0;
+}
+
+static void ReleaseSameThreadVirtualCameraReadbacks() {
+    DiscardSameThreadVirtualCameraReadbacks();
+
+    for (auto& slot : g_sameThreadVirtualCameraReadbackSlots) {
+        if (slot.yPbo != 0) {
+            glDeleteBuffers(1, &slot.yPbo);
+            slot.yPbo = 0;
+        }
+        if (slot.uvPbo != 0) {
+            glDeleteBuffers(1, &slot.uvPbo);
+            slot.uvPbo = 0;
+        }
+        if (slot.yTexture != 0) {
+            glDeleteTextures(1, &slot.yTexture);
+            slot.yTexture = 0;
+        }
+        if (slot.uvTexture != 0) {
+            glDeleteTextures(1, &slot.uvTexture);
+            slot.uvTexture = 0;
+        }
+        slot.textureWidth = 0;
+        slot.textureHeight = 0;
+    }
+
+    g_sameThreadVirtualCameraReadbackW = 0;
+    g_sameThreadVirtualCameraReadbackH = 0;
+    g_sameThreadVirtualCameraReadbackWriteIndex = 0;
+    g_sameThreadVirtualCameraCaptureSourceW = 0;
+    g_sameThreadVirtualCameraCaptureSourceH = 0;
+}
+
+void ResetSameThreadVirtualCameraCaptureState() {
+    DiscardSameThreadVirtualCameraReadbacks();
+    g_sameThreadVirtualCameraSynchronousRecoveryFrames = 0;
+
+    if (g_sameThreadVirtualCameraScaleTexture != 0) {
+        glDeleteTextures(1, &g_sameThreadVirtualCameraScaleTexture);
+        g_sameThreadVirtualCameraScaleTexture = 0;
+    }
+    if (g_sameThreadVirtualCameraLumaTexture != 0) {
+        glDeleteTextures(1, &g_sameThreadVirtualCameraLumaTexture);
+        g_sameThreadVirtualCameraLumaTexture = 0;
+    }
+    if (g_sameThreadVirtualCameraChromaTexture != 0) {
+        glDeleteTextures(1, &g_sameThreadVirtualCameraChromaTexture);
+        g_sameThreadVirtualCameraChromaTexture = 0;
+    }
+    if (g_sameThreadVirtualCameraScaleFBO != 0) {
+        glDeleteFramebuffers(1, &g_sameThreadVirtualCameraScaleFBO);
+        g_sameThreadVirtualCameraScaleFBO = 0;
+    }
+    if (g_sameThreadVirtualCameraReadFBO != 0) {
+        glDeleteFramebuffers(1, &g_sameThreadVirtualCameraReadFBO);
+        g_sameThreadVirtualCameraReadFBO = 0;
+    }
+    if (g_sameThreadVirtualCameraConvertFBO != 0) {
+        glDeleteFramebuffers(1, &g_sameThreadVirtualCameraConvertFBO);
+        g_sameThreadVirtualCameraConvertFBO = 0;
+    }
+
+    g_sameThreadVirtualCameraScaleW = 0;
+    g_sameThreadVirtualCameraScaleH = 0;
+    g_sameThreadVirtualCameraNv12W = 0;
+    g_sameThreadVirtualCameraNv12H = 0;
+}
+
+static bool EnsureSameThreadVirtualCameraSynchronousTargets(int width, int height) {
+    if (width <= 0 || height <= 0) { return false; }
+    if (g_sameThreadVirtualCameraNv12W == width && g_sameThreadVirtualCameraNv12H == height &&
+        g_sameThreadVirtualCameraLumaTexture != 0 && g_sameThreadVirtualCameraChromaTexture != 0) {
+        return true;
+    }
+
+    if (g_sameThreadVirtualCameraLumaTexture == 0) { glGenTextures(1, &g_sameThreadVirtualCameraLumaTexture); }
+    if (g_sameThreadVirtualCameraChromaTexture == 0) { glGenTextures(1, &g_sameThreadVirtualCameraChromaTexture); }
+    if (g_sameThreadVirtualCameraLumaTexture == 0 || g_sameThreadVirtualCameraChromaTexture == 0) { return false; }
+
+    BindTextureDirect(GL_TEXTURE_2D, g_sameThreadVirtualCameraLumaTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    BindTextureDirect(GL_TEXTURE_2D, g_sameThreadVirtualCameraChromaTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width / 2, height / 2, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    BindTextureDirect(GL_TEXTURE_2D, 0);
+    g_sameThreadVirtualCameraNv12W = width;
+    g_sameThreadVirtualCameraNv12H = height;
+    return true;
+}
+
+static bool EnsureSameThreadVirtualCameraReadbacks(int width, int height) {
+    if (width <= 0 || height <= 0) { return false; }
+
+    const bool needsResize = (g_sameThreadVirtualCameraReadbackW != width) || (g_sameThreadVirtualCameraReadbackH != height);
+    const size_t yBytes = static_cast<size_t>(width) * static_cast<size_t>(height);
+    const size_t uvBytes = yBytes / 2u;
+    for (auto& slot : g_sameThreadVirtualCameraReadbackSlots) {
+        const bool slotMissingBuffers = (slot.yPbo == 0) || (slot.uvPbo == 0) || (slot.yTexture == 0) || (slot.uvTexture == 0);
+        if (slot.yPbo == 0) { glGenBuffers(1, &slot.yPbo); }
+        if (slot.uvPbo == 0) { glGenBuffers(1, &slot.uvPbo); }
+        if (slot.yTexture == 0) { glGenTextures(1, &slot.yTexture); }
+        if (slot.uvTexture == 0) { glGenTextures(1, &slot.uvTexture); }
+        if (slot.yPbo == 0 || slot.uvPbo == 0 || slot.yTexture == 0 || slot.uvTexture == 0) { return false; }
+
+        if (needsResize || slotMissingBuffers) {
+            if (slot.fence && glIsSync(slot.fence)) { glDeleteSync(slot.fence); }
+            slot.fence = nullptr;
+            slot.pending = false;
+            slot.timestamp = 0;
+            slot.width = 0;
+            slot.height = 0;
+
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.yPbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, static_cast<GLsizeiptr>(yBytes), nullptr, GL_STREAM_READ);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.uvPbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, static_cast<GLsizeiptr>(uvBytes), nullptr, GL_STREAM_READ);
+
+            BindTextureDirect(GL_TEXTURE_2D, slot.yTexture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+            BindTextureDirect(GL_TEXTURE_2D, slot.uvTexture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, width / 2, height / 2, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+            slot.textureWidth = width;
+            slot.textureHeight = height;
+        }
+    }
+    BindTextureDirect(GL_TEXTURE_2D, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+    g_sameThreadVirtualCameraReadbackW = width;
+    g_sameThreadVirtualCameraReadbackH = height;
+    return true;
+}
+
+static bool HarvestSameThreadVirtualCameraReadback() {
+    for (auto& slot : g_sameThreadVirtualCameraReadbackSlots) {
+        if (!slot.pending || !slot.fence || slot.yPbo == 0 || slot.uvPbo == 0 || slot.width <= 0 || slot.height <= 0) { continue; }
+
+        GLenum fenceStatus = glClientWaitSync(slot.fence, 0, 0);
+        if (fenceStatus != GL_ALREADY_SIGNALED && fenceStatus != GL_CONDITION_SATISFIED) { continue; }
+
+        GLint previousPackBuffer = 0;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer);
+        const size_t yBytes = static_cast<size_t>(slot.width) * static_cast<size_t>(slot.height);
+        const size_t uvBytes = yBytes / 2u;
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.yPbo);
+        const uint8_t* yMapped =
+            static_cast<const uint8_t*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(yBytes), GL_MAP_READ_BIT));
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.uvPbo);
+        const uint8_t* uvMapped =
+            static_cast<const uint8_t*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(uvBytes), GL_MAP_READ_BIT));
+
+        if (yMapped && uvMapped) {
+            WriteVirtualCameraFrameNV12Planes(yMapped, uvMapped, static_cast<uint32_t>(slot.width), static_cast<uint32_t>(slot.height),
+                                              slot.timestamp);
+        }
+
+        if (yMapped) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.yPbo);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+        if (uvMapped) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.uvPbo);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, previousPackBuffer);
+
+        if (glIsSync(slot.fence)) { glDeleteSync(slot.fence); }
+        slot.fence = nullptr;
+        slot.pending = false;
+        slot.timestamp = 0;
+        slot.width = 0;
+        slot.height = 0;
+        return true;
+    }
+
+    return false;
+}
+
+static bool SubmitSameThreadVirtualCameraFrameSync(GLuint srcTexture, int width, int height, uint64_t timestamp) {
+    if (srcTexture == 0 || width <= 0 || height <= 0) { return false; }
+    if (!EnsureSameThreadVirtualCameraSynchronousTargets(width, height)) { return false; }
+    if (g_sameThreadVirtualCameraReadFBO == 0) { glGenFramebuffers(1, &g_sameThreadVirtualCameraReadFBO); }
+    if (g_sameThreadVirtualCameraReadFBO == 0) { return false; }
+
+    SameThreadVirtualCameraReadbackSlot syncSlot{};
+    syncSlot.yTexture = g_sameThreadVirtualCameraLumaTexture;
+    syncSlot.uvTexture = g_sameThreadVirtualCameraChromaTexture;
+    syncSlot.textureWidth = width;
+    syncSlot.textureHeight = height;
+    if (!ConvertSameThreadVirtualCameraTextureToNv12(srcTexture, width, height, syncSlot)) { return false; }
+
+    static std::vector<uint8_t> yPlane;
+    static std::vector<uint8_t> uvPlane;
+    const size_t yBytes = static_cast<size_t>(width) * static_cast<size_t>(height);
+    const size_t uvBytes = yBytes / 2u;
+    yPlane.resize(yBytes);
+    uvPlane.resize(uvBytes);
+
+    GLint previousReadFbo = 0;
+    GLint previousPackBuffer = 0;
+    GLint previousPackAlignment = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFbo);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sameThreadVirtualCameraReadFBO);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadVirtualCameraLumaTexture, 0);
+    glReadPixels(0, 0, width, height, GL_RED, GL_UNSIGNED_BYTE, yPlane.data());
+
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadVirtualCameraChromaTexture, 0);
+    glReadPixels(0, 0, width / 2, height / 2, GL_RG, GL_UNSIGNED_BYTE, uvPlane.data());
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, previousPackBuffer);
+    glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
+
+    return WriteVirtualCameraFrameNV12Planes(yPlane.data(), uvPlane.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                             timestamp);
+}
+
+static SameThreadVirtualCameraReadbackSlot* AcquireSameThreadVirtualCameraReadbackSlot() {
+    for (int offset = 0; offset < SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT; ++offset) {
+        const int slotIndex = (g_sameThreadVirtualCameraReadbackWriteIndex + offset) % SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT;
+        auto& slot = g_sameThreadVirtualCameraReadbackSlots[slotIndex];
+        if (!slot.pending) {
+            g_sameThreadVirtualCameraReadbackWriteIndex = (slotIndex + 1) % SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT;
+            return &slot;
+        }
+    }
+
+    if (!HarvestSameThreadVirtualCameraReadback()) { return nullptr; }
+
+    for (int offset = 0; offset < SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT; ++offset) {
+        const int slotIndex = (g_sameThreadVirtualCameraReadbackWriteIndex + offset) % SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT;
+        auto& slot = g_sameThreadVirtualCameraReadbackSlots[slotIndex];
+        if (!slot.pending) {
+            g_sameThreadVirtualCameraReadbackWriteIndex = (slotIndex + 1) % SAME_THREAD_VIRTUAL_CAMERA_PBO_COUNT;
+            return &slot;
+        }
+    }
+
+    return nullptr;
+}
 static std::mutex s_eyezoomTextMutex;
 
 static void EnsureSharedVertexBufferCapacity(GLsizeiptr requiredBytes) {
@@ -829,6 +1145,46 @@ void main() {
     }
 })";
 
+const char* virtual_camera_nv12_frag_shader = R"(#version 330 core
+out vec4 FragColor;
+in vec2 TexCoord;
+
+uniform sampler2D screenTexture;
+uniform vec2 u_sourceTexelSize;
+uniform int u_outputMode;
+
+vec3 sampleRgb(vec2 uv) {
+    return texture(screenTexture, vec2(uv.x, 1.0 - uv.y)).rgb;
+}
+
+float encodeY(vec3 rgb) {
+    return clamp(dot(rgb, vec3(66.0 / 256.0, 129.0 / 256.0, 25.0 / 256.0)) + (16.0 / 255.0), 0.0, 1.0);
+}
+
+vec2 encodeUV(vec3 rgb) {
+    float u = dot(rgb, vec3(-38.0 / 256.0, -74.0 / 256.0, 112.0 / 256.0)) + (128.0 / 255.0);
+    float v = dot(rgb, vec3(112.0 / 256.0, -94.0 / 256.0, -18.0 / 256.0)) + (128.0 / 255.0);
+    return clamp(vec2(u, v), 0.0, 1.0);
+}
+
+void main() {
+    if (u_outputMode == 0) {
+        FragColor = vec4(encodeY(sampleRgb(TexCoord)), 0.0, 0.0, 1.0);
+        return;
+    }
+
+    vec2 srcPixel = floor(gl_FragCoord.xy - vec2(0.5)) * 2.0;
+    vec2 uv00 = (srcPixel + vec2(0.5, 0.5)) * u_sourceTexelSize;
+    vec2 uv10 = (srcPixel + vec2(1.5, 0.5)) * u_sourceTexelSize;
+    vec2 uv01 = (srcPixel + vec2(0.5, 1.5)) * u_sourceTexelSize;
+    vec2 uv11 = (srcPixel + vec2(1.5, 1.5)) * u_sourceTexelSize;
+
+    vec3 avgRgb = 0.25 * (sampleRgb(uv00) + sampleRgb(uv10) + sampleRgb(uv01) + sampleRgb(uv11));
+    vec2 uv = encodeUV(avgRgb);
+    FragColor = vec4(uv, 0.0, 1.0);
+}
+)";
+
 const char* passthrough_frag_shader = R"(#version 330 core
 out vec4 FragColor;
 in vec2 TexCoord;
@@ -994,10 +1350,11 @@ void InitializeShaders() {
     g_passthroughProgram = CreateShaderProgram(filter_vert_shader, passthrough_frag_shader);
     g_gradientProgram = CreateShaderProgram(passthrough_vert_shader, gradient_frag_shader);
     g_staticBorderProgram = CreateShaderProgram(passthrough_vert_shader, static_border_frag_shader);
+    g_virtualCameraNv12Program = CreateShaderProgram(passthrough_vert_shader, virtual_camera_nv12_frag_shader);
 
     if (!g_filterProgram || !g_renderProgram || !g_renderPassthroughProgram || !g_backgroundProgram || !g_solidColorProgram ||
-        !g_imageRenderProgram ||
-        !g_passthroughProgram || !g_gradientProgram || !g_staticBorderProgram) {
+        !g_imageRenderProgram || !g_passthroughProgram || !g_gradientProgram || !g_staticBorderProgram ||
+        !g_virtualCameraNv12Program) {
         Log("FATAL: Failed to create one or more shader programs. Aborting shader initialization.");
         return;
     }
@@ -1052,6 +1409,10 @@ void InitializeShaders() {
     g_gradientShaderLocs.animationSpeed = glGetUniformLocation(g_gradientProgram, "u_animationSpeed");
     g_gradientShaderLocs.colorFade = glGetUniformLocation(g_gradientProgram, "u_colorFade");
 
+    g_virtualCameraNv12ShaderLocs.screenTexture = glGetUniformLocation(g_virtualCameraNv12Program, "screenTexture");
+    g_virtualCameraNv12ShaderLocs.sourceTexelSize = glGetUniformLocation(g_virtualCameraNv12Program, "u_sourceTexelSize");
+    g_virtualCameraNv12ShaderLocs.outputMode = glGetUniformLocation(g_virtualCameraNv12Program, "u_outputMode");
+
     glUseProgram(g_renderProgram);
     glUniform1i(g_renderShaderLocs.filterTexture, 0);
 
@@ -1073,6 +1434,9 @@ void InitializeShaders() {
     glUseProgram(g_passthroughProgram);
     glUniform1i(g_passthroughShaderLocs.screenTexture, 0);
     glUniform1f(g_passthroughShaderLocs.opacity, 1.0f);
+
+    glUseProgram(g_virtualCameraNv12Program);
+    glUniform1i(g_virtualCameraNv12ShaderLocs.screenTexture, 0);
 
     glUseProgram(0);
 
@@ -1114,6 +1478,10 @@ void CleanupShaders() {
     if (g_staticBorderProgram) {
         glDeleteProgram(g_staticBorderProgram);
         g_staticBorderProgram = 0;
+    }
+    if (g_virtualCameraNv12Program) {
+        glDeleteProgram(g_virtualCameraNv12Program);
+        g_virtualCameraNv12Program = 0;
     }
 }
 
@@ -1439,19 +1807,36 @@ void CleanupGPUResources() {
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraScaleTexture = 0;
         }
+        if (g_sameThreadVirtualCameraLumaTexture) {
+            glDeleteTextures(1, &g_sameThreadVirtualCameraLumaTexture);
+            while (glGetError() != GL_NO_ERROR) {}
+            g_sameThreadVirtualCameraLumaTexture = 0;
+        }
+        if (g_sameThreadVirtualCameraChromaTexture) {
+            glDeleteTextures(1, &g_sameThreadVirtualCameraChromaTexture);
+            while (glGetError() != GL_NO_ERROR) {}
+            g_sameThreadVirtualCameraChromaTexture = 0;
+        }
         if (g_sameThreadVirtualCameraScaleFBO) {
             glDeleteFramebuffers(1, &g_sameThreadVirtualCameraScaleFBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraScaleFBO = 0;
+        }
+        if (g_sameThreadVirtualCameraConvertFBO) {
+            glDeleteFramebuffers(1, &g_sameThreadVirtualCameraConvertFBO);
+            while (glGetError() != GL_NO_ERROR) {}
+            g_sameThreadVirtualCameraConvertFBO = 0;
         }
         if (g_sameThreadVirtualCameraReadFBO) {
             glDeleteFramebuffers(1, &g_sameThreadVirtualCameraReadFBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraReadFBO = 0;
         }
+        ReleaseSameThreadVirtualCameraReadbacks();
         g_sameThreadVirtualCameraScaleW = 0;
         g_sameThreadVirtualCameraScaleH = 0;
-        g_sameThreadVirtualCameraPixels.clear();
+        g_sameThreadVirtualCameraNv12W = 0;
+        g_sameThreadVirtualCameraNv12H = 0;
         g_sameThreadObsComposePublishedIndex = -1;
         g_sameThreadObsComposeWriteIndex = 0;
         g_sameThreadObsComposeW = 0;
@@ -3405,8 +3790,136 @@ static GLuint PrepareSameThreadVirtualCameraTexture(GLuint srcTexture, int srcW,
     return g_sameThreadVirtualCameraScaleTexture;
 }
 
-static void SubmitSameThreadVirtualCameraFrame(GLuint srcTexture, int srcW, int srcH, bool captureVirtualCameraFrame) {
+static GLuint PrepareSameThreadVirtualCameraBackbufferTexture(int srcW, int srcH, int outW, int outH) {
+    if (srcW <= 0 || srcH <= 0 || outW <= 0 || outH <= 0) { return 0; }
+
+    EnsureSameThreadVirtualCameraScaleTarget(outW, outH);
+    if (g_sameThreadVirtualCameraScaleFBO == 0 || g_sameThreadVirtualCameraScaleTexture == 0) { return 0; }
+
+    GLint previousReadFbo = 0;
+    GLint previousDrawFbo = 0;
+    GLint previousViewport[4] = {};
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFbo);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFbo);
+    glGetIntegerv(GL_VIEWPORT, previousViewport);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sameThreadVirtualCameraScaleFBO);
+
+    if (oglViewport) {
+        oglViewport(0, 0, outW, outH);
+    } else {
+        glViewport(0, 0, outW, outH);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    const float scaleX = static_cast<float>(outW) / static_cast<float>(srcW);
+    const float scaleY = static_cast<float>(outH) / static_cast<float>(srcH);
+    const float fitScale = (std::min)(scaleX, scaleY);
+
+    int fitW = static_cast<int>(static_cast<float>(srcW) * fitScale + 0.5f);
+    int fitH = static_cast<int>(static_cast<float>(srcH) * fitScale + 0.5f);
+    fitW = (std::max)(1, (std::min)(fitW, outW));
+    fitH = (std::max)(1, (std::min)(fitH, outH));
+
+    const int dstX = (outW - fitW) / 2;
+    const int dstY = (outH - fitH) / 2;
+    ObsBlitFramebufferDirect(0, 0, srcW, srcH, dstX, dstY, dstX + fitW, dstY + fitH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousDrawFbo);
+    if (oglViewport) {
+        oglViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+    } else {
+        glViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+    }
+
+    return g_sameThreadVirtualCameraScaleTexture;
+}
+
+static bool ConvertSameThreadVirtualCameraTextureToNv12(GLuint srcTexture, int srcW, int srcH, const SameThreadVirtualCameraReadbackSlot& slot) {
+    if (srcTexture == 0 || srcW <= 0 || srcH <= 0 || g_virtualCameraNv12Program == 0) { return false; }
+    if (slot.yTexture == 0 || slot.uvTexture == 0 || slot.textureWidth != srcW || slot.textureHeight != srcH) { return false; }
+    if (g_sameThreadVirtualCameraConvertFBO == 0) { glGenFramebuffers(1, &g_sameThreadVirtualCameraConvertFBO); }
+    if (g_sameThreadVirtualCameraConvertFBO == 0) { return false; }
+
+    GLint previousProgram = 0;
+    GLint previousActiveTexture = 0;
+    GLint previousTexture0 = 0;
+    GLint previousVertexArray = 0;
+    GLint previousDrawFbo = 0;
+    GLint previousViewport[4] = {};
+    glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture0);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVertexArray);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFbo);
+    glGetIntegerv(GL_VIEWPORT, previousViewport);
+
+    const GLboolean blendEnabled = glIsEnabled(GL_BLEND);
+    const GLboolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sameThreadVirtualCameraConvertFBO);
+    glUseProgram(g_virtualCameraNv12Program);
+    glUniform2f(g_virtualCameraNv12ShaderLocs.sourceTexelSize, 1.0f / static_cast<float>(srcW), 1.0f / static_cast<float>(srcH));
+    glBindVertexArray(g_fullscreenQuadVAO);
+    glActiveTexture(GL_TEXTURE0);
+    BindTextureDirect(GL_TEXTURE_2D, srcTexture);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot.yTexture, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    if (oglViewport) {
+        oglViewport(0, 0, srcW, srcH);
+    } else {
+        glViewport(0, 0, srcW, srcH);
+    }
+    glUniform1i(g_virtualCameraNv12ShaderLocs.outputMode, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot.uvTexture, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    if (oglViewport) {
+        oglViewport(0, 0, srcW / 2, srcH / 2);
+    } else {
+        glViewport(0, 0, srcW / 2, srcH / 2);
+    }
+    glUniform1i(g_virtualCameraNv12ShaderLocs.outputMode, 1);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    BindTextureDirect(GL_TEXTURE_2D, previousTexture0);
+    glBindVertexArray(previousVertexArray);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousDrawFbo);
+    if (blendEnabled) {
+        glEnable(GL_BLEND);
+    } else {
+        glDisable(GL_BLEND);
+    }
+    if (scissorEnabled) {
+        glEnable(GL_SCISSOR_TEST);
+    } else {
+        glDisable(GL_SCISSOR_TEST);
+    }
+    if (oglViewport) {
+        oglViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+    } else {
+        glViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+    }
+    glUseProgram(previousProgram);
+    glActiveTexture(GL_TEXTURE0);
+    BindTextureDirect(GL_TEXTURE_2D, previousTexture0);
+    glActiveTexture(previousActiveTexture);
+
+    return true;
+}
+
+void CaptureSameThreadVirtualCameraBackbufferFrame(int sourceW, int sourceH, bool captureVirtualCameraFrame) {
     if (!captureVirtualCameraFrame || !IsVirtualCameraActive()) { return; }
+    if (sourceW <= 0 || sourceH <= 0) { return; }
 
     uint32_t vcWidth = 0;
     uint32_t vcHeight = 0;
@@ -3418,25 +3931,71 @@ static void SubmitSameThreadVirtualCameraFrame(GLuint srcTexture, int srcW, int 
     if ((outH & 1) != 0) { --outH; }
     if (outW <= 0 || outH <= 0) { return; }
 
-    GLuint readTexture = PrepareSameThreadVirtualCameraTexture(srcTexture, srcW, srcH, outW, outH);
+    const bool sourceSizeChanged = g_sameThreadVirtualCameraCaptureSourceW > 0 && g_sameThreadVirtualCameraCaptureSourceH > 0 &&
+                                   (g_sameThreadVirtualCameraCaptureSourceW != sourceW ||
+                                    g_sameThreadVirtualCameraCaptureSourceH != sourceH);
+    if (sourceSizeChanged) {
+        // Pending async readbacks captured against the old backbuffer size can surface as mixed stale frames.
+        // Drop the queue but keep the GPU ring allocated so resize recovery does not stall on reallocation.
+        DiscardSameThreadVirtualCameraReadbacks();
+    }
+    g_sameThreadVirtualCameraCaptureSourceW = sourceW;
+    g_sameThreadVirtualCameraCaptureSourceH = sourceH;
+
+    HarvestSameThreadVirtualCameraReadback();
+
+    GLuint readTexture = PrepareSameThreadVirtualCameraBackbufferTexture(sourceW, sourceH, outW, outH);
     if (readTexture == 0) { return; }
-    if (g_sameThreadVirtualCameraReadFBO == 0) { glGenFramebuffers(1, &g_sameThreadVirtualCameraReadFBO); }
-
-    GLint previousReadFbo = 0;
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFbo);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sameThreadVirtualCameraReadFBO);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, readTexture, 0);
-
-    g_sameThreadVirtualCameraPixels.resize(static_cast<size_t>(outW) * static_cast<size_t>(outH) * 4u);
-    glReadPixels(0, 0, outW, outH, GL_RGBA, GL_UNSIGNED_BYTE, g_sameThreadVirtualCameraPixels.data());
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
 
     LARGE_INTEGER counter;
     LARGE_INTEGER frequency;
     QueryPerformanceCounter(&counter);
     QueryPerformanceFrequency(&frequency);
     const uint64_t timestamp = (counter.QuadPart * 10000000ULL) / frequency.QuadPart;
-    WriteVirtualCameraFrame(g_sameThreadVirtualCameraPixels.data(), static_cast<uint32_t>(outW), static_cast<uint32_t>(outH), timestamp);
+
+    if (g_sameThreadVirtualCameraSynchronousRecoveryFrames > 0) {
+        if (SubmitSameThreadVirtualCameraFrameSync(readTexture, outW, outH, timestamp)) {
+            --g_sameThreadVirtualCameraSynchronousRecoveryFrames;
+        }
+        return;
+    }
+
+    if (g_sameThreadVirtualCameraReadFBO == 0) { glGenFramebuffers(1, &g_sameThreadVirtualCameraReadFBO); }
+
+    if (!EnsureSameThreadVirtualCameraReadbacks(outW, outH)) { return; }
+
+    SameThreadVirtualCameraReadbackSlot* slot = AcquireSameThreadVirtualCameraReadbackSlot();
+    if (!slot || slot->yPbo == 0 || slot->uvPbo == 0 || slot->yTexture == 0 || slot->uvTexture == 0) { return; }
+    if (!ConvertSameThreadVirtualCameraTextureToNv12(readTexture, outW, outH, *slot)) { return; }
+
+    GLint previousReadFbo = 0;
+    GLint previousPackBuffer = 0;
+    GLint previousPackAlignment = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFbo);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sameThreadVirtualCameraReadFBO);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot->yTexture, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot->yPbo);
+    glReadPixels(0, 0, outW, outH, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot->uvTexture, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot->uvPbo);
+    glReadPixels(0, 0, outW / 2, outH / 2, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, previousPackBuffer);
+    glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
+
+    if (slot->fence && glIsSync(slot->fence)) { glDeleteSync(slot->fence); }
+    slot->fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    slot->pending = (slot->fence != nullptr);
+    slot->timestamp = timestamp;
+    slot->width = outW;
+    slot->height = outH;
 }
 
 static GLuint ResolveModeBackgroundTextureId(const std::string& modeId) {
@@ -3558,7 +4117,7 @@ static void RenderSameThreadObsBackgroundConfig(const BackgroundConfig& bg, GLui
 }
 
 bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH,
-                              bool skipAnimation, bool captureVirtualCameraFrame) {
+                              bool skipAnimation) {
     if (!modeToRender) { return false; }
 
     int fullW = 0;
@@ -3802,12 +4361,6 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
         g_sameThreadObsComposePublishedIndex = composeIndex;
         g_sameThreadObsComposeWriteIndex = (composeIndex + 1) % SAME_THREAD_OBS_BUFFER_COUNT;
     }
-
-    {
-        PROFILE_SCOPE_CAT("Capture Virtual Camera Frame", "OBS");
-        SubmitSameThreadVirtualCameraFrame(g_sameThreadObsComposeTextures[composeIndex], fullW, fullH, captureVirtualCameraFrame);
-    }
-
     return true;
 }
 
@@ -5269,6 +5822,10 @@ void RenderTextureGridOverlay(bool showTextureGrid, int modeWidth, int modeHeigh
             if (textureId != 0) { ourTextureIds.insert(textureId); }
         }
         if (g_sameThreadVirtualCameraScaleTexture != 0) { ourTextureIds.insert(g_sameThreadVirtualCameraScaleTexture); }
+        for (const auto& slot : g_sameThreadVirtualCameraReadbackSlots) {
+            if (slot.yTexture != 0) { ourTextureIds.insert(slot.yTexture); }
+            if (slot.uvTexture != 0) { ourTextureIds.insert(slot.uvTexture); }
+        }
 
         // OBS textures
         GLuint obsOverride = g_obsOverrideTexture.load(std::memory_order_acquire);

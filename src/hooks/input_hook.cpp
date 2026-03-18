@@ -1,6 +1,7 @@
 #include "input_hook.h"
 
 #include "features/fake_cursor.h"
+#include "features/virtual_camera.h"
 #include "gui/gui.h"
 #include "gui/imgui_cache.h"
 #include "runtime/logic_thread.h"
@@ -325,6 +326,7 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
         // During live-resize, client metrics are often transient.
         // Mark dirty only; WM_SIZE/WM_WINDOWPOSCHANGED will commit stable size.
         shouldInvalidateScreenMetrics = true;
+        // No-op: resize tracking removed
         break;
 
     case WM_WINDOWPOSCHANGED: {
@@ -384,6 +386,16 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
                 clientSizeChanged = (clientW != prevW) || (clientH != prevH);
                 UpdateCachedWindowMetricsFromSize(clientW, clientH);
             }
+        }
+
+        if (clientSizeChanged) {
+            // Record pending resize for debounced virtual camera update
+            int vcClientW = 0, vcClientH = 0;
+            if (TryGetClientSize(hWnd, vcClientW, vcClientH)) {
+                OnGameWindowResized(static_cast<uint32_t>(vcClientW), static_cast<uint32_t>(vcClientH));
+            }
+        } else {
+            // No-op: resize tracking removed
         }
     }
 

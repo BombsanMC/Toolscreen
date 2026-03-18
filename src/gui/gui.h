@@ -357,6 +357,8 @@ struct DebugGlobalConfig {
     bool showTextureGrid = false;
     bool delayRenderingUntilFinished = false;
     bool virtualCameraEnabled = false;        // Output to OBS Virtual Camera driver
+    int virtualCameraWidth = 0;
+    int virtualCameraHeight = 0;
 
     bool logModeSwitch = false;
     bool logAnimation = false;
