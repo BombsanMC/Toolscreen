@@ -1185,14 +1185,8 @@ void CursorConfigToToml(const CursorConfig& cfg, toml::table& out) {
 
 void CursorConfigFromToml(const toml::table& tbl, CursorConfig& cfg) {
     cfg.cursorName = GetStringOr(tbl, "cursorName", "");
-    cfg.cursorSize = GetOr(tbl, "cursorSize", ConfigDefaults::CURSOR_SIZE);
-
-    static const std::vector<int> validSizes = {
-        16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128, 144, 160, 192, 224, 256, 288, 320
-    };
-    if (std::find(validSizes.begin(), validSizes.end(), cfg.cursorSize) == validSizes.end()) {
-        cfg.cursorSize = ConfigDefaults::CURSOR_SIZE;
-    }
+    cfg.cursorSize = std::clamp(GetOr(tbl, "cursorSize", ConfigDefaults::CURSOR_SIZE), ConfigDefaults::CURSOR_MIN_SIZE,
+                                ConfigDefaults::CURSOR_MAX_SIZE);
 }
 
 void CursorsConfigToToml(const CursorsConfig& cfg, toml::table& out) {
@@ -2279,8 +2273,7 @@ CursorsConfig GetDefaultCursorsFromEmbedded() {
         ReleaseDC(NULL, hdc);
 
         int systemCursorSize = GetSystemMetricsForDpi(SM_CYCURSOR, dpi);
-        if (systemCursorSize < 16) systemCursorSize = 16;
-        if (systemCursorSize > 320) systemCursorSize = 320;
+        systemCursorSize = std::clamp(systemCursorSize, ConfigDefaults::CURSOR_MIN_SIZE, ConfigDefaults::CURSOR_MAX_SIZE);
 
         cursors.title.cursorSize = systemCursorSize;
         cursors.wall.cursorSize = systemCursorSize;

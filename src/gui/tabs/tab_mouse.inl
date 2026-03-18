@@ -42,6 +42,21 @@
                 ImGui::SameLine();
                 HelpMarker(trc("tooltip.cursor_change"));
 
+                if (ImGui::Button(trc("button.open_cursor_folder"))) {
+                    if (g_toolscreenPath.empty()) {
+                        Log("ERROR: Unable to open custom cursor folder because toolscreen path is empty.");
+                    } else {
+                        std::wstring cursorsPath = g_toolscreenPath + L"\\cursors";
+                        std::error_code ec;
+                        if (!std::filesystem::exists(cursorsPath, ec)) { std::filesystem::create_directories(cursorsPath, ec); }
+
+                        HINSTANCE shellResult = ShellExecuteW(NULL, L"open", cursorsPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                        if ((INT_PTR)shellResult <= 32) { Log("ERROR: Failed to open custom cursor folder."); }
+                    }
+                }
+                ImGui::SameLine();
+                HelpMarker(trc("tooltip.open_cursor_folder"));
+
                 ImGui::Spacing();
 
                 if (g_config.cursors.enabled) {
@@ -56,11 +71,16 @@
 
                     static std::vector<CursorOption> availableCursors;
                     static bool cursorListInitialized = false;
+                    static auto lastCursorListRefreshTime = std::chrono::steady_clock::now() - std::chrono::seconds(2);
 
-                    if (!cursorListInitialized) {
-                        CursorTextures::InitializeCursorDefinitions();
+                    auto now = std::chrono::steady_clock::now();
+                    if (!cursorListInitialized || now - lastCursorListRefreshTime >= std::chrono::seconds(2)) {
+                        CursorTextures::RefreshCursorDefinitions();
+
+                        availableCursors.clear();
 
                         auto cursorNames = CursorTextures::GetAvailableCursorNames();
+                        availableCursors.reserve(cursorNames.size());
 
                         for (const auto& cursorName : cursorNames) {
                             std::string displayName = cursorName;
@@ -85,6 +105,7 @@
                         }
 
                         cursorListInitialized = true;
+                        lastCursorListRefreshTime = now;
                     }
 
                     struct CursorConfigUI {
@@ -166,7 +187,8 @@
 
                         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.8f);
                         int sliderValue = cursorConfig.cursorSize;
-                        if (ImGui::SliderInt("##cursorSize", &sliderValue, 8, 144, "%d px", ImGuiSliderFlags_AlwaysClamp)) {
+                        if (ImGui::SliderInt("##cursorSize", &sliderValue, ConfigDefaults::CURSOR_MIN_SIZE,
+                                             ConfigDefaults::CURSOR_MAX_SIZE, "%d px", ImGuiSliderFlags_AlwaysClamp)) {
                             int newSize = sliderValue;
                             if (newSize != cursorConfig.cursorSize) {
                                 cursorConfig.cursorSize = newSize;

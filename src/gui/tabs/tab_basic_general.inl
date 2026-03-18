@@ -175,6 +175,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         None,
         LabelsOnly,
         ControlsOnly,
+        CopiedFromEyeZoom,
     };
 
     auto RenderModeTableRow = [&](const std::string& modeId, const char* label, const char* hotkeyLabel, int defaultWidth,
@@ -318,6 +319,9 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                         int maxOverlay = g_config.eyezoom.cloneWidth / 2;
                         if (SpinnerDeferredTextInput("##EyeZoomOverlayWidth", &g_config.eyezoom.overlayWidth, 1, 0, maxOverlay, 64, 3)) g_configIsDirty = true;
                     }
+                } else if (eyezoomInline == EyeZoomInlineKind::CopiedFromEyeZoom) {
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextDisabled(trc("modes.preemptive.copied_from_eyezoom"));
                 }
 
                 ImGui::EndTable();
@@ -328,7 +332,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
     };
 
     if (ImGui::BeginTable("ModeTable", 5, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Mode", ImGuiTableColumnFlags_WidthFixed, 80);
+        ImGui::TableSetupColumn("Mode", ImGuiTableColumnFlags_WidthFixed, 100);
         ImGui::TableSetupColumn("Width", ImGuiTableColumnFlags_WidthFixed, 120);
         ImGui::TableSetupColumn("Height", ImGuiTableColumnFlags_WidthFixed, 120);
         ImGui::TableSetupColumn("Hotkey", ImGuiTableColumnFlags_WidthFixed, 150);
@@ -355,6 +359,9 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         RenderModeTableRow("Wide", "Wide", "wide_hotkey", monitorWidth, 400, monitorWidth, monitorHeight, EyeZoomInlineKind::LabelsOnly);
 
         RenderModeTableRow("EyeZoom", "EyeZoom", "eyezoom_hotkey", 384, 16384, monitorWidth, 16384, EyeZoomInlineKind::ControlsOnly);
+
+        RenderModeTableRow("Preemptive", "Preemptive", "preemptive_hotkey", 384, 16384, monitorWidth, 16384,
+                           EyeZoomInlineKind::CopiedFromEyeZoom, true);
 
         ImGui::EndTable();
     }
@@ -383,6 +390,23 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
             }
             ImGui::SameLine();
             HelpMarker(trc("general.sens.tooltip.eyezoom_sensitivity"));
+        }
+    }
+
+    {
+        ModeConfig* preemptiveMode = GetModeConfig("Preemptive");
+        if (preemptiveMode) {
+            RawInputSensitivityNote();
+            ImGui::Text(trc("general.preemptive_sensitivity"));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("##preemptiveSensBasic", &preemptiveMode->modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
+                if (preemptiveMode->modeSensitivity < 0.001f) preemptiveMode->modeSensitivity = 0.001f;
+                preemptiveMode->sensitivityOverrideEnabled = true;
+                g_configIsDirty = true;
+            }
+            ImGui::SameLine();
+            HelpMarker(trc("general.sens.tooltip.preemptive_sensitivity"));
         }
     }
 
@@ -442,19 +466,21 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
             }
         };
 
-        bool ninjabrainEnabled =
-            ModeHasNinjabrain("Fullscreen") || ModeHasNinjabrain("EyeZoom") || ModeHasNinjabrain("Thin") || ModeHasNinjabrain("Wide");
+        bool ninjabrainEnabled = ModeHasNinjabrain("Fullscreen") || ModeHasNinjabrain("EyeZoom") || ModeHasNinjabrain("Preemptive") ||
+                                ModeHasNinjabrain("Thin") || ModeHasNinjabrain("Wide");
 
         if (ImGui::Checkbox(trc("general.ninjabrainbot_overlay"), &ninjabrainEnabled)) {
             if (ninjabrainEnabled) {
                 if (!FindNinjabrainBotImage()) { CreateNinjabrainBotImage(); }
                 AddNinjabrainToMode("Fullscreen");
                 AddNinjabrainToMode("EyeZoom");
+                AddNinjabrainToMode("Preemptive");
                 AddNinjabrainToMode("Thin");
                 AddNinjabrainToMode("Wide");
             } else {
                 RemoveNinjabrainFromMode("Fullscreen");
                 RemoveNinjabrainFromMode("EyeZoom");
+                RemoveNinjabrainFromMode("Preemptive");
                 RemoveNinjabrainFromMode("Thin");
                 RemoveNinjabrainFromMode("Wide");
             }
@@ -538,6 +564,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
     RenderMirrorAssignments("Thin", "Thin");
     RenderMirrorAssignments("Wide", "Wide");
     RenderMirrorAssignments("EyeZoom", "EyeZoom");
+    RenderMirrorAssignments("Preemptive", "Preemptive");
 
     ImGui::EndTabItem();
 }

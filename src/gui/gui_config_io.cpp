@@ -300,8 +300,7 @@ void WriteDefaultConfig(const std::wstring& path) {
         int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
         ReleaseDC(NULL, hdc);
         int systemCursorSize = GetSystemMetricsForDpi(SM_CYCURSOR, dpi);
-        if (systemCursorSize < 16) systemCursorSize = 16;
-        if (systemCursorSize > 320) systemCursorSize = 320;
+        systemCursorSize = std::clamp(systemCursorSize, ConfigDefaults::CURSOR_MIN_SIZE, ConfigDefaults::CURSOR_MAX_SIZE);
         defaultConfig.cursors.title.cursorSize = systemCursorSize;
         defaultConfig.cursors.wall.cursorSize = systemCursorSize;
         defaultConfig.cursors.ingame.cursorSize = systemCursorSize;

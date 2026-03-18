@@ -125,6 +125,8 @@ constexpr bool DEBUG_GLOBAL_LOG_GUI = false;
 constexpr bool DEBUG_GLOBAL_LOG_INIT = false;
 constexpr bool DEBUG_GLOBAL_LOG_CURSOR_TEXTURES = false;
 
+constexpr int CURSOR_MIN_SIZE = 8;
+constexpr int CURSOR_MAX_SIZE = 320;
 constexpr int CURSOR_SIZE = 64;
 
 constexpr bool CURSORS_ENABLED = false;
