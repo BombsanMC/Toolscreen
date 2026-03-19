@@ -1387,7 +1387,7 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
         _set_se_translator(SEHTranslator);
 
         try {
-            Log("Started thread for loading image '" + id + "' from path '" + path + "'");
+            LogCategory("image_monitor", "Started thread for loading image '" + id + "' from path '" + path + "'");
             try {
                 if (g_isShuttingDown.load()) { return; }
 
@@ -1479,7 +1479,7 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
 
                     std::lock_guard<std::mutex> lock(g_decodedImagesMutex);
                     g_decodedImagesQueue.push_back(decoded);
-                    Log("Successfully decoded image for '" + id + "' from '" + path + "' on background thread.");
+                    LogCategory("image_monitor", "Successfully decoded image for '" + id + "' from '" + path + "' on background thread.");
                 } else {
                     Log("ERROR: Failed to decode image '" + path + "' for ID '" + id +
                         "'. Reason: " + (stbi_failure_reason() ? stbi_failure_reason() : "unknown error"));
@@ -1494,7 +1494,7 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
         } catch (const std::exception& e) { LogException("ImageLoadThread for '" + id + "'", e); } catch (...) {
             Log("EXCEPTION in ImageLoadThread for '" + id + "': Unknown exception");
         }
-        Log("Image load thread for '" + id + "' has completed.");
+        LogCategory("image_monitor", "Image load thread for '" + id + "' has completed.");
     }).detach();
 }
 

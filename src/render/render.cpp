@@ -2113,7 +2113,7 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
                     std::lock_guard<std::mutex> imageLock(g_userImagesMutex);
                     g_userImages[imgData.id] = std::move(inst);
                 }
-                Log("Uploaded animated user image '" + imgData.id + "' to GPU (" + std::to_string(imgData.frameCount) + " frames).");
+                LogCategory("image_monitor", "Uploaded animated user image '" + imgData.id + "' to GPU (" + std::to_string(imgData.frameCount) + " frames).");
             } else {
                 inst.isAnimated = false;
 
@@ -2135,7 +2135,7 @@ void UploadDecodedImageToGPU(const DecodedImageData& imgData) {
                     std::lock_guard<std::mutex> imageLock(g_userImagesMutex);
                     g_userImages[imgData.id] = std::move(inst);
                 }
-                Log("Uploaded user image '" + imgData.id + "' to GPU.");
+                LogCategory("image_monitor", "Uploaded user image '" + imgData.id + "' to GPU.");
             }
         } else {
             Log("Skipping GPU upload for user image '" + imgData.id + "' due to null image data.");
