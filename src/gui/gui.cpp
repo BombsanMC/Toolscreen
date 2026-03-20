@@ -74,6 +74,7 @@ void ResetGuiTransientInteractionState() {
     g_currentlyEditingMirror = "";
     g_imageDragMode.store(false);
     g_windowOverlayDragMode.store(false);
+    g_browserOverlayDragMode.store(false);
 
     s_hoveredImageName = "";
     s_draggedImageName = "";
@@ -82,6 +83,10 @@ void ResetGuiTransientInteractionState() {
     s_hoveredWindowOverlayName = "";
     s_draggedWindowOverlayName = "";
     s_isWindowOverlayDragging = false;
+
+    s_hoveredBrowserOverlayName = "";
+    s_draggedBrowserOverlayName = "";
+    s_isBrowserOverlayDragging = false;
 }
 
 void CloseSettingsGuiWindow() {
@@ -751,6 +756,7 @@ void RenderSettingsGUI() {
         // Drag modes must only be enabled by the currently active tab.
         g_imageDragMode.store(false, std::memory_order_relaxed);
         g_windowOverlayDragMode.store(false, std::memory_order_relaxed);
+        g_browserOverlayDragMode.store(false, std::memory_order_relaxed);
 
         if (g_config.basicModeEnabled) {
             if (ImGui::BeginTabBar("BasicSettingsTabs")) {

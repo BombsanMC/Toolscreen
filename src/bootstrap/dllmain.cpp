@@ -170,6 +170,7 @@ std::string g_draggedImageName = "";
 std::mutex g_imageDragMutex;
 
 std::atomic<bool> g_windowOverlayDragMode{ false };
+std::atomic<bool> g_browserOverlayDragMode{ false };
 
 std::ofstream logFile;
 std::mutex g_logFileMutex;

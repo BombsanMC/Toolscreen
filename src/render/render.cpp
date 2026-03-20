@@ -365,6 +365,9 @@ POINT s_dragStartPos = { 0, 0 };
 std::string s_hoveredWindowOverlayName = "";
 std::string s_draggedWindowOverlayName = "";
 bool s_isWindowOverlayDragging = false;
+std::string s_hoveredBrowserOverlayName = "";
+std::string s_draggedBrowserOverlayName = "";
+bool s_isBrowserOverlayDragging = false;
 POINT s_windowOverlayDragStart = { 0, 0 };
 int s_initialX = 0, s_initialY = 0;
 
@@ -5509,7 +5512,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
         glViewport(0, 0, fullW, fullH);
 
     if (g_showGui.load(std::memory_order_relaxed) || g_imageDragMode.load(std::memory_order_relaxed) ||
-        g_windowOverlayDragMode.load(std::memory_order_relaxed)) {
+        g_windowOverlayDragMode.load(std::memory_order_relaxed) || g_browserOverlayDragMode.load(std::memory_order_relaxed)) {
         HWND hwnd = g_minecraftHwnd.load();
         if (hwnd) { InitializeImGuiContext(hwnd); }
     }
@@ -5762,6 +5765,113 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
             s_isWindowOverlayDragging = false;
             s_draggedWindowOverlayName = "";
             s_hoveredWindowOverlayName = "";
+        }
+    }
+
+    if (g_showGui.load(std::memory_order_relaxed) && g_browserOverlayDragMode.load(std::memory_order_relaxed) &&
+        g_browserOverlaysVisible.load(std::memory_order_acquire)) {
+        PROFILE_SCOPE_CAT("Browser Overlay Drag Mode", "Input Handling");
+
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.WantCaptureMouse) {
+            s_hoveredBrowserOverlayName = "";
+        } else {
+            HWND hwnd = g_minecraftHwnd.load();
+            if (hwnd) {
+                POINT mousePos;
+                GetCursorPos(&mousePos);
+                ScreenToClient(hwnd, &mousePos);
+
+                bool leftButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                std::string hoveredOverlay = "";
+
+                if (configSnap) {
+                    std::unordered_map<std::string, const BrowserOverlayConfig*> overlayByName;
+                    overlayByName.reserve(configSnap->browserOverlays.size());
+                    for (const auto& overlay : configSnap->browserOverlays) {
+                        overlayByName.emplace(overlay.name, &overlay);
+                    }
+
+                    for (const auto& overlayId : modeToRender->browserOverlayIds) {
+                        auto overlayIt = overlayByName.find(overlayId);
+                        if (overlayIt == overlayByName.end() || !overlayIt->second) {
+                            continue;
+                        }
+
+                        const BrowserOverlayConfig& conf = *overlayIt->second;
+                        BrowserOverlayTextureFrame frame{};
+                        if (!PrepareBrowserOverlayTexture(conf, frame)) {
+                            continue;
+                        }
+
+                        int croppedW = frame.textureWidth - conf.crop_left - conf.crop_right;
+                        int croppedH = frame.textureHeight - conf.crop_top - conf.crop_bottom;
+                        croppedW = (std::max)(1, croppedW);
+                        croppedH = (std::max)(1, croppedH);
+                        int displayW = (std::max)(1, static_cast<int>(croppedW * conf.scale));
+                        int displayH = (std::max)(1, static_cast<int>(croppedH * conf.scale));
+
+                        const bool isViewportRelative =
+                            conf.relativeTo.length() > 8 && conf.relativeTo.substr(conf.relativeTo.length() - 8) == "Viewport";
+                        if (isViewportRelative) {
+                            const float viewportScaleX =
+                                (currentGeo.finalW > 0 && currentGeo.gameW > 0) ? static_cast<float>(currentGeo.finalW) / currentGeo.gameW : 1.0f;
+                            const float viewportScaleY =
+                                (currentGeo.finalH > 0 && currentGeo.gameH > 0) ? static_cast<float>(currentGeo.finalH) / currentGeo.gameH : 1.0f;
+                            ScaleViewportRelativeImageSize(displayW, displayH, modeToRender->relativeStretching, viewportScaleX,
+                                                           viewportScaleY, displayW, displayH);
+                        }
+
+                        int finalScreenX = 0;
+                        int finalScreenY = 0;
+                        GetRelativeCoordsForImageWithViewport(conf.relativeTo, conf.x, conf.y, displayW, displayH, currentGeo.finalX,
+                                                              currentGeo.finalY, currentGeo.finalW, currentGeo.finalH, fullW, fullH,
+                                                              finalScreenX, finalScreenY);
+
+                        if (mousePos.x >= finalScreenX && mousePos.x < finalScreenX + displayW && mousePos.y >= finalScreenY &&
+                            mousePos.y < finalScreenY + displayH) {
+                            hoveredOverlay = conf.name;
+                            break;
+                        }
+                    }
+                }
+
+                if (leftButtonDown && !s_isBrowserOverlayDragging && !hoveredOverlay.empty()) {
+                    s_isBrowserOverlayDragging = true;
+                    s_draggedBrowserOverlayName = hoveredOverlay;
+                    s_lastMousePos = mousePos;
+                }
+                else if (leftButtonDown && s_isBrowserOverlayDragging && !s_draggedBrowserOverlayName.empty()) {
+                    int deltaX = mousePos.x - s_lastMousePos.x;
+                    int deltaY = mousePos.y - s_lastMousePos.y;
+
+                    if (deltaX != 0 || deltaY != 0) {
+                        for (auto& overlay : g_config.browserOverlays) {
+                            if (overlay.name == s_draggedBrowserOverlayName) {
+                                overlay.x += deltaX;
+                                overlay.y += deltaY;
+                                g_configIsDirty = true;
+                                break;
+                            }
+                        }
+
+                        s_lastMousePos = mousePos;
+                    }
+                }
+                else if (!leftButtonDown && s_isBrowserOverlayDragging) {
+                    s_isBrowserOverlayDragging = false;
+                    s_draggedBrowserOverlayName = "";
+                    SaveConfigImmediate();
+                }
+
+                s_hoveredBrowserOverlayName = hoveredOverlay;
+            }
+        }
+    } else {
+        if (s_isBrowserOverlayDragging) {
+            s_isBrowserOverlayDragging = false;
+            s_draggedBrowserOverlayName = "";
+            s_hoveredBrowserOverlayName = "";
         }
     }
 

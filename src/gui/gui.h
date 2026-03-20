@@ -716,6 +716,7 @@ extern std::string g_draggedImageName;
 extern std::mutex g_imageDragMutex;
 
 extern std::atomic<bool> g_windowOverlayDragMode;
+extern std::atomic<bool> g_browserOverlayDragMode;
 
 extern std::string g_gameStateBuffers[2];
 extern std::atomic<int> g_currentGameStateIndex;

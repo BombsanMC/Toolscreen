@@ -696,6 +696,7 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
         g_imageDragMode.store(false);
         g_windowOverlayDragMode.store(false);
+        g_browserOverlayDragMode.store(false);
 
         extern std::string s_hoveredImageName;
         extern std::string s_draggedImageName;
@@ -710,6 +711,13 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         s_hoveredWindowOverlayName = "";
         s_draggedWindowOverlayName = "";
         s_isWindowOverlayDragging = false;
+
+        extern std::string s_hoveredBrowserOverlayName;
+        extern std::string s_draggedBrowserOverlayName;
+        extern bool s_isBrowserOverlayDragging;
+        s_hoveredBrowserOverlayName = "";
+        s_draggedBrowserOverlayName = "";
+        s_isBrowserOverlayDragging = false;
     } else if (!isEscape) {
         g_showGui = true;
         InvalidateImGuiCache();

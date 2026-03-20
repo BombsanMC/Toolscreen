@@ -213,6 +213,9 @@ enum class ResizeCorner;
 extern std::string s_hoveredWindowOverlayName;
 extern std::string s_draggedWindowOverlayName;
 extern bool s_isWindowOverlayDragging;
+extern std::string s_hoveredBrowserOverlayName;
+extern std::string s_draggedBrowserOverlayName;
+extern bool s_isBrowserOverlayDragging;
 extern bool s_isWindowOverlayResizing;
 
 void InitializeShaders();
