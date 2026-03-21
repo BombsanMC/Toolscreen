@@ -538,6 +538,7 @@
     "modes.gradient_color_fade": "颜色淡入淡出",
     "modes.gradient_stops": "颜色停止点",
     "modes.height": "高度",
+    "modes.image": "图像",
     "modes.images": "图像",
     "modes.invalid_expression": "无效",
     "modes.label.manual_pixel_size": "使用像素单位",

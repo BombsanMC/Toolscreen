@@ -538,6 +538,7 @@
     "modes.gradient_color_fade": "Color Fade",
     "modes.gradient_stops": "Color Stops",
     "modes.height": "Height",
+    "modes.image": "Image",
     "modes.images": "Images",
     "modes.invalid_expression": "Invalid",
     "modes.label.manual_pixel_size": "Manual pixel size",
