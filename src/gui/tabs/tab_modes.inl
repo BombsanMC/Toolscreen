@@ -3048,6 +3048,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
         if (ImGui::Button("Confirm Reset", ImVec2(120, 0))) {
             g_config.modes = GetDefaultModes();
             g_config.eyezoom = GetDefaultEyeZoomConfig();
+            SetOverlayTextFontSize(g_config.eyezoom.textFontSize);
 
             // (Example: Wide mode uses height = 0.25, which must be converted to pixels.)
             int screenW = GetCachedWindowWidth();
