@@ -604,6 +604,11 @@ void ProcessPendingDimensionChange() {
             mode->stretch.height = currentClientH;
         }
 
+        if (g_pendingDimensionChange.sendWmSize && fullscreenStretchMode && g_currentModeId == g_pendingDimensionChange.modeId) {
+            HWND hwnd = g_minecraftHwnd.load();
+            if (hwnd) { RequestWindowClientResize(hwnd, mode->width, mode->height, "logic_thread:pending_dimension"); }
+        }
+
         ModeConfig* eyezoomMode = GetModeMutable("EyeZoom");
         ModeConfig* preemptiveMode = GetModeMutable("Preemptive");
         bool preemptiveWasResynced = false;

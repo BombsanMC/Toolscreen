@@ -2831,7 +2831,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
             const auto& cache = inst.cachedRenderState;
             const bool cacheMatchesCurrentGeo =
                 allowCachedMirrorVertices && cache.isValid && cache.finalX == geo.finalX && cache.finalY == geo.finalY &&
-                cache.finalW == geo.finalW &&
+                cache.finalW == geo.finalW && cache.gameW == geo.gameW && cache.gameH == geo.gameH &&
                 cache.finalH == geo.finalH && cache.screenW == fullW && cache.screenH == fullH && cache.outputX == conf.output.x &&
                 cache.outputY == conf.output.y && cache.outputScale == conf.output.scale &&
                 cache.outputSeparateScale == conf.output.separateScale && cache.outputScaleX == conf.output.scaleX &&

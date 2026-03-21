@@ -120,7 +120,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                         g_pendingDimensionChange.modeId = mode.id;
                         g_pendingDimensionChange.newWidth = tempWidth;
                         g_pendingDimensionChange.newHeight = 0;
-                        g_pendingDimensionChange.sendWmSize = false;
+                        g_pendingDimensionChange.sendWmSize = (g_currentModeId == mode.id);
                     }
                 }
                 ImGui::NextColumn();
@@ -152,7 +152,7 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                         g_pendingDimensionChange.modeId = mode.id;
                         g_pendingDimensionChange.newWidth = 0;
                         g_pendingDimensionChange.newHeight = tempHeight;
-                        g_pendingDimensionChange.sendWmSize = false;
+                        g_pendingDimensionChange.sendWmSize = (g_currentModeId == mode.id);
                     }
                 }
                 ImGui::Columns(1);

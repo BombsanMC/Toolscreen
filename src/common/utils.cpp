@@ -2153,6 +2153,9 @@ void GetRelativeCoordsForImageWithViewport(const std::string& type, int relX, in
 
 void CalculateFinalScreenPos(const MirrorConfig* conf, const MirrorInstance& inst, int gameW, int gameH, int finalX, int finalY, int finalW,
                              int finalH, int fullW, int fullH, int& outScreenX, int& outScreenY) {
+    (void)gameW;
+    (void)gameH;
+
     float scaleX = conf->output.separateScale ? conf->output.scaleX : conf->output.scale;
     float scaleY = conf->output.separateScale ? conf->output.scaleY : conf->output.scale;
     int outW = static_cast<int>(inst.fbo_w * scaleX);
@@ -2173,41 +2176,11 @@ void CalculateFinalScreenPos(const MirrorConfig* conf, const MirrorInstance& ins
 
     if (anchor.length() > 8 && anchor.substr(anchor.length() - 8) == "Viewport") { anchor = anchor.substr(0, anchor.length() - 8); }
 
-    float xScale = (gameW > 0) ? static_cast<float>(finalW) / gameW : 1.0f;
-    float yScale = (gameH > 0) ? static_cast<float>(finalH) / gameH : 1.0f;
-
-    int outW_game = static_cast<int>(outW / xScale);
-    int outH_game = static_cast<int>(outH / yScale);
-
-    int gamePosX, gamePosY;
-    char firstChar = anchor.empty() ? '\0' : anchor[0];
-
-    if (firstChar == 't') {
-        gamePosY = offsetY;
-        if (anchor == "topLeft") {
-            gamePosX = offsetX;
-        } else {
-            gamePosX = gameW - offsetX - outW_game;
-        }
-    } else if (firstChar == 'c') {
-        gamePosX = (gameW - outW_game) / 2 + offsetX;
-        gamePosY = (gameH - outH_game) / 2 + offsetY;
-    } else if (firstChar == 'p') {
-        const int PIE_Y_TOP = 220, PIE_X_LEFT = 92, PIE_X_RIGHT = 36;
-        int pieXOffset = (anchor == "pieLeft") ? PIE_X_LEFT : PIE_X_RIGHT;
-        gamePosX = gameW - pieXOffset + offsetX - outW_game;
-        gamePosY = gameH - PIE_Y_TOP + offsetY - outH_game;
-    } else {
-        gamePosY = gameH - offsetY - outH_game;
-        if (anchor == "bottomRight") {
-            gamePosX = gameW - offsetX - outW_game;
-        } else {
-            gamePosX = offsetX;
-        }
-    }
-
-    outScreenX = finalX + static_cast<int>(gamePosX * xScale);
-    outScreenY = finalY + static_cast<int>(gamePosY * yScale);
+    int relative_x = 0;
+    int relative_y = 0;
+    GetRelativeCoords(anchor, offsetX, offsetY, outW, outH, finalW, finalH, relative_x, relative_y);
+    outScreenX = finalX + relative_x;
+    outScreenY = finalY + relative_y;
 }
 
 void ScreenshotToClipboard(int width, int height) {
