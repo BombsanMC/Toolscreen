@@ -5006,14 +5006,14 @@ void handleEyeZoomMode(const GLState& s, const EyeZoomConfig& zoomConfig, int fu
     int finalZoomY = 0;
 
     if (zoomConfig.useCustomSizePosition) {
-        zoomOutputWidth = zoomConfig.zoomAreaWidth;
-        zoomOutputHeight = zoomConfig.zoomAreaHeight;
-        zoomX = zoomConfig.positionX;
-        zoomY = zoomConfig.positionY;
-        finalZoomOutputWidth = zoomOutputWidth;
-        finalZoomOutputHeight = zoomOutputHeight;
-        finalZoomX = zoomX;
-        finalZoomY = zoomY;
+        finalZoomOutputWidth = zoomConfig.zoomAreaWidth;
+        finalZoomOutputHeight = zoomConfig.zoomAreaHeight;
+        finalZoomX = zoomConfig.positionX;
+        finalZoomY = zoomConfig.positionY;
+
+        zoomOutputWidth = finalZoomOutputWidth;
+        zoomOutputHeight = finalZoomOutputHeight;
+        zoomY = finalZoomY;
     } else {
         int autoHorizontalMargin = 0;
         if (targetViewportX > 0) autoHorizontalMargin = targetViewportX / 10;
@@ -5056,7 +5056,7 @@ void handleEyeZoomMode(const GLState& s, const EyeZoomConfig& zoomConfig, int fu
 
     int maxZoomX = (std::max)(0, fullW - zoomOutputWidth);
     int maxZoomY = (std::max)(0, fullH - zoomOutputHeight);
-    const bool allowEyeZoomSlideOffscreenLeft = !zoomConfig.useCustomSizePosition && animatedViewportX >= 0 && targetViewportX > 0;
+    const bool allowEyeZoomSlideOffscreenLeft = animatedViewportX >= 0 && targetViewportX > 0;
     if (allowEyeZoomSlideOffscreenLeft) {
         zoomX = (std::min)(zoomX, maxZoomX);
     } else {
@@ -5068,6 +5068,17 @@ void handleEyeZoomMode(const GLState& s, const EyeZoomConfig& zoomConfig, int fu
     int maxFinalZoomY = (std::max)(0, fullH - finalZoomOutputHeight);
     finalZoomX = (std::max)(0, (std::min)(finalZoomX, maxFinalZoomX));
     finalZoomY = (std::max)(0, (std::min)(finalZoomY, maxFinalZoomY));
+
+    if (zoomConfig.useCustomSizePosition) {
+        zoomY = finalZoomY;
+        if (animatedViewportX >= 0 && targetViewportX > 0) {
+            const float slideProgress =
+                (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(viewportX) / static_cast<float>(targetViewportX)));
+            zoomX = -zoomOutputWidth + static_cast<int>((finalZoomX + zoomOutputWidth) * slideProgress);
+        } else {
+            zoomX = finalZoomX;
+        }
+    }
 
     int zoomY_gl = fullH - zoomY - zoomOutputHeight;
 
