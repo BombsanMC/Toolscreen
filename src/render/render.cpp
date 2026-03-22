@@ -1660,38 +1660,35 @@ void CleanupShaders() {
     }
 }
 
-void DiscardAllGPUImages() {
+static void CollectAllGPUImageTexturesForDeletionUnsafe(std::vector<GLuint>& texturesToDelete) {
+    for (auto const& [id, inst] : g_backgroundTextures) {
+        if (inst.isAnimated) {
+            for (GLuint tex : inst.frameTextures) {
+                if (tex != 0) texturesToDelete.push_back(tex);
+            }
+        } else if (inst.textureId != 0) {
+            texturesToDelete.push_back(inst.textureId);
+        }
+    }
+    g_backgroundTextures.clear();
+
+    for (auto const& [id, inst] : g_userImages) {
+        if (inst.isAnimated) {
+            for (GLuint tex : inst.frameTextures) {
+                if (tex != 0) texturesToDelete.push_back(tex);
+            }
+        } else if (inst.textureId != 0) {
+            texturesToDelete.push_back(inst.textureId);
+        }
+    }
+    g_userImages.clear();
+}
+
+static void DiscardAllGPUImagesLocked() {
     PROFILE_SCOPE_CAT("GPU Image Discard", "GPU Operations");
     std::vector<GLuint> texturesToDelete;
 
-    {
-
-        std::lock_guard<std::mutex> bgLock(g_backgroundTexturesMutex);
-        for (auto const& [id, inst] : g_backgroundTextures) {
-            if (inst.isAnimated) {
-                for (GLuint tex : inst.frameTextures) {
-                    if (tex != 0) texturesToDelete.push_back(tex);
-                }
-            } else if (inst.textureId != 0) {
-                texturesToDelete.push_back(inst.textureId);
-            }
-        }
-        g_backgroundTextures.clear();
-    }
-
-    {
-        std::lock_guard<std::mutex> imageLock(g_userImagesMutex);
-        for (auto const& [id, inst] : g_userImages) {
-            if (inst.isAnimated) {
-                for (GLuint tex : inst.frameTextures) {
-                    if (tex != 0) texturesToDelete.push_back(tex);
-                }
-            } else if (inst.textureId != 0) {
-                texturesToDelete.push_back(inst.textureId);
-            }
-        }
-        g_userImages.clear();
-    }
+    CollectAllGPUImageTexturesForDeletionUnsafe(texturesToDelete);
 
     // Enqueue for deletion after releasing resource-map locks.
     {
@@ -1700,6 +1697,13 @@ void DiscardAllGPUImages() {
     }
     if (!texturesToDelete.empty()) { g_hasTexturesToDelete.store(true, std::memory_order_release); }
     Log("All background and user image textures have been queued for deletion.");
+}
+
+void DiscardAllGPUImages() {
+    std::lock_guard<std::mutex> bgLock(g_backgroundTexturesMutex);
+    std::lock_guard<std::mutex> imageLock(g_userImagesMutex);
+
+    DiscardAllGPUImagesLocked();
 }
 
 struct PixelStoreStateGuard {
@@ -1887,15 +1891,49 @@ void CleanupGPUResources() {
 
     // Lock all GPU resource mutexes during cleanup
     std::unique_lock<std::shared_mutex> mirrorLock(g_mirrorInstancesMutex); // Write lock - cleanup
-    std::lock_guard<std::mutex> imageLock(g_userImagesMutex);
     std::lock_guard<std::mutex> bgLock(g_backgroundTexturesMutex);
+    std::lock_guard<std::mutex> imageLock(g_userImagesMutex);
 
-    auto safeGLDelete = [](auto deleteFunc, auto handle) {
-        if (handle == 0) return;
-        try {
-            deleteFunc(handle);
-            while (glGetError() != GL_NO_ERROR) {}
-        } catch (...) { Log("Exception during GPU resource deletion"); }
+    std::string currentMirrorId;
+    std::string currentResource = "<none>";
+    uintptr_t currentHandle = 0;
+
+    auto trackCleanupResource = [&](const std::string& mirrorId, const std::string& resource, uintptr_t handle) {
+        currentMirrorId = mirrorId;
+        currentResource = resource;
+        currentHandle = handle;
+    };
+    auto clearTrackedCleanupResource = [&]() {
+        currentMirrorId.clear();
+        currentResource = "<none>";
+        currentHandle = 0;
+    };
+    auto formatCleanupDebugState = [&](const char* phase) {
+        size_t queuedTextureDeleteCount = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_texturesToDeleteMutex);
+            queuedTextureDeleteCount = g_texturesToDelete.size();
+        }
+
+        std::stringstream ss;
+        ss << "phase=" << phase << ", glContext=0x" << std::hex << reinterpret_cast<uintptr_t>(currentContext) << std::dec
+           << ", currentMirror=" << (currentMirrorId.empty() ? std::string("<none>") : currentMirrorId)
+           << ", currentResource=" << currentResource << ", currentHandle=0x" << std::hex << currentHandle << std::dec
+           << ", mirrorCount=" << g_mirrorInstances.size() << ", sceneFBO=" << g_sceneFBO << ", sceneTexture=" << g_sceneTexture
+           << ", obsComposeFBOs={" << g_sameThreadObsComposeFBOs[0] << "," << g_sameThreadObsComposeFBOs[1] << "}"
+           << ", obsComposeTextures={" << g_sameThreadObsComposeTextures[0] << "," << g_sameThreadObsComposeTextures[1] << "}"
+           << ", vcScaleFBO=" << g_sameThreadVirtualCameraScaleFBO << ", vcConvertFBO=" << g_sameThreadVirtualCameraConvertFBO
+           << ", vcReadFBO=" << g_sameThreadVirtualCameraReadFBO << ", vcScaleTexture=" << g_sameThreadVirtualCameraScaleTexture
+           << ", vcLumaTexture=" << g_sameThreadVirtualCameraLumaTexture << ", vcChromaTexture=" << g_sameThreadVirtualCameraChromaTexture
+           << ", queuedTextureDeletes=" << queuedTextureDeleteCount << ", vao=" << g_vao << ", vbo=" << g_vbo
+           << ", debugVao=" << g_debugVAO << ", debugVbo=" << g_debugVBO;
+        return ss.str();
+    };
+    auto logCleanupStdException = [&](const char* phase, const std::exception& e) {
+        LogException("CleanupGPUResources [" + formatCleanupDebugState(phase) + "]", e);
+    };
+    auto logCleanupUnknownException = [&](const char* phase) {
+        Log("CleanupGPUResources: Unknown exception [" + formatCleanupDebugState(phase) + "]");
     };
 
     // PBO system cleanup is handled by CleanupCapturePBOs() in mirror_thread.cpp
@@ -1904,109 +1942,144 @@ void CleanupGPUResources() {
     try {
         for (auto const& [k, v] : g_mirrorInstances) {
             if (v.fbo) {
+                trackCleanupResource(k, "mirror.fbo", static_cast<uintptr_t>(v.fbo));
                 glDeleteFramebuffers(1, &v.fbo);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             // Clean up the back-buffer FBO used by mirror capture.
             if (v.fboBack) {
+                trackCleanupResource(k, "mirror.fboBack", static_cast<uintptr_t>(v.fboBack));
                 glDeleteFramebuffers(1, &v.fboBack);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             if (v.finalFbo) {
+                trackCleanupResource(k, "mirror.finalFbo", static_cast<uintptr_t>(v.finalFbo));
                 glDeleteFramebuffers(1, &v.finalFbo);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             if (v.finalFboBack) {
+                trackCleanupResource(k, "mirror.finalFboBack", static_cast<uintptr_t>(v.finalFboBack));
                 glDeleteFramebuffers(1, &v.finalFboBack);
                 while (glGetError() != GL_NO_ERROR) {}
             }
         }
         if (g_sceneFBO) {
+            trackCleanupResource("<global>", "g_sceneFBO", static_cast<uintptr_t>(g_sceneFBO));
             glDeleteFramebuffers(1, &g_sceneFBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_sceneFBO = 0;
         }
         for (int i = 0; i < SAME_THREAD_OBS_BUFFER_COUNT; ++i) {
             if (g_sameThreadObsComposeFBOs[i]) {
+                trackCleanupResource("<global>", "g_sameThreadObsComposeFBOs[" + std::to_string(i) + "]",
+                                     static_cast<uintptr_t>(g_sameThreadObsComposeFBOs[i]));
                 glDeleteFramebuffers(1, &g_sameThreadObsComposeFBOs[i]);
                 while (glGetError() != GL_NO_ERROR) {}
                 g_sameThreadObsComposeFBOs[i] = 0;
             }
         }
-    } catch (...) { Log("CleanupGPUResources: Exception during FBO cleanup"); }
+        clearTrackedCleanupResource();
+    } catch (const std::exception& e) {
+        logCleanupStdException("fbo cleanup", e);
+    } catch (...) { logCleanupUnknownException("fbo cleanup"); }
 
     try {
         for (auto const& [k, v] : g_mirrorInstances) {
             if (v.fboTexture) {
+                trackCleanupResource(k, "mirror.fboTexture", static_cast<uintptr_t>(v.fboTexture));
                 glDeleteTextures(1, &v.fboTexture);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             if (v.tempCaptureTexture) {
+                trackCleanupResource(k, "mirror.tempCaptureTexture", static_cast<uintptr_t>(v.tempCaptureTexture));
                 glDeleteTextures(1, &v.tempCaptureTexture);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             // Clean up the back-buffer texture used by mirror capture.
             if (v.fboTextureBack) {
+                trackCleanupResource(k, "mirror.fboTextureBack", static_cast<uintptr_t>(v.fboTextureBack));
                 glDeleteTextures(1, &v.fboTextureBack);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             if (v.finalTexture) {
+                trackCleanupResource(k, "mirror.finalTexture", static_cast<uintptr_t>(v.finalTexture));
                 glDeleteTextures(1, &v.finalTexture);
                 while (glGetError() != GL_NO_ERROR) {}
             }
             if (v.finalTextureBack) {
+                trackCleanupResource(k, "mirror.finalTextureBack", static_cast<uintptr_t>(v.finalTextureBack));
                 glDeleteTextures(1, &v.finalTextureBack);
                 while (glGetError() != GL_NO_ERROR) {}
             }
 
             // Clean up GPU sync fences
-            if (v.gpuFence && glIsSync(v.gpuFence)) { glDeleteSync(v.gpuFence); }
-            if (v.gpuFenceBack && glIsSync(v.gpuFenceBack)) { glDeleteSync(v.gpuFenceBack); }
+            if (v.gpuFence && glIsSync(v.gpuFence)) {
+                trackCleanupResource(k, "mirror.gpuFence", reinterpret_cast<uintptr_t>(v.gpuFence));
+                glDeleteSync(v.gpuFence);
+            }
+            if (v.gpuFenceBack && glIsSync(v.gpuFenceBack)) {
+                trackCleanupResource(k, "mirror.gpuFenceBack", reinterpret_cast<uintptr_t>(v.gpuFenceBack));
+                glDeleteSync(v.gpuFenceBack);
+            }
         }
         g_mirrorInstances.clear();
 
         if (g_sceneTexture) {
+            trackCleanupResource("<global>", "g_sceneTexture", static_cast<uintptr_t>(g_sceneTexture));
             glDeleteTextures(1, &g_sceneTexture);
             while (glGetError() != GL_NO_ERROR) {}
             g_sceneTexture = 0;
         }
         for (int i = 0; i < SAME_THREAD_OBS_BUFFER_COUNT; ++i) {
             if (g_sameThreadObsComposeTextures[i]) {
+                trackCleanupResource("<global>", "g_sameThreadObsComposeTextures[" + std::to_string(i) + "]",
+                                     static_cast<uintptr_t>(g_sameThreadObsComposeTextures[i]));
                 glDeleteTextures(1, &g_sameThreadObsComposeTextures[i]);
                 while (glGetError() != GL_NO_ERROR) {}
                 g_sameThreadObsComposeTextures[i] = 0;
             }
         }
         if (g_sameThreadVirtualCameraScaleTexture) {
+            trackCleanupResource("<global>", "g_sameThreadVirtualCameraScaleTexture",
+                                 static_cast<uintptr_t>(g_sameThreadVirtualCameraScaleTexture));
             glDeleteTextures(1, &g_sameThreadVirtualCameraScaleTexture);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraScaleTexture = 0;
         }
         if (g_sameThreadVirtualCameraLumaTexture) {
+            trackCleanupResource("<global>", "g_sameThreadVirtualCameraLumaTexture",
+                                 static_cast<uintptr_t>(g_sameThreadVirtualCameraLumaTexture));
             glDeleteTextures(1, &g_sameThreadVirtualCameraLumaTexture);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraLumaTexture = 0;
         }
         if (g_sameThreadVirtualCameraChromaTexture) {
+            trackCleanupResource("<global>", "g_sameThreadVirtualCameraChromaTexture",
+                                 static_cast<uintptr_t>(g_sameThreadVirtualCameraChromaTexture));
             glDeleteTextures(1, &g_sameThreadVirtualCameraChromaTexture);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraChromaTexture = 0;
         }
         if (g_sameThreadVirtualCameraScaleFBO) {
+            trackCleanupResource("<global>", "g_sameThreadVirtualCameraScaleFBO", static_cast<uintptr_t>(g_sameThreadVirtualCameraScaleFBO));
             glDeleteFramebuffers(1, &g_sameThreadVirtualCameraScaleFBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraScaleFBO = 0;
         }
         if (g_sameThreadVirtualCameraConvertFBO) {
+            trackCleanupResource("<global>", "g_sameThreadVirtualCameraConvertFBO",
+                                 static_cast<uintptr_t>(g_sameThreadVirtualCameraConvertFBO));
             glDeleteFramebuffers(1, &g_sameThreadVirtualCameraConvertFBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraConvertFBO = 0;
         }
         if (g_sameThreadVirtualCameraReadFBO) {
+            trackCleanupResource("<global>", "g_sameThreadVirtualCameraReadFBO", static_cast<uintptr_t>(g_sameThreadVirtualCameraReadFBO));
             glDeleteFramebuffers(1, &g_sameThreadVirtualCameraReadFBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_sameThreadVirtualCameraReadFBO = 0;
         }
+        trackCleanupResource("<global>", "ReleaseSameThreadVirtualCameraReadbacks", 0);
         ReleaseSameThreadVirtualCameraReadbacks();
         g_sameThreadVirtualCameraScaleW = 0;
         g_sameThreadVirtualCameraScaleH = 0;
@@ -2017,17 +2090,22 @@ void CleanupGPUResources() {
         g_sameThreadObsComposeW = 0;
         g_sameThreadObsComposeH = 0;
 
-        DiscardAllGPUImages();
+        trackCleanupResource("<global>", "DiscardAllGPUImagesLocked", 0);
+        DiscardAllGPUImagesLocked();
 
         {
             std::lock_guard<std::mutex> lock(g_texturesToDeleteMutex);
             if (!g_texturesToDelete.empty()) {
+                trackCleanupResource("<global>", "g_texturesToDelete batch", static_cast<uintptr_t>(g_texturesToDelete.size()));
                 glDeleteTextures((GLsizei)g_texturesToDelete.size(), g_texturesToDelete.data());
                 while (glGetError() != GL_NO_ERROR) {}
                 g_texturesToDelete.clear();
             }
         }
-    } catch (...) { Log("CleanupGPUResources: Exception during texture cleanup"); }
+        clearTrackedCleanupResource();
+    } catch (const std::exception& e) {
+        logCleanupStdException("texture cleanup", e);
+    } catch (...) { logCleanupUnknownException("texture cleanup"); }
 
     {
         std::lock_guard<std::mutex> lock(g_decodedImagesMutex);
@@ -2045,31 +2123,42 @@ void CleanupGPUResources() {
 
     try {
         if (g_vao) {
+            trackCleanupResource("<global>", "g_vao", static_cast<uintptr_t>(g_vao));
             glDeleteVertexArrays(1, &g_vao);
             while (glGetError() != GL_NO_ERROR) {}
             g_vao = 0;
         }
         if (g_vbo) {
+            trackCleanupResource("<global>", "g_vbo", static_cast<uintptr_t>(g_vbo));
             glDeleteBuffers(1, &g_vbo);
             while (glGetError() != GL_NO_ERROR) {}
             g_vbo = 0;
         }
         if (g_debugVAO) {
+            trackCleanupResource("<global>", "g_debugVAO", static_cast<uintptr_t>(g_debugVAO));
             glDeleteVertexArrays(1, &g_debugVAO);
             while (glGetError() != GL_NO_ERROR) {}
             g_debugVAO = 0;
         }
         if (g_debugVBO) {
+            trackCleanupResource("<global>", "g_debugVBO", static_cast<uintptr_t>(g_debugVBO));
             glDeleteBuffers(1, &g_debugVBO);
             while (glGetError() != GL_NO_ERROR) {}
             g_debugVBO = 0;
         }
-    } catch (...) { Log("CleanupGPUResources: Exception during VAO/VBO cleanup"); }
+        clearTrackedCleanupResource();
+    } catch (const std::exception& e) {
+        logCleanupStdException("vao/vbo cleanup", e);
+    } catch (...) { logCleanupUnknownException("vao/vbo cleanup"); }
 
     try {
+        trackCleanupResource("<global>", "CleanupShaders", 0);
         CleanupShaders();
         while (glGetError() != GL_NO_ERROR) {}
-    } catch (...) { Log("CleanupGPUResources: Exception during shader cleanup"); }
+        clearTrackedCleanupResource();
+    } catch (const std::exception& e) {
+        logCleanupStdException("shader cleanup", e);
+    } catch (...) { logCleanupUnknownException("shader cleanup"); }
 
     g_sceneW = g_sceneH = 0;
     g_glInitialized.store(false, std::memory_order_release);
