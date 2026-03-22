@@ -782,7 +782,7 @@ void MirrorConfigToToml(const MirrorConfig& cfg, toml::table& out) {
     GradientConfigToToml(cfg.gradient, gradientTbl);
     out.insert("gradient", gradientTbl);
 
-    out.insert("onlyOnMyScreen", false);
+    out.insert("onlyOnMyScreen", cfg.onlyOnMyScreen);
 }
 
 void MirrorConfigFromToml(const toml::table& tbl, MirrorConfig& cfg) {
@@ -824,9 +824,7 @@ void MirrorConfigFromToml(const toml::table& tbl, MirrorConfig& cfg) {
     } else {
         cfg.gradient = GradientConfig{};
     }
-    const bool parsedOnlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::MIRROR_ONLY_ON_MY_SCREEN);
-    (void)parsedOnlyOnMyScreen;
-    cfg.onlyOnMyScreen = false;
+    cfg.onlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::MIRROR_ONLY_ON_MY_SCREEN);
 }
 
 void MirrorGroupItemToToml(const MirrorGroupItem& item, toml::table& out) {
@@ -1060,6 +1058,7 @@ void WindowOverlayConfigToToml(const WindowOverlayConfig& cfg, toml::table& out)
     out.insert("pixelatedScaling", cfg.pixelatedScaling);
     out.insert("onlyOnMyScreen", cfg.onlyOnMyScreen);
     out.insert("fps", cfg.fps);
+    out.insert("searchInterval", cfg.searchInterval);
     out.insert("captureMethod", cfg.captureMethod);
     out.insert("forceUpdate", cfg.forceUpdate);
     out.insert("enableInteraction", cfg.enableInteraction);
@@ -1103,6 +1102,7 @@ void WindowOverlayConfigFromToml(const toml::table& tbl, WindowOverlayConfig& cf
     cfg.pixelatedScaling = GetOr(tbl, "pixelatedScaling", ConfigDefaults::IMAGE_PIXELATED_SCALING);
     cfg.onlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::IMAGE_ONLY_ON_MY_SCREEN);
     cfg.fps = GetOr(tbl, "fps", ConfigDefaults::WINDOW_OVERLAY_FPS);
+    cfg.searchInterval = GetOr(tbl, "searchInterval", ConfigDefaults::WINDOW_OVERLAY_SEARCH_INTERVAL);
     cfg.captureMethod = GetStringOr(tbl, "captureMethod", ConfigDefaults::WINDOW_OVERLAY_CAPTURE_METHOD);
     cfg.forceUpdate = GetOr(tbl, "forceUpdate", ConfigDefaults::WINDOW_OVERLAY_FORCE_UPDATE);
     cfg.enableInteraction = GetOr(tbl, "enableInteraction", ConfigDefaults::WINDOW_OVERLAY_ENABLE_INTERACTION);
@@ -1450,6 +1450,7 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("showPerformanceOverlay", cfg.showPerformanceOverlay);
     out.insert("showProfiler", cfg.showProfiler);
     out.insert("profilerScale", cfg.profilerScale);
+    out.insert("showHotkeyDebug", cfg.showHotkeyDebug);
     out.insert("fakeCursor", cfg.fakeCursor);
     out.insert("showTextureGrid", cfg.showTextureGrid);
     out.insert("delayRenderingUntilFinished", cfg.delayRenderingUntilFinished);
@@ -1466,12 +1467,14 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("logTextureOps", cfg.logTextureOps);
     out.insert("logGui", cfg.logGui);
     out.insert("logInit", cfg.logInit);
+    out.insert("logCursorTextures", cfg.logCursorTextures);
 }
 
 void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.showPerformanceOverlay = GetOr(tbl, "showPerformanceOverlay", ConfigDefaults::DEBUG_GLOBAL_SHOW_PERFORMANCE_OVERLAY);
     cfg.showProfiler = GetOr(tbl, "showProfiler", ConfigDefaults::DEBUG_GLOBAL_SHOW_PROFILER);
     cfg.profilerScale = GetOr(tbl, "profilerScale", ConfigDefaults::DEBUG_GLOBAL_PROFILER_SCALE);
+    cfg.showHotkeyDebug = GetOr(tbl, "showHotkeyDebug", ConfigDefaults::DEBUG_GLOBAL_SHOW_HOTKEY_DEBUG);
     cfg.fakeCursor = GetOr(tbl, "fakeCursor", ConfigDefaults::DEBUG_GLOBAL_FAKE_CURSOR);
     cfg.showTextureGrid = GetOr(tbl, "showTextureGrid", ConfigDefaults::DEBUG_GLOBAL_SHOW_TEXTURE_GRID);
     cfg.delayRenderingUntilFinished =
@@ -1489,6 +1492,7 @@ void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.logTextureOps = GetOr(tbl, "logTextureOps", ConfigDefaults::DEBUG_GLOBAL_LOG_TEXTURE_OPS);
     cfg.logGui = GetOr(tbl, "logGui", ConfigDefaults::DEBUG_GLOBAL_LOG_GUI);
     cfg.logInit = GetOr(tbl, "logInit", ConfigDefaults::DEBUG_GLOBAL_LOG_INIT);
+    cfg.logCursorTextures = GetOr(tbl, "logCursorTextures", ConfigDefaults::DEBUG_GLOBAL_LOG_CURSOR_TEXTURES);
 }
 
 void CursorConfigToToml(const CursorConfig& cfg, toml::table& out) {
@@ -1894,6 +1898,7 @@ void ConfigToToml(const Config& config, toml::table& out) {
     out.insert("windowsMouseSpeed", config.windowsMouseSpeed);
     out.insert("hideAnimationsInGame", config.hideAnimationsInGame);
     out.insert("limitCaptureFramerate", config.limitCaptureFramerate);
+    out.insert("obsFramerate", config.obsFramerate);
     out.insert("keyRepeatStartDelay", config.keyRepeatStartDelay);
     out.insert("keyRepeatDelay", config.keyRepeatDelay);
     out.insert("basicModeEnabled", config.basicModeEnabled);
@@ -2187,13 +2192,16 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                      "disableHookChaining",
                              "defaultMode",
                                                  "fontPath",
+                             "lang",
                                                  "fpsLimit",
                                                  "fpsLimitSleepThreshold",
+                             "mirrorMatchColorspace",
                                                  "allowCursorEscape",
                                                  "mouseSensitivity",
                                                  "windowsMouseSpeed",
                                                  "hideAnimationsInGame",
                                                  "limitCaptureFramerate",
+                             "obsFramerate",
                                                  "keyRepeatStartDelay",
                                                  "keyRepeatDelay",
                                                  "basicModeEnabled",
@@ -2251,9 +2259,9 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                               "modeSensitivityX",
                                               "modeSensitivityY" };
         std::vector<std::string> mirrorKeys = { "name",   "captureWidth", "captureHeight",    "input",
-                                                "output", "colors",       "colorSensitivity", "border",
-                                                "fps",    "rawOutput",    "colorPassthrough", "gradientOutput",
-                                                "gradient", "onlyOnMyScreen",
+                            "output", "colors",       "colorSensitivity", "border",
+                            "fps",    "rawOutput",    "colorPassthrough", "gradientOutput",
+                            "gradient", "onlyOnMyScreen",
                                                 "debug" };
         std::vector<std::string> mirrorGroupKeys = { "name", "output", "mirrorIds" };
         std::vector<std::string> imageKeys = { "name",           "path",      "x",           "y",          "scale",
@@ -2280,11 +2288,12 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                                        "pixelatedScaling",
                                                        "onlyOnMyScreen",
                                                        "fps",
+                                                       "searchInterval",
                                                        "captureMethod",
                                                        "forceUpdate",
                                                        "enableInteraction",
                                                        "border" };
-                                std::vector<std::string> browserOverlayKeys = { "name",
+        std::vector<std::string> browserOverlayKeys = { "name",
                                                         "url",
                                                         "customCss",
                                                         "browserWidth",
