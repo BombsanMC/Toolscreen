@@ -1,5 +1,6 @@
 #include "config_toml.h"
 #include "config_defaults.h"
+#include "common/expression_parser.h"
 #include "gui/gui.h"
 #include "runtime/logic_thread.h"
 #include "common/utils.h"
@@ -903,8 +904,12 @@ void ModeConfigToToml(const ModeConfig& cfg, toml::table& out) {
 
     const bool widthHasRelative = cfg.relativeWidth >= 0.0f && cfg.relativeWidth <= 1.0f;
     const bool heightHasRelative = cfg.relativeHeight >= 0.0f && cfg.relativeHeight <= 1.0f;
-    const bool widthIsDynamic = cfg.useRelativeSize && widthHasRelative;
-    const bool heightIsDynamic = cfg.useRelativeSize && heightHasRelative;
+    const bool widthUsesRelative = cfg.useRelativeSize && widthHasRelative;
+    const bool heightUsesRelative = cfg.useRelativeSize && heightHasRelative;
+    const bool widthUsesExpression = !widthUsesRelative && !cfg.widthExpr.empty();
+    const bool heightUsesExpression = !heightUsesRelative && !cfg.heightExpr.empty();
+    const bool widthIsDynamic = widthUsesExpression || widthUsesRelative;
+    const bool heightIsDynamic = heightUsesExpression || heightUsesRelative;
 
     int persistedWidth = cfg.width;
     int persistedHeight = cfg.height;
@@ -919,12 +924,20 @@ void ModeConfigToToml(const ModeConfig& cfg, toml::table& out) {
     if (persistedWidth < 1) persistedWidth = ConfigDefaults::MODE_WIDTH;
     if (persistedHeight < 1) persistedHeight = ConfigDefaults::MODE_HEIGHT;
 
-    out.insert("width", persistedWidth);
-    out.insert("height", persistedHeight);
+    if (widthUsesExpression) {
+        out.insert("width", cfg.widthExpr);
+    } else {
+        out.insert("width", persistedWidth);
+    }
+    if (heightUsesExpression) {
+        out.insert("height", cfg.heightExpr);
+    } else {
+        out.insert("height", persistedHeight);
+    }
 
     out.insert("useRelativeSize", cfg.useRelativeSize);
-    if (widthHasRelative) { out.insert("relativeWidth", cfg.relativeWidth); }
-    if (heightHasRelative) { out.insert("relativeHeight", cfg.relativeHeight); }
+    if (widthUsesRelative) { out.insert("relativeWidth", cfg.relativeWidth); }
+    if (heightUsesRelative) { out.insert("relativeHeight", cfg.relativeHeight); }
 
     toml::table bgTbl;
     BackgroundConfigToToml(cfg.background, bgTbl);
@@ -992,6 +1005,8 @@ void ModeConfigFromToml(const toml::table& tbl, ModeConfig& cfg) {
     cfg.useRelativeSize = false;
     cfg.relativeWidth = -1.0f;
     cfg.relativeHeight = -1.0f;
+    cfg.widthExpr.clear();
+    cfg.heightExpr.clear();
 
     bool widthIsPercentage = false;
     bool heightIsPercentage = false;
@@ -999,31 +1014,42 @@ void ModeConfigFromToml(const toml::table& tbl, ModeConfig& cfg) {
     int cachedScreenWidth = GetCachedWindowWidth();
     int cachedScreenHeight = GetCachedWindowHeight();
 
-    if (auto widthVal = GetNumericValue(tbl, "width")) {
-        if (*widthVal >= 0.0 && *widthVal <= 1.0) {
-            cfg.relativeWidth = static_cast<float>(*widthVal);
-            widthIsPercentage = true;
+    if (auto widthNode = tbl.get("width")) {
+        if (auto widthStr = widthNode->value<std::string>()) {
+            cfg.widthExpr = *widthStr;
+        } else if (auto widthVal = GetNumericValue(widthNode)) {
+            if (*widthVal >= 0.0 && *widthVal <= 1.0) {
+                cfg.relativeWidth = static_cast<float>(*widthVal);
+                widthIsPercentage = true;
 
-            if (cachedScreenWidth > 0) {
-                cfg.width = (std::max)(1, static_cast<int>(std::lround(cfg.relativeWidth * static_cast<float>(cachedScreenWidth))));
+                if (cachedScreenWidth > 0) {
+                    cfg.width = (std::max)(1, static_cast<int>(std::lround(cfg.relativeWidth * static_cast<float>(cachedScreenWidth))));
+                }
+            } else {
+                cfg.width = static_cast<int>(*widthVal);
             }
-        } else {
-            cfg.width = static_cast<int>(*widthVal);
         }
     }
 
-    if (auto heightVal = GetNumericValue(tbl, "height")) {
-        if (*heightVal >= 0.0 && *heightVal <= 1.0) {
-            cfg.relativeHeight = static_cast<float>(*heightVal);
-            heightIsPercentage = true;
+    if (auto heightNode = tbl.get("height")) {
+        if (auto heightStr = heightNode->value<std::string>()) {
+            cfg.heightExpr = *heightStr;
+        } else if (auto heightVal = GetNumericValue(heightNode)) {
+            if (*heightVal >= 0.0 && *heightVal <= 1.0) {
+                cfg.relativeHeight = static_cast<float>(*heightVal);
+                heightIsPercentage = true;
 
-            if (cachedScreenHeight > 0) {
-                cfg.height = (std::max)(1, static_cast<int>(std::lround(cfg.relativeHeight * static_cast<float>(cachedScreenHeight))));
+                if (cachedScreenHeight > 0) {
+                    cfg.height = (std::max)(1, static_cast<int>(std::lround(cfg.relativeHeight * static_cast<float>(cachedScreenHeight))));
+                }
+            } else {
+                cfg.height = static_cast<int>(*heightVal);
             }
-        } else {
-            cfg.height = static_cast<int>(*heightVal);
         }
     }
+
+    if (cfg.widthExpr.empty()) { cfg.widthExpr = GetStringOr(tbl, "widthExpr", ""); }
+    if (cfg.heightExpr.empty()) { cfg.heightExpr = GetStringOr(tbl, "heightExpr", ""); }
 
     if (tbl.contains("useRelativeSize") || tbl.contains("relativeWidth") || tbl.contains("relativeHeight")) {
         cfg.useRelativeSize = GetOr(tbl, "useRelativeSize", false);
@@ -1037,6 +1063,9 @@ void ModeConfigFromToml(const toml::table& tbl, ModeConfig& cfg) {
         cfg.useRelativeSize = true;
     }
 
+    if (!cfg.widthExpr.empty()) { cfg.relativeWidth = -1.0f; }
+    if (!cfg.heightExpr.empty()) { cfg.relativeHeight = -1.0f; }
+
     const bool hasRelativeWidth = cfg.relativeWidth >= 0.0f && cfg.relativeWidth <= 1.0f;
     const bool hasRelativeHeight = cfg.relativeHeight >= 0.0f && cfg.relativeHeight <= 1.0f;
     if (hasRelativeWidth || hasRelativeHeight) {
@@ -1048,6 +1077,13 @@ void ModeConfigFromToml(const toml::table& tbl, ModeConfig& cfg) {
     }
     if (hasRelativeHeight && cfg.height < 1 && cachedScreenHeight > 0) {
         cfg.height = (std::max)(1, static_cast<int>(std::lround(cfg.relativeHeight * static_cast<float>(cachedScreenHeight))));
+    }
+
+    if (!cfg.widthExpr.empty() && cachedScreenWidth > 0 && cachedScreenHeight > 0) {
+        cfg.width = (std::max)(1, EvaluateExpression(cfg.widthExpr, cachedScreenWidth, cachedScreenHeight, cfg.width));
+    }
+    if (!cfg.heightExpr.empty() && cachedScreenWidth > 0 && cachedScreenHeight > 0) {
+        cfg.height = (std::max)(1, EvaluateExpression(cfg.heightExpr, cachedScreenWidth, cachedScreenHeight, cfg.height));
     }
 
     cfg.manualWidth = (cfg.width > 0) ? cfg.width : ConfigDefaults::MODE_WIDTH;
@@ -2299,12 +2335,6 @@ std::vector<ModeConfig> GetDefaultModesFromEmbedded() {
                     mode.stretch.width = screenWidth;
                     mode.stretch.height = screenHeight;
                 }
-            }
-            else if (mode.id == "Thin") {
-                mode.height = screenHeight;
-            }
-            else if (mode.id == "Wide") {
-                mode.width = screenWidth;
             }
         }
 

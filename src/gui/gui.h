@@ -303,6 +303,8 @@ struct ModeConfig {
     bool useRelativeSize = false;
     float relativeWidth = 0.5f;
     float relativeHeight = 0.5f;
+    std::string widthExpr;
+    std::string heightExpr;
 
     BackgroundConfig background;
     std::vector<std::string> mirrorIds;

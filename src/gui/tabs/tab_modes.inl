@@ -80,6 +80,8 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 bool useManualPixelSize = !mode.useRelativeSize;
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##Fullscreen").c_str(), &useManualPixelSize)) {
                     mode.useRelativeSize = !useManualPixelSize;
+                    mode.widthExpr.clear();
+                    mode.heightExpr.clear();
                     if (mode.useRelativeSize) {
                         mode.relativeWidth = (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.width) / static_cast<float>(modeScreenW)));
                         mode.relativeHeight =
@@ -1550,6 +1552,8 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 bool useManualPixelSizeThin = !mode.useRelativeSize;
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##Thin").c_str(), &useManualPixelSizeThin)) {
                     mode.useRelativeSize = !useManualPixelSizeThin;
+                    mode.widthExpr.clear();
+                    mode.heightExpr.clear();
                     if (mode.useRelativeSize) {
                         mode.relativeWidth = (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.width) / static_cast<float>(screenWidth)));
                         mode.relativeHeight =
@@ -1978,6 +1982,8 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 bool useManualPixelSizeWide = !mode.useRelativeSize;
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##Wide").c_str(), &useManualPixelSizeWide)) {
                     mode.useRelativeSize = !useManualPixelSizeWide;
+                    mode.widthExpr.clear();
+                    mode.heightExpr.clear();
                     if (mode.useRelativeSize) {
                         mode.relativeWidth = (std::max)(0.01f, (std::min)(1.0f, static_cast<float>(mode.width) / static_cast<float>(screenWidth)));
                         mode.relativeHeight =
@@ -2460,6 +2466,8 @@ if (ImGui::BeginTabItem(trc("tabs.modes"))) {
                 bool useManualPixelSize = !mode.useRelativeSize;
                 if (ImGui::Checkbox((tr("modes.label.manual_pixel_size") + "##CustomMode").c_str(), &useManualPixelSize)) {
                     mode.useRelativeSize = !useManualPixelSize;
+                    mode.widthExpr.clear();
+                    mode.heightExpr.clear();
 
                     if (mode.useRelativeSize) {
                         float computedRelativeWidth = static_cast<float>(mode.width) / static_cast<float>(modeScreenW);

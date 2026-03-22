@@ -582,11 +582,13 @@ void ProcessPendingDimensionChange() {
                                                                : g_pendingDimensionChange.newWidth;
             mode->manualWidth = mode->width;
             mode->relativeWidth = -1.0f;
+            mode->widthExpr.clear();
         }
         if (g_pendingDimensionChange.newHeight > 0) {
             mode->height = g_pendingDimensionChange.newHeight;
             mode->manualHeight = mode->height;
             mode->relativeHeight = -1.0f;
+            mode->heightExpr.clear();
         }
 
         if (EqualsIgnoreCase(mode->id, "EyeZoom")) {
@@ -623,6 +625,8 @@ void ProcessPendingDimensionChange() {
                 preemptiveMode->useRelativeSize = false;
                 preemptiveMode->relativeWidth = -1.0f;
                 preemptiveMode->relativeHeight = -1.0f;
+                preemptiveMode->widthExpr.clear();
+                preemptiveMode->heightExpr.clear();
                 preemptiveWasResynced = true;
             }
 
