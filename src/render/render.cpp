@@ -4832,7 +4832,7 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
             request.modeId = modeToRender->id;
             request.isAnimating = isAnimating;
             request.overlayOpacity = 1.0f;
-            request.excludeOnlyOnMyScreen = false;
+            request.excludeOnlyOnMyScreen = true;
             request.skipAnimation = skipAnimation;
             request.relativeStretching = modeToRender->relativeStretching;
 
