@@ -475,7 +475,7 @@ struct KeyRebindsConfig {
     std::vector<KeyRebind> rebinds;
 };
 struct Config {
-    int configVersion = 2;
+    int configVersion = 3;
     std::vector<MirrorConfig> mirrors;
     std::vector<MirrorGroupConfig> mirrorGroups;
     std::vector<ImageConfig> images;

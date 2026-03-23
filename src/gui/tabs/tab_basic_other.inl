@@ -114,16 +114,6 @@ if (ImGui::BeginTabItem(trc("tabs.other"))) {
 
     ImGui::SeparatorText(trc("label.display_settings"));
 
-    ImGui::Text(trc("label.fps_limit"));
-    ImGui::SetNextItemWidth(300);
-    int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
-    if (ImGui::SliderInt("##FpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
-        g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
-        g_configIsDirty = true;
-    }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.fps_limit.advanced"));
-
     if (ImGui::Checkbox(trc("label.hide_animations_in_game"), &g_config.hideAnimationsInGame)) { g_configIsDirty = true; }
     ImGui::SameLine();
     HelpMarker(trc("tooltip.hide_animations_in_game"));

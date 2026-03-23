@@ -688,6 +688,13 @@ void LoadConfig() {
                 Log("Applied v2 migration: disableHookChaining=false");
             }
 
+            if (loadedConfigVersion < 3 && currentConfigVersion >= 3) {
+                g_config.fpsLimit = 0;
+                g_config.limitCaptureFramerate = false;
+                g_configIsDirty = true;
+                Log("Applied v3 migration: fpsLimit=0, limitCaptureFramerate=false");
+            }
+
             g_config.configVersion = currentConfigVersion;
             g_configIsDirty = true;
             Log("Config upgraded to version " + std::to_string(currentConfigVersion));

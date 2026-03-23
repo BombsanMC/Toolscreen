@@ -189,7 +189,7 @@ constexpr bool KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS = true;
 constexpr bool KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB = false;
 inline std::vector<DWORD> GetDefaultKeyRebindsToggleHotkey() { return {}; }
 
-constexpr int DEFAULT_CONFIG_VERSION = 2;
+constexpr int DEFAULT_CONFIG_VERSION = 3;
 inline const std::string CONFIG_DEFAULT_MODE = "Fullscreen";
 inline const std::string CONFIG_FONT_PATH = R"(c:\Windows\Fonts\Arial.ttf)";
 inline const std::string CONFIG_LANG = "en";
@@ -200,7 +200,7 @@ constexpr bool CONFIG_DISABLE_HOOK_CHAINING = false;
 constexpr float CONFIG_MOUSE_SENSITIVITY = 1.0f;
 constexpr int CONFIG_WINDOWS_MOUSE_SPEED = 0;
 constexpr bool CONFIG_HIDE_ANIMATIONS_IN_GAME = false;
-constexpr bool CONFIG_LIMIT_CAPTURE_FRAMERATE = true;
+constexpr bool CONFIG_LIMIT_CAPTURE_FRAMERATE = false;
 constexpr int CONFIG_OBS_FRAMERATE = 60;
 constexpr int CONFIG_KEY_REPEAT_START_DELAY = 0;
 constexpr int CONFIG_KEY_REPEAT_DELAY = 0;

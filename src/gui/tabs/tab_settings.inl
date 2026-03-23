@@ -27,25 +27,11 @@ if (ImGui::BeginTabItem(trc("tabs.settings"))) {
 
     ImGui::SeparatorText(trc("settings.performance"));
 
-    ImGui::Text(trc("label.fps_limit"));
-    ImGui::SetNextItemWidth(600);
-    int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
-    bool sliderActive = ImGui::IsItemActive() || ImGui::IsItemHovered();
-    if (ImGui::SliderInt("##fpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
-        g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
-        g_configIsDirty = true;
-    }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.fps_limit.advanced"));
-
     ImGui::Spacing();
     ImGui::SeparatorText(trc("settings.capture_streaming"));
     if (ImGui::Checkbox(trc("settings.hide_animations_in_game"), &g_config.hideAnimationsInGame)) { g_configIsDirty = true; }
     ImGui::SameLine();
     HelpMarker(trc("tooltip.hide_animations_in_game"));
-    if (ImGui::Checkbox(trc("settings.limit_capture_framerate"), &g_config.limitCaptureFramerate)) { g_configIsDirty = true; }
-    ImGui::SameLine();
-    HelpMarker(trc("settings.tooltip.limit_capture_framerate"));
 
     ImGui::Spacing();
     ImGui::SeparatorText(trc("hotkeys.window_hotkeys"));
@@ -162,6 +148,19 @@ if (ImGui::BeginTabItem(trc("tabs.settings"))) {
     } else {
         ImGui::SeparatorText(trc("settings.debug_options"));
         drawMirrorColorspaceSetting();
+        ImGui::Spacing();
+        ImGui::Text(trc("label.fps_limit"));
+        ImGui::SetNextItemWidth(300);
+        int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
+        if (ImGui::SliderInt("##debugFpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
+            g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
+            g_configIsDirty = true;
+        }
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.fps_limit.advanced"));
+        if (ImGui::Checkbox(trc("settings.limit_capture_framerate"), &g_config.limitCaptureFramerate)) { g_configIsDirty = true; }
+        ImGui::SameLine();
+        HelpMarker(trc("settings.tooltip.limit_capture_framerate"));
         ImGui::Spacing();
         if (ImGui::Checkbox(trc("settings.delay_rendering_until_finished"), &g_config.debug.delayRenderingUntilFinished)) { g_configIsDirty = true; }
         ImGui::SameLine();
