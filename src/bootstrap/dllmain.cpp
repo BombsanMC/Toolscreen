@@ -593,7 +593,7 @@ void ApplyKeyRepeatSettings() {
     int startDelay = g_config.keyRepeatStartDelay;
     int repeatDelay = g_config.keyRepeatDelay;
 
-    if (startDelay == 0 && repeatDelay == 0) {
+    if (startDelay == -1 && repeatDelay == -1) {
         if (g_filterKeysApplied.load()) {
             if (SystemParametersInfo(SPI_SETFILTERKEYS, sizeof(FILTERKEYS), &g_originalFilterKeys, 0)) {
                 Log("Restored original FILTERKEYS settings");
@@ -603,16 +603,16 @@ void ApplyKeyRepeatSettings() {
         return;
     }
 
-    if (startDelay < 0) startDelay = 0;
-    if (startDelay > 500) startDelay = 500;
-    if (repeatDelay < 0) repeatDelay = 0;
-    if (repeatDelay > 500) repeatDelay = 500;
+    if (startDelay < -1) startDelay = -1;
+    if (startDelay > 300) startDelay = 300;
+    if (repeatDelay < -1) repeatDelay = -1;
+    if (repeatDelay > 300) repeatDelay = 300;
 
     FILTERKEYS fk = { sizeof(FILTERKEYS) };
     fk.dwFlags = FKF_FILTERKEYSON;
-    fk.iWaitMSec = 0;
-    fk.iDelayMSec = (startDelay > 0) ? startDelay : g_originalFilterKeys.iDelayMSec;
-    fk.iRepeatMSec = (repeatDelay > 0) ? repeatDelay : g_originalFilterKeys.iRepeatMSec;
+    fk.iWaitMSec = 1;
+    fk.iDelayMSec = (startDelay >= 0) ? (startDelay == 0 ? 1 : startDelay) : g_originalFilterKeys.iDelayMSec;
+    fk.iRepeatMSec = (repeatDelay >= 0) ? (repeatDelay == 0 ? 1 : repeatDelay) : g_originalFilterKeys.iRepeatMSec;
     fk.iBounceMSec = 0;
 
     if (SystemParametersInfo(SPI_SETFILTERKEYS, sizeof(FILTERKEYS), &fk, 0)) {

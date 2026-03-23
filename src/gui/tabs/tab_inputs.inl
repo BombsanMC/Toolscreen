@@ -241,7 +241,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
             ImGui::Text(trc("inputs.key_repeat_start_delay"));
             ImGui::SetNextItemWidth(600);
             int startDelayValue = g_config.keyRepeatStartDelay;
-            if (ImGui::SliderInt("##keyRepeatStartDelay", &startDelayValue, 0, 500, startDelayValue == 0 ? trc("label.default") : "%d ms")) {
+            if (ImGui::SliderInt("##keyRepeatStartDelay", &startDelayValue, -1, 300, startDelayValue == -1 ? trc("label.auto") : "%d ms")) {
                 g_config.keyRepeatStartDelay = startDelayValue;
                 g_configIsDirty = true;
                 ApplyKeyRepeatSettings();
@@ -252,7 +252,7 @@ if (ImGui::BeginTabItem(trc("tabs.inputs"))) {
             ImGui::Text(trc("inputs.key_repeat_delay"));
             ImGui::SetNextItemWidth(600);
             int repeatDelayValue = g_config.keyRepeatDelay;
-            if (ImGui::SliderInt("##keyRepeatDelay", &repeatDelayValue, 0, 500, repeatDelayValue == 0 ? trc("label.default") : "%d ms")) {
+            if (ImGui::SliderInt("##keyRepeatDelay", &repeatDelayValue, -1, 300, repeatDelayValue == -1 ? trc("label.auto") : "%d ms")) {
                 g_config.keyRepeatDelay = repeatDelayValue;
                 g_configIsDirty = true;
                 ApplyKeyRepeatSettings();

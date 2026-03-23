@@ -516,8 +516,8 @@ struct Config {
     int obsFramerate = ConfigDefaults::CONFIG_OBS_FRAMERATE;
     KeyRebindsConfig keyRebinds;
     AppearanceConfig appearance;
-    int keyRepeatStartDelay = 0;
-    int keyRepeatDelay = 0;
+    int keyRepeatStartDelay = ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY;
+    int keyRepeatDelay = ConfigDefaults::CONFIG_KEY_REPEAT_DELAY;
     bool basicModeEnabled = false;
     bool restoreWindowedModeOnFullscreenExit = ConfigDefaults::CONFIG_RESTORE_WINDOWED_MODE_ON_FULLSCREEN_EXIT;
     bool disableFullscreenPrompt = false;
