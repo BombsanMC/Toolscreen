@@ -610,7 +610,7 @@ void ApplyKeyRepeatSettings() {
 
     FILTERKEYS fk = { sizeof(FILTERKEYS) };
     fk.dwFlags = FKF_FILTERKEYSON;
-    fk.iWaitMSec = 1;
+    fk.iWaitMSec = 0;
     fk.iDelayMSec = (startDelay >= 0) ? (startDelay == 0 ? 1 : startDelay) : g_originalFilterKeys.iDelayMSec;
     fk.iRepeatMSec = (repeatDelay >= 0) ? (repeatDelay == 0 ? 1 : repeatDelay) : g_originalFilterKeys.iRepeatMSec;
     fk.iBounceMSec = 0;
