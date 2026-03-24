@@ -964,6 +964,8 @@ void ImageConfigToToml(const ImageConfig& cfg, toml::table& out) {
     out.insert("crop_bottom", cfg.crop_bottom);
     out.insert("crop_left", cfg.crop_left);
     out.insert("crop_right", cfg.crop_right);
+    out.insert("cropToWidth", cfg.cropToWidth);
+    out.insert("cropToHeight", cfg.cropToHeight);
     out.insert("enableColorKey", cfg.enableColorKey);
 
     toml::array colorKeysArr;
@@ -1002,6 +1004,8 @@ void ImageConfigFromToml(const toml::table& tbl, ImageConfig& cfg) {
     cfg.crop_bottom = GetOr(tbl, "crop_bottom", ConfigDefaults::IMAGE_CROP_BOTTOM);
     cfg.crop_left = GetOr(tbl, "crop_left", ConfigDefaults::IMAGE_CROP_LEFT);
     cfg.crop_right = GetOr(tbl, "crop_right", ConfigDefaults::IMAGE_CROP_RIGHT);
+    cfg.cropToWidth = GetOr(tbl, "cropToWidth", false);
+    cfg.cropToHeight = GetOr(tbl, "cropToHeight", false);
     cfg.enableColorKey = GetOr(tbl, "enableColorKey", ConfigDefaults::IMAGE_ENABLE_COLOR_KEY);
 
     cfg.colorKeys.clear();
@@ -1039,6 +1043,8 @@ void WindowOverlayConfigToToml(const WindowOverlayConfig& cfg, toml::table& out)
     out.insert("crop_bottom", cfg.crop_bottom);
     out.insert("crop_left", cfg.crop_left);
     out.insert("crop_right", cfg.crop_right);
+    out.insert("cropToWidth", cfg.cropToWidth);
+    out.insert("cropToHeight", cfg.cropToHeight);
     out.insert("enableColorKey", cfg.enableColorKey);
 
     toml::array colorKeysArr;
@@ -1082,6 +1088,8 @@ void WindowOverlayConfigFromToml(const toml::table& tbl, WindowOverlayConfig& cf
     cfg.crop_bottom = GetOr(tbl, "crop_bottom", ConfigDefaults::IMAGE_CROP_BOTTOM);
     cfg.crop_left = GetOr(tbl, "crop_left", ConfigDefaults::IMAGE_CROP_LEFT);
     cfg.crop_right = GetOr(tbl, "crop_right", ConfigDefaults::IMAGE_CROP_RIGHT);
+    cfg.cropToWidth = GetOr(tbl, "cropToWidth", false);
+    cfg.cropToHeight = GetOr(tbl, "cropToHeight", false);
     cfg.enableColorKey = GetOr(tbl, "enableColorKey", ConfigDefaults::IMAGE_ENABLE_COLOR_KEY);
 
     cfg.colorKeys.clear();
@@ -1129,6 +1137,8 @@ void BrowserOverlayConfigToToml(const BrowserOverlayConfig& cfg, toml::table& ou
     out.insert("crop_bottom", cfg.crop_bottom);
     out.insert("crop_left", cfg.crop_left);
     out.insert("crop_right", cfg.crop_right);
+    out.insert("cropToWidth", cfg.cropToWidth);
+    out.insert("cropToHeight", cfg.cropToHeight);
     out.insert("enableColorKey", cfg.enableColorKey);
 
     toml::array colorKeysArr;
@@ -1174,6 +1184,8 @@ void BrowserOverlayConfigFromToml(const toml::table& tbl, BrowserOverlayConfig& 
     cfg.crop_bottom = GetOr(tbl, "crop_bottom", ConfigDefaults::IMAGE_CROP_BOTTOM);
     cfg.crop_left = GetOr(tbl, "crop_left", ConfigDefaults::IMAGE_CROP_LEFT);
     cfg.crop_right = GetOr(tbl, "crop_right", ConfigDefaults::IMAGE_CROP_RIGHT);
+    cfg.cropToWidth = GetOr(tbl, "cropToWidth", false);
+    cfg.cropToHeight = GetOr(tbl, "cropToHeight", false);
     cfg.enableColorKey = GetOr(tbl, "enableColorKey", ConfigDefaults::BROWSER_OVERLAY_ENABLE_COLOR_KEY);
 
     cfg.colorKeys.clear();
@@ -2195,6 +2207,16 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
                 config.sensitivityHotkeys.push_back(sensHotkey);
             }
         }
+    }
+
+    if (originalConfigVersion < 5) {
+        for (auto& wo : config.windowOverlays) {
+            wo.crop_top *= 2;
+            wo.crop_bottom *= 2;
+            wo.crop_left *= 2;
+            wo.crop_right *= 2;
+        }
+        config.configVersion = ConfigDefaults::DEFAULT_CONFIG_VERSION;
     }
 }
 

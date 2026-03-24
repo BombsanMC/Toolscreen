@@ -216,6 +216,8 @@ struct ImageConfig {
     int height = 0;
     std::string relativeTo = "topLeftScreen";
     int crop_top = 0, crop_bottom = 0, crop_left = 0, crop_right = 0;
+    bool cropToWidth = false;
+    bool cropToHeight = false;
     bool enableColorKey = false;
     std::vector<ColorKeyConfig> colorKeys;
     Color colorKey;
@@ -236,6 +238,8 @@ struct WindowOverlayConfig {
     float scale = 1.0f;
     std::string relativeTo = "topLeftScreen";
     int crop_top = 0, crop_bottom = 0, crop_left = 0, crop_right = 0;
+    bool cropToWidth = false;
+    bool cropToHeight = false;
     bool enableColorKey = false;
     std::vector<ColorKeyConfig> colorKeys;
     Color colorKey;
@@ -261,6 +265,8 @@ struct BrowserOverlayConfig {
     float scale = 1.0f;
     std::string relativeTo = "topLeftScreen";
     int crop_top = 0, crop_bottom = 0, crop_left = 0, crop_right = 0;
+    bool cropToWidth = false;
+    bool cropToHeight = false;
     bool enableColorKey = false;
     std::vector<ColorKeyConfig> colorKeys;
     float opacity = 1.0f;
@@ -276,6 +282,18 @@ struct BrowserOverlayConfig {
     int reloadInterval = 0;
     BorderConfig border;
 };
+
+struct ResolvedCrop {
+    int top, bottom, left, right;
+};
+
+inline ResolvedCrop ResolveCrop(int crop_top, int crop_bottom, int crop_left, int crop_right,
+                                bool cropToWidth, bool cropToHeight, int sourceW, int sourceH) {
+    int rt = crop_top, rb = crop_bottom, rl = crop_left, rr = crop_right;
+    if (cropToHeight && sourceH > 0) rb = (std::max)(0, sourceH - crop_top - crop_bottom);
+    if (cropToWidth && sourceW > 0) rr = (std::max)(0, sourceW - crop_left - crop_right);
+    return { rt, rb, rl, rr };
+}
 
 enum class GameTransitionType {
     Cut,

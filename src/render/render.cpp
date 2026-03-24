@@ -1007,8 +1007,10 @@ static void ScaleViewportRelativeImageSize(int baseW, int baseH, bool relativeSt
 }
 
 static void ResolveConfiguredImageDimensions(const ImageConfig& img, int sourceWidth, int sourceHeight, int& outW, int& outH) {
-    int croppedWidth = sourceWidth - img.crop_left - img.crop_right;
-    int croppedHeight = sourceHeight - img.crop_top - img.crop_bottom;
+    auto c = ResolveCrop(img.crop_top, img.crop_bottom, img.crop_left, img.crop_right,
+                         img.cropToWidth, img.cropToHeight, sourceWidth, sourceHeight);
+    int croppedWidth = sourceWidth - c.left - c.right;
+    int croppedHeight = sourceHeight - c.top - c.bottom;
     croppedWidth = (std::max)(1, croppedWidth);
     croppedHeight = (std::max)(1, croppedHeight);
 
@@ -1053,10 +1055,12 @@ static void CalculateWindowOverlayDimensionsUnsafe(const WindowOverlayConfig& ov
     if (it != g_windowOverlayCache.end() && it->second) {
         int texWidth = it->second->glTextureWidth;
         int texHeight = it->second->glTextureHeight;
-        int croppedWidth = texWidth - overlay.crop_left - overlay.crop_right;
-        int croppedHeight = texHeight - overlay.crop_top - overlay.crop_bottom;
-        outW = static_cast<int>(croppedWidth * overlay.scale);
-        outH = static_cast<int>(croppedHeight * overlay.scale);
+        auto cc = ResolveCrop(overlay.crop_top, overlay.crop_bottom, overlay.crop_left, overlay.crop_right,
+                              overlay.cropToWidth, overlay.cropToHeight, texWidth, texHeight);
+        int croppedW = (std::max)(1, texWidth - cc.left - cc.right);
+        int croppedH = (std::max)(1, texHeight - cc.top - cc.bottom);
+        outW = static_cast<int>(croppedW * overlay.scale);
+        outH = static_cast<int>(croppedH * overlay.scale);
     } else {
         outW = static_cast<int>(100 * overlay.scale);
         outH = static_cast<int>(100 * overlay.scale);
@@ -3540,10 +3544,12 @@ static void RenderImagesDirect(const std::vector<ImageConfig>& activeImages, int
 
         const float invW = (texWidth > 0) ? (1.0f / texWidth) : 0.0f;
         const float invH = (texHeight > 0) ? (1.0f / texHeight) : 0.0f;
-        float tu1 = conf.crop_left * invW;
-        float tu2 = (texWidth - conf.crop_right) * invW;
-        float tv1 = conf.crop_bottom * invH;
-        float tv2 = (texHeight - conf.crop_top) * invH;
+        auto cc = ResolveCrop(conf.crop_top, conf.crop_bottom, conf.crop_left, conf.crop_right,
+                              conf.cropToWidth, conf.cropToHeight, texWidth, texHeight);
+        float tu1 = cc.left * invW;
+        float tu2 = (texWidth - cc.right) * invW;
+        float tv1 = cc.bottom * invH;
+        float tv2 = (texHeight - cc.top) * invH;
         float verts[] = { nx1, ny1, tu1, tv1, nx2, ny1, tu2, tv1, nx2, ny2, tu2, tv2,
                           nx1, ny1, tu1, tv1, nx2, ny2, tu2, tv2, nx1, ny2, tu1, tv2 };
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
@@ -3626,10 +3632,10 @@ static void RenderWindowOverlaysDirect(const std::vector<WindowOverlayConfig>& o
 
         if (entry.glTextureId == 0) continue;
 
-        int croppedW = entry.glTextureWidth - conf.crop_left - conf.crop_right;
-        int croppedH = entry.glTextureHeight - conf.crop_top - conf.crop_bottom;
-        croppedW = (std::max)(1, croppedW);
-        croppedH = (std::max)(1, croppedH);
+        auto cc = ResolveCrop(conf.crop_top, conf.crop_bottom, conf.crop_left, conf.crop_right,
+                              conf.cropToWidth, conf.cropToHeight, entry.glTextureWidth, entry.glTextureHeight);
+        int croppedW = (std::max)(1, entry.glTextureWidth - cc.left - cc.right);
+        int croppedH = (std::max)(1, entry.glTextureHeight - cc.top - cc.bottom);
         int displayW = (std::max)(1, static_cast<int>(croppedW * conf.scale));
         int displayH = (std::max)(1, static_cast<int>(croppedH * conf.scale));
 
@@ -3691,10 +3697,10 @@ static void RenderWindowOverlaysDirect(const std::vector<WindowOverlayConfig>& o
 
         glUniform1i(g_imageRenderShaderLocs.enableColorKey, 0);
         glUniform1f(g_imageRenderShaderLocs.opacity, effectiveOpacity);
-        float tu1 = static_cast<float>(conf.crop_left) / entry.glTextureWidth;
-        float tv1 = static_cast<float>(conf.crop_top) / entry.glTextureHeight;
-        float tu2 = static_cast<float>(entry.glTextureWidth - conf.crop_right) / entry.glTextureWidth;
-        float tv2 = static_cast<float>(entry.glTextureHeight - conf.crop_bottom) / entry.glTextureHeight;
+        float tu1 = static_cast<float>(cc.left) / entry.glTextureWidth;
+        float tv1 = static_cast<float>(cc.top) / entry.glTextureHeight;
+        float tu2 = static_cast<float>(entry.glTextureWidth - cc.right) / entry.glTextureWidth;
+        float tv2 = static_cast<float>(entry.glTextureHeight - cc.bottom) / entry.glTextureHeight;
         float verts[] = { nx1, ny1, tu1, tv2, nx2, ny1, tu2, tv2, nx2, ny2, tu2, tv1,
                           nx1, ny1, tu1, tv2, nx2, ny2, tu2, tv1, nx1, ny2, tu1, tv1 };
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
@@ -3739,8 +3745,10 @@ static void RenderBrowserOverlaysDirect(const std::vector<BrowserOverlayConfig>&
         BrowserOverlayTextureFrame frame{};
         if (!PrepareBrowserOverlayTexture(conf, frame)) continue;
 
-        int croppedW = frame.textureWidth - conf.crop_left - conf.crop_right;
-        int croppedH = frame.textureHeight - conf.crop_top - conf.crop_bottom;
+        auto cc = ResolveCrop(conf.crop_top, conf.crop_bottom, conf.crop_left, conf.crop_right,
+                              conf.cropToWidth, conf.cropToHeight, frame.textureWidth, frame.textureHeight);
+        int croppedW = frame.textureWidth - cc.left - cc.right;
+        int croppedH = frame.textureHeight - cc.top - cc.bottom;
         croppedW = (std::max)(1, croppedW);
         croppedH = (std::max)(1, croppedH);
         int displayW = (std::max)(1, static_cast<int>(croppedW * conf.scale));
@@ -3812,10 +3820,10 @@ static void RenderBrowserOverlaysDirect(const std::vector<BrowserOverlayConfig>&
             glUniform1fv(g_imageRenderShaderLocs.sensitivities, numKeys, sensitivities);
         }
         glUniform1f(g_imageRenderShaderLocs.opacity, effectiveOpacity);
-        float tu1 = static_cast<float>(conf.crop_left) / frame.textureWidth;
-        float tv1 = static_cast<float>(conf.crop_top) / frame.textureHeight;
-        float tu2 = static_cast<float>(frame.textureWidth - conf.crop_right) / frame.textureWidth;
-        float tv2 = static_cast<float>(frame.textureHeight - conf.crop_bottom) / frame.textureHeight;
+        float tu1 = static_cast<float>(cc.left) / frame.textureWidth;
+        float tv1 = static_cast<float>(cc.top) / frame.textureHeight;
+        float tu2 = static_cast<float>(frame.textureWidth - cc.right) / frame.textureWidth;
+        float tv2 = static_cast<float>(frame.textureHeight - cc.bottom) / frame.textureHeight;
         float verts[] = { nx1, ny1, tu1, tv2, nx2, ny1, tu2, tv2, nx2, ny2, tu2, tv1,
                           nx1, ny1, tu1, tv2, nx2, ny2, tu2, tv1, nx1, ny2, tu1, tv1 };
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
@@ -6412,8 +6420,10 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
                             continue;
                         }
 
-                        int croppedW = frame.textureWidth - conf.crop_left - conf.crop_right;
-                        int croppedH = frame.textureHeight - conf.crop_top - conf.crop_bottom;
+                        auto cc = ResolveCrop(conf.crop_top, conf.crop_bottom, conf.crop_left, conf.crop_right,
+                                              conf.cropToWidth, conf.cropToHeight, frame.textureWidth, frame.textureHeight);
+                        int croppedW = frame.textureWidth - cc.left - cc.right;
+                        int croppedH = frame.textureHeight - cc.top - cc.bottom;
                         croppedW = (std::max)(1, croppedW);
                         croppedH = (std::max)(1, croppedH);
                         int displayW = (std::max)(1, static_cast<int>(croppedW * conf.scale));
