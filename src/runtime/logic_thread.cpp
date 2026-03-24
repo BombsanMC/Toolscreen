@@ -383,9 +383,6 @@ int GetCachedWindowWidth() {
             w = tmpW;
         }
     }
-    if(w == 0){
-        Log("Warning: Window width is 0");
-    }
     return w;
 }
 
@@ -402,9 +399,6 @@ int GetCachedWindowHeight() {
             s_cachedScreenHeight.store(tmpH, std::memory_order_relaxed);
             h = tmpH;
         }
-    }
-    if(h == 0){
-        Log("Warning: Window height is 0");
     }
     return h;
 }
