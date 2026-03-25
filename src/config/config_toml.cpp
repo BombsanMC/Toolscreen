@@ -2060,10 +2060,9 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
     config.obsFramerate = ClampObsFramerateConfigValue(GetOr(tbl, "obsFramerate", ConfigDefaults::CONFIG_OBS_FRAMERATE));
     config.keyRepeatStartDelay = ClampKeyRepeatConfigValue(GetOr(tbl, "keyRepeatStartDelay", ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY));
     config.keyRepeatDelay = ClampKeyRepeatConfigValue(GetOr(tbl, "keyRepeatDelay", ConfigDefaults::CONFIG_KEY_REPEAT_DELAY));
-    if (config.configVersion < ConfigDefaults::DEFAULT_CONFIG_VERSION) {
+    if (originalConfigVersion < ConfigDefaults::DEFAULT_CONFIG_VERSION) {
         if (config.keyRepeatStartDelay == 0) { config.keyRepeatStartDelay = ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY; }
         if (config.keyRepeatDelay == 0) { config.keyRepeatDelay = ConfigDefaults::CONFIG_KEY_REPEAT_DELAY; }
-        config.configVersion = ConfigDefaults::DEFAULT_CONFIG_VERSION;
     }
     config.basicModeEnabled = GetOr(tbl, "basicModeEnabled", ConfigDefaults::CONFIG_BASIC_MODE_ENABLED);
     config.restoreWindowedModeOnFullscreenExit =
@@ -2217,7 +2216,6 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
             wo.crop_left *= 2;
             wo.crop_right *= 2;
         }
-        config.configVersion = ConfigDefaults::DEFAULT_CONFIG_VERSION;
     }
 }
 
