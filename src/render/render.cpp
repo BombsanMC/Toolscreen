@@ -4890,14 +4890,19 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
                 request.toH = finalH;
             }
 
-            request.isTransitioningFromEyeZoom = g_isTransitioningFromEyeZoom.load(std::memory_order_acquire);
+            const bool overlayAnimationsEnabled = transitionState.active && transitionState.overlayTransition != OverlayTransitionType::Cut;
+
+            request.isTransitioningFromEyeZoom =
+                overlayAnimationsEnabled && g_isTransitioningFromEyeZoom.load(std::memory_order_acquire);
             request.shouldRenderGui = g_shouldRenderGui.load(std::memory_order_relaxed);
             request.showPerformanceOverlay = false;
             request.showProfiler = false;
-            request.showEyeZoom = g_showEyeZoom.load(std::memory_order_relaxed) ||
+            request.showEyeZoom = EqualsIgnoreCase(request.modeId, "EyeZoom") ||
                                   (request.isTransitioningFromEyeZoom && !request.skipAnimation);
             request.eyeZoomFadeOpacity = g_eyeZoomFadeOpacity.load(std::memory_order_relaxed);
-            request.eyeZoomAnimatedViewportX = skipAnimation ? -1 : g_eyeZoomAnimatedViewportX.load(std::memory_order_relaxed);
+            request.eyeZoomAnimatedViewportX = (skipAnimation || !overlayAnimationsEnabled)
+                                                  ? -1
+                                                  : g_eyeZoomAnimatedViewportX.load(std::memory_order_relaxed);
             request.eyeZoomSnapshotTexture = GetEyeZoomSnapshotTexture();
             request.eyeZoomSnapshotWidth = GetEyeZoomSnapshotWidth();
             request.eyeZoomSnapshotHeight = GetEyeZoomSnapshotHeight();
@@ -4917,7 +4922,7 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
             request.fromSlideMirrorsIn = fromMode && fromMode->slideMirrorsIn;
             request.toSlideMirrorsIn = modeToRender->slideMirrorsIn;
             request.mirrorSlideProgress =
-                (transitionState.active && transitionState.moveProgress < 1.0f) ? transitionState.moveProgress : 1.0f;
+                (overlayAnimationsEnabled && transitionState.moveProgress < 1.0f) ? transitionState.moveProgress : 1.0f;
             request.allowMirrorCaptureReuse = true;
             request.mirrorCaptureFrameTag = s_sameThreadMirrorCaptureFrameTag;
         }
@@ -6514,14 +6519,18 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
             target.toH = currentGeo.finalH;
         }
 
-        target.isTransitioningFromEyeZoom = g_isTransitioningFromEyeZoom.load(std::memory_order_acquire);
+        const bool overlayAnimationsEnabled = transitionState.active && transitionState.overlayTransition != OverlayTransitionType::Cut;
+
+        target.isTransitioningFromEyeZoom = overlayAnimationsEnabled && g_isTransitioningFromEyeZoom.load(std::memory_order_acquire);
         target.shouldRenderGui = g_shouldRenderGui.load(std::memory_order_relaxed);
         target.showPerformanceOverlay = g_showPerformanceOverlay.load(std::memory_order_relaxed);
         target.showProfiler = g_showProfiler.load(std::memory_order_relaxed);
-        target.showEyeZoom = g_showEyeZoom.load(std::memory_order_relaxed) ||
+        target.showEyeZoom = EqualsIgnoreCase(target.modeId, "EyeZoom") ||
                      (target.isTransitioningFromEyeZoom && !target.skipAnimation);
         target.eyeZoomFadeOpacity = g_eyeZoomFadeOpacity.load(std::memory_order_relaxed);
-        target.eyeZoomAnimatedViewportX = skipAnimation ? -1 : g_eyeZoomAnimatedViewportX.load(std::memory_order_relaxed);
+        target.eyeZoomAnimatedViewportX = (skipAnimation || !overlayAnimationsEnabled)
+                             ? -1
+                             : g_eyeZoomAnimatedViewportX.load(std::memory_order_relaxed);
         target.eyeZoomSnapshotTexture = GetEyeZoomSnapshotTexture();
         target.eyeZoomSnapshotWidth = GetEyeZoomSnapshotWidth();
         target.eyeZoomSnapshotHeight = GetEyeZoomSnapshotHeight();
@@ -6546,7 +6555,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
         }
         target.toSlideMirrorsIn = modeToRender->slideMirrorsIn;
         target.mirrorSlideProgress =
-            (transitionState.active && transitionState.moveProgress < 1.0f) ? transitionState.moveProgress : 1.0f;
+            (overlayAnimationsEnabled && transitionState.moveProgress < 1.0f) ? transitionState.moveProgress : 1.0f;
     };
 
     const uint64_t mirrorCaptureFrameTag = BeginSameThreadMirrorCaptureFrame();
@@ -7068,8 +7077,9 @@ void StartModeTransition(const std::string& fromModeId, const std::string& toMod
     bool transitioningFromEyeZoom = EqualsIgnoreCase(fromModeId, "EyeZoom");
     auto transitionSnap = GetConfigSnapshot();
     const ModeConfig* sourceMode = transitionSnap ? GetModeFromSnapshot(*transitionSnap, fromModeId) : nullptr;
-    const bool preserveEyeZoomSlideOutDuration =
-        transitioningFromEyeZoom && !transitioningToEyeZoom && transitionSnap && transitionSnap->eyezoom.slideMirrorsIn;
+    const bool preserveEyeZoomSlideOutDuration = transitioningFromEyeZoom && !transitioningToEyeZoom && transitionSnap &&
+                                                 transitionSnap->eyezoom.slideMirrorsIn &&
+                                                 toMode.overlayTransition != OverlayTransitionType::Cut;
 
     bool allCutToFullscreen = transitioningToFullscreen && toMode.gameTransition == GameTransitionType::Cut;
     bool allCutWithFirstFrameProtection = isAllCutTransition && !transitioningToFullscreen;
