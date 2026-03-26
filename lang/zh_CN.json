@@ -334,7 +334,7 @@
     "label.font_path": "字体路径：",
     "label.formatted_fps_limit": "{} FPS",
     "label.fps": "FPS",
-    "label.fps_limit": "FPS 限制：",
+    "label.fps_limit": "FPS 限制",
     "label.height": "高度",
     "label.hidden": "隐藏",
     "label.hide_animations_in_game": "在游戏中隐藏动画",

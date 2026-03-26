@@ -31,6 +31,34 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.settings"))) {
     ImGui::SameLine();
     HelpMarker(trc("tooltip.hide_animations_in_game"));
 
+    bool driverInstalled = IsVirtualCameraDriverInstalled();
+    bool inUseByOBS = driverInstalled && IsVirtualCameraInUseByOBS();
+    ImGui::BeginDisabled(!driverInstalled || inUseByOBS);
+    bool vcEnabled = g_config.debug.virtualCameraEnabled;
+    if (ImGui::Checkbox(trc("settings.enable_virtual_camera"), &vcEnabled)) {
+        g_config.debug.virtualCameraEnabled = vcEnabled;
+        g_configIsDirty = true;
+        if (vcEnabled) {
+            uint32_t vcWidth = 0;
+            uint32_t vcHeight = 0;
+            if (GetPreferredVirtualCameraResolution(vcWidth, vcHeight)) {
+                StartVirtualCamera(vcWidth, vcHeight);
+            }
+        } else {
+            StopVirtualCamera();
+        }
+    }
+
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!driverInstalled) {
+        ImGui::TextDisabled(trc("settings.virtual.camera_not_installed"));
+    } else if (inUseByOBS) {
+        ImGui::TextDisabled(trc("settings.virtual.camera_in_use"));
+    } else {
+        HelpMarker(trc("settings.tooltip.virtual_camera"));
+    }
+
     ImGui::Spacing();
     ImGui::SeparatorText(trc("hotkeys.window_hotkeys"));
 
@@ -87,38 +115,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.settings"))) {
     ImGui::SameLine();
     HelpMarker("Disables the configure toast prompt (toast1) shown in windowed mode.");*/
 
-    bool driverInstalled = IsVirtualCameraDriverInstalled();
-    bool inUseByOBS = driverInstalled && IsVirtualCameraInUseByOBS();
-    ImGui::BeginDisabled(!driverInstalled || inUseByOBS);
-    bool vcEnabled = g_config.debug.virtualCameraEnabled;
-    if (ImGui::Checkbox(trc("settings.enable_virtual_camera"), &vcEnabled)) {
-        g_config.debug.virtualCameraEnabled = vcEnabled;
-        g_configIsDirty = true;
-        if (vcEnabled) {
-            uint32_t vcWidth = 0;
-            uint32_t vcHeight = 0;
-            if (GetPreferredVirtualCameraResolution(vcWidth, vcHeight)) {
-                StartVirtualCamera(vcWidth, vcHeight);
-            }
-        } else {
-            StopVirtualCamera();
-        }
-    }
-
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (!driverInstalled) {
-        ImGui::TextDisabled(trc("settings.virtual.camera_not_installed"));
-    } else if (inUseByOBS) {
-        ImGui::TextDisabled(trc("settings.virtual.camera_in_use"));
-    } else {
-        HelpMarker(trc("settings.tooltip.virtual_camera"));
-    }
-
     ImGui::Spacing();
+    ImGui::Text(trc("settings.video_cache_budget_mib"));
     ImGui::SetNextItemWidth(300);
     int videoCacheBudgetMiB = g_config.debug.videoCacheBudgetMiB;
-    if (ImGui::SliderInt(trc("settings.video_cache_budget_mib"), &videoCacheBudgetMiB, 0, 2048,
+    if (ImGui::SliderInt("##videoCacheBudgetMiB", &videoCacheBudgetMiB, 0, 2048,
                          videoCacheBudgetMiB == 0 ? trc("label.disabled") : "%d MiB")) {
         g_config.debug.videoCacheBudgetMiB = videoCacheBudgetMiB;
         g_configIsDirty = true;

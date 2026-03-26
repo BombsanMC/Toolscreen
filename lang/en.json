@@ -334,7 +334,7 @@
     "label.font_path": "Font Path:",
     "label.formatted_fps_limit": "{} fps",
     "label.fps": "FPS",
-    "label.fps_limit": "FPS Limit:",
+    "label.fps_limit": "FPS Limit",
     "label.height": "Height",
     "label.hidden": "Hidden",
     "label.hide_animations_in_game": "Hide animations in game",
