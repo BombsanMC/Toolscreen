@@ -289,6 +289,12 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
             ImGui::SameLine();
             HelpMarker(trc("inputs.tooltip.allow_system_alt_tab"));
 
+            if (ImGui::Checkbox(trc("inputs.allow_system_alt_f4"), &g_config.keyRebinds.allowSystemAltF4)) {
+                g_configIsDirty = true;
+            }
+            ImGui::SameLine();
+            HelpMarker(trc("inputs.tooltip.allow_system_alt_f4"));
+
             const ImVec4 rebindActiveGreen = ImVec4(0.20f, 1.00f, 0.20f, 1.00f);
             const ImVec4 rebindDisabledRed = ImVec4(1.00f, 0.20f, 0.20f, 1.00f);
             ImGui::TextDisabled(trc("label.status"));

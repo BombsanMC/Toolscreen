@@ -1831,6 +1831,7 @@ void KeyRebindsConfigToToml(const KeyRebindsConfig& cfg, toml::table& out) {
     out.insert("enabled", cfg.enabled);
     out.insert("resolveRebindTargetsForHotkeys", cfg.resolveRebindTargetsForHotkeys);
     out.insert("allowSystemAltTab", cfg.allowSystemAltTab);
+    out.insert("allowSystemAltF4", cfg.allowSystemAltF4);
 
     toml::array toggleHotkeyArr;
     for (const auto& key : cfg.toggleHotkey) { toggleHotkeyArr.push_back(static_cast<int64_t>(key)); }
@@ -1850,6 +1851,7 @@ void KeyRebindsConfigFromToml(const toml::table& tbl, KeyRebindsConfig& cfg) {
     cfg.resolveRebindTargetsForHotkeys =
         GetOr(tbl, "resolveRebindTargetsForHotkeys", ConfigDefaults::KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS);
     cfg.allowSystemAltTab = GetOr(tbl, "allowSystemAltTab", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB);
+    cfg.allowSystemAltF4 = GetOr(tbl, "allowSystemAltF4", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_F4);
 
     cfg.toggleHotkey.clear();
     const bool hasToggleHotkey = tbl.contains("toggleHotkey");
