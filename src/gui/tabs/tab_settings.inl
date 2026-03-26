@@ -69,6 +69,18 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.settings"))) {
     ImGui::SameLine();
     HelpMarker(trc("settings.tooltip.restore_windowed_mode_on_fullscreen_exit"));
 
+    ImGui::Spacing();
+    ImGui::SeparatorText(trc("settings.performance"));
+    ImGui::Text(trc("label.fps_limit"));
+    ImGui::SetNextItemWidth(300);
+    int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
+    if (ImGui::SliderInt("##fpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
+        g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
+        g_configIsDirty = true;
+    }
+    ImGui::SameLine();
+    HelpMarker(trc("tooltip.fps_limit.advanced"));
+
 /*    if (ImGui::Checkbox("Disable Fullscreen Prompt", &g_config.disableFullscreenPrompt)) { g_configIsDirty = true; }
     ImGui::SameLine();
     HelpMarker("Disables the fullscreen toast prompt (toast2).\n"
@@ -266,15 +278,6 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.settings"))) {
         ImGui::SeparatorText(trc("settings.debug_options"));
         drawMirrorColorspaceSetting();
         ImGui::Spacing();
-        ImGui::Text(trc("label.fps_limit"));
-        ImGui::SetNextItemWidth(300);
-        int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
-        if (ImGui::SliderInt("##debugFpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
-            g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
-            g_configIsDirty = true;
-        }
-        ImGui::SameLine();
-        HelpMarker(trc("tooltip.fps_limit.advanced"));
         if (ImGui::Checkbox(trc("settings.limit_capture_framerate"), &g_config.limitCaptureFramerate)) { g_configIsDirty = true; }
         ImGui::SameLine();
         HelpMarker(trc("settings.tooltip.limit_capture_framerate"));
