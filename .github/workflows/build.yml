@@ -65,6 +65,7 @@ jobs:
           organization-id: '0126c615-e5f1-4fed-a438-6b8de149c8f4'
           project-slug: 'Toolscreen'
           signing-policy-slug: 'test-signing'
+          artifact-configuration-slug: 'dll'
           github-artifact-id: ${{ steps.signpath_dll_upload.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: out/signpath-dll-output
@@ -155,6 +156,7 @@ jobs:
           organization-id: '0126c615-e5f1-4fed-a438-6b8de149c8f4'
           project-slug: 'Toolscreen'
           signing-policy-slug: 'test-signing'
+          artifact-configuration-slug: 'installer'
           github-artifact-id: ${{ steps.signpath_installer_upload.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: out/signpath-installer-exe-output
@@ -194,6 +196,7 @@ jobs:
           organization-id: '0126c615-e5f1-4fed-a438-6b8de149c8f4'
           project-slug: 'Toolscreen'
           signing-policy-slug: 'test-signing'
+          artifact-configuration-slug: 'downloader'
           github-artifact-id: ${{ steps.signpath_downloader_upload.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: out/signpath-downloader-exe-output
