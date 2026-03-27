@@ -25,6 +25,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Install SignPath PowerShell module
+        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name SignPath -Scope CurrentUser -Force -Repository PSGallery
+
       - name: Configure build preset
         shell: cmd
         run: cmake --preset vs2022-x64
@@ -41,41 +48,38 @@ jobs:
         shell: cmd
         run: out\build\bin\Release\toolscreen_gui_integration_tests.exe --run-all
 
-      - name: Upload unsigned DLL for SignPath
-        id: upload_signpath_dll
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolscreen-signpath-dll-input
-          if-no-files-found: error
-          retention-days: 1
-          path: out/build/bin/Release/Toolscreen.dll
-
       - name: Sign DLL with SignPath test certificate
-        id: signpath_dll
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ env.SIGNPATH_API_TOKEN }}
-          organization-id: '0126c615-e5f1-4fed-a438-6b8de149c8f4'
-          project-slug: 'Toolscreen'
-          signing-policy-slug: 'test-signing'
-          github-artifact-id: ${{ steps.upload_signpath_dll.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: out/signpath-dll-output
-
-      - name: Replace unsigned DLL with signed DLL
         if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
-          $signedDllPath = 'out/signpath-dll-output/Toolscreen.dll'
           $artifactDllPath = 'out/build/bin/Release/Toolscreen.dll'
+          $signedDllPath = 'out/build/bin/Release/Toolscreen.signed.dll'
+
+          Import-Module SignPath
+
+          if (-not (Test-Path $artifactDllPath)) {
+            throw "Expected unsigned DLL not found: $artifactDllPath"
+          }
+
+          if (Test-Path $signedDllPath) {
+            Remove-Item -Path $signedDllPath -Force
+          }
+
+          Submit-SigningRequest `
+            -InputArtifactPath $artifactDllPath `
+            -ApiToken $env:SIGNPATH_API_TOKEN `
+            -OrganizationId '0126c615-e5f1-4fed-a438-6b8de149c8f4' `
+            -ProjectSlug 'Toolscreen' `
+            -SigningPolicySlug 'test-signing' `
+            -OutputArtifactPath $signedDllPath `
+            -WaitForCompletion
 
           if (-not (Test-Path $signedDllPath)) {
             throw "Expected signed DLL not found: $signedDllPath"
           }
 
           Copy-Item -Path $signedDllPath -Destination $artifactDllPath -Force
+          Remove-Item -Path $signedDllPath -Force
 
       - name: Prepare EXE packaging inputs
         shell: cmd
@@ -116,75 +120,73 @@ jobs:
         shell: cmd
         run: ctest --preset release --exclude-regex "^toolscreen_integration_"
 
-      - name: Upload unsigned installer EXE for SignPath
-        id: upload_signpath_installer_exe
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolscreen-signpath-installer-exe-input
-          if-no-files-found: error
-          retention-days: 1
-          path: out/build/bin/Release/Toolscreen-*-double-click-me.exe
-
       - name: Sign installer EXE with SignPath test certificate
-        id: signpath_installer_exe
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ env.SIGNPATH_API_TOKEN }}
-          organization-id: '0126c615-e5f1-4fed-a438-6b8de149c8f4'
-          project-slug: 'Toolscreen'
-          signing-policy-slug: 'test-signing'
-          github-artifact-id: ${{ steps.upload_signpath_installer_exe.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: out/signpath-installer-exe-output
-
-      - name: Replace unsigned installer EXE with signed output
         if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
-          $signedInstallerMatches = Get-ChildItem 'out/signpath-installer-exe-output' -File -Filter 'Toolscreen-*-double-click-me.exe'
+          $installerMatches = Get-ChildItem 'out/build/bin/Release' -File -Filter 'Toolscreen-*-double-click-me.exe'
 
-          if ($signedInstallerMatches.Count -ne 1) {
-            throw "Expected exactly one signed installer EXE, found $($signedInstallerMatches.Count)"
+          if ($installerMatches.Count -ne 1) {
+            throw "Expected exactly one unsigned installer EXE, found $($installerMatches.Count)"
           }
 
-          Copy-Item -Path $signedInstallerMatches[0].FullName -Destination 'out/build/bin/Release' -Force
+          $installerPath = $installerMatches[0].FullName
+          $signedInstallerPath = Join-Path $installerMatches[0].DirectoryName ($installerMatches[0].BaseName + '.signed' + $installerMatches[0].Extension)
 
-      - name: Upload unsigned downloader EXE for SignPath
-        id: upload_signpath_downloader_exe
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolscreen-signpath-downloader-exe-input
-          if-no-files-found: error
-          retention-days: 1
-          path: out/build/bin/Release/toolscreen-downloader.exe
+          Import-Module SignPath
+
+          if (Test-Path $signedInstallerPath) {
+            Remove-Item -Path $signedInstallerPath -Force
+          }
+
+          Submit-SigningRequest `
+            -InputArtifactPath $installerPath `
+            -ApiToken $env:SIGNPATH_API_TOKEN `
+            -OrganizationId '0126c615-e5f1-4fed-a438-6b8de149c8f4' `
+            -ProjectSlug 'Toolscreen' `
+            -SigningPolicySlug 'test-signing' `
+            -OutputArtifactPath $signedInstallerPath `
+            -WaitForCompletion
+
+          if (-not (Test-Path $signedInstallerPath)) {
+            throw "Expected signed installer EXE not found: $signedInstallerPath"
+          }
+
+          Copy-Item -Path $signedInstallerPath -Destination $installerPath -Force
+          Remove-Item -Path $signedInstallerPath -Force
 
       - name: Sign downloader EXE with SignPath test certificate
-        id: signpath_downloader_exe
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ env.SIGNPATH_API_TOKEN }}
-          organization-id: '0126c615-e5f1-4fed-a438-6b8de149c8f4'
-          project-slug: 'Toolscreen'
-          signing-policy-slug: 'test-signing'
-          github-artifact-id: ${{ steps.upload_signpath_downloader_exe.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: out/signpath-downloader-exe-output
-
-      - name: Replace unsigned downloader EXE with signed output
         if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
-          $signedDownloaderPath = 'out/signpath-downloader-exe-output/toolscreen-downloader.exe'
+          $downloaderPath = 'out/build/bin/Release/toolscreen-downloader.exe'
+          $signedDownloaderPath = 'out/build/bin/Release/toolscreen-downloader.signed.exe'
+
+          Import-Module SignPath
+
+          if (-not (Test-Path $downloaderPath)) {
+            throw "Expected unsigned downloader EXE not found: $downloaderPath"
+          }
+
+          if (Test-Path $signedDownloaderPath) {
+            Remove-Item -Path $signedDownloaderPath -Force
+          }
+
+          Submit-SigningRequest `
+            -InputArtifactPath $downloaderPath `
+            -ApiToken $env:SIGNPATH_API_TOKEN `
+            -OrganizationId '0126c615-e5f1-4fed-a438-6b8de149c8f4' `
+            -ProjectSlug 'Toolscreen' `
+            -SigningPolicySlug 'test-signing' `
+            -OutputArtifactPath $signedDownloaderPath `
+            -WaitForCompletion
 
           if (-not (Test-Path $signedDownloaderPath)) {
             throw "Expected signed downloader EXE not found: $signedDownloaderPath"
           }
 
-          Copy-Item -Path $signedDownloaderPath -Destination 'out/build/bin/Release/toolscreen-downloader.exe' -Force
+          Copy-Item -Path $signedDownloaderPath -Destination $downloaderPath -Force
+          Remove-Item -Path $signedDownloaderPath -Force
 
       - name: Rename release artifacts
         shell: pwsh
