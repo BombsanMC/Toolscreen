@@ -28,6 +28,7 @@ jobs:
 
       - name: Resolve SignPath artifact version
         id: signpath_version
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
           $versionFile = Join-Path $env:GITHUB_WORKSPACE 'ToolscreenVersion.cmake'
@@ -53,7 +54,7 @@ jobs:
       - name: Configure build preset
         shell: pwsh
         run: |
-          if ($env:SIGNPATH_API_TOKEN -and $env:GITHUB_EVENT_NAME -ne 'pull_request') {
+          if ($env:SIGNPATH_API_TOKEN -and $env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             $signedDllPath = (Join-Path (Get-Location) 'out/build/bin/Release/Toolscreen.signed-package-input.dll')
             cmake --preset vs2022-x64 -DTOOLSCREEN_PACKAGING_DLL_PATH="$signedDllPath"
           } else {
@@ -74,7 +75,7 @@ jobs:
 
       - name: Upload DLL for SignPath
         id: signpath_dll_upload
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: toolscreen-signpath-dll-input
@@ -83,7 +84,7 @@ jobs:
           path: out/build/bin/Release/Toolscreen.dll
 
       - name: Submit DLL to SignPath with origin verification
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ env.SIGNPATH_API_TOKEN }}
@@ -98,7 +99,7 @@ jobs:
             version: ${{ toJSON(steps.signpath_version.outputs.version) }}
 
       - name: Preserve signed DLL for packaging
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
           $artifactDllPath = 'out/build/bin/Release/Toolscreen.dll'
@@ -127,7 +128,7 @@ jobs:
       - name: Reconfigure packaging preset
         shell: pwsh
         run: |
-          if ($env:SIGNPATH_API_TOKEN -and $env:GITHUB_EVENT_NAME -ne 'pull_request') {
+          if ($env:SIGNPATH_API_TOKEN -and $env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             $signedDllPath = (Resolve-Path 'out/build/bin/Release/Toolscreen.signed-package-input.dll').Path
             cmake --preset vs2022-x64 -DTOOLSCREEN_PACKAGING_DLL_PATH="$signedDllPath"
           } else {
@@ -174,7 +175,7 @@ jobs:
 
       - name: Upload main installer JAR for SignPath
         id: signpath_jar_upload
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: toolscreen-signpath-main-installer-jar-input
@@ -183,7 +184,7 @@ jobs:
           path: out/build/bin/Release/Toolscreen-*-double-click-me.jar
 
       - name: Submit main installer JAR to SignPath with origin verification
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ env.SIGNPATH_API_TOKEN }}
@@ -198,7 +199,7 @@ jobs:
             version: ${{ toJSON(steps.signpath_version.outputs.version) }}
 
       - name: Replace main installer JAR with origin-verified signed output
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
           $jarMatches = Get-ChildItem 'out/build/bin/Release' -File -Filter 'Toolscreen-*-double-click-me.jar'
@@ -216,7 +217,7 @@ jobs:
 
       - name: Upload installer EXE for SignPath
         id: signpath_installer_upload
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: toolscreen-signpath-installer-exe-input
@@ -225,7 +226,7 @@ jobs:
           path: out/build/bin/Release/Toolscreen-*-double-click-me.exe
 
       - name: Submit installer EXE to SignPath with origin verification
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ env.SIGNPATH_API_TOKEN }}
@@ -240,7 +241,7 @@ jobs:
             version: ${{ toJSON(steps.signpath_version.outputs.version) }}
 
       - name: Replace installer EXE with origin-verified signed output
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
           $installerMatches = Get-ChildItem 'out/build/bin/Release' -File -Filter 'Toolscreen-*-double-click-me.exe'
@@ -258,7 +259,7 @@ jobs:
 
       - name: Upload downloader EXE for SignPath
         id: signpath_downloader_upload
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: toolscreen-signpath-downloader-exe-input
@@ -267,7 +268,7 @@ jobs:
           path: out/build/bin/Release/toolscreen-downloader.exe
 
       - name: Submit downloader EXE to SignPath with origin verification
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ env.SIGNPATH_API_TOKEN }}
@@ -282,7 +283,7 @@ jobs:
             version: ${{ toJSON(steps.signpath_version.outputs.version) }}
 
       - name: Replace downloader EXE with origin-verified signed output
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
           $downloaderPath = 'out/build/bin/Release/toolscreen-downloader.exe'
@@ -299,7 +300,7 @@ jobs:
           Copy-Item -Path $signedDownloaderPath -Destination $downloaderPath -Force
 
       - name: Restore signed DLL to release output
-        if: ${{ github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && env.SIGNPATH_API_TOKEN != '' }}
         shell: pwsh
         run: |
           $signedDllPath = 'out/build/bin/Release/Toolscreen.signed-package-input.dll'
