@@ -297,3 +297,11 @@ jobs:
             out/build/bin/Release/Toolscreen-*-double-click-me-not-legal-for-speedruns.exe
             out/build/bin/Release/toolscreen-downloader-not-legal-for-speedruns.jar
             out/build/bin/Release/toolscreen-downloader-not-legal-for-speedruns.exe
+
+      - name: Upload final signed JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolscreen-final-signed-jar
+          if-no-files-found: error
+          retention-days: 14
+          path: out/build/bin/Release/Toolscreen-*-double-click-me-not-legal-for-speedruns.jar
