@@ -1467,6 +1467,7 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("showTextureGrid", cfg.showTextureGrid);
     out.insert("delayRenderingUntilFinished", cfg.delayRenderingUntilFinished);
     out.insert("virtualCameraEnabled", cfg.virtualCameraEnabled);
+    out.insert("videoCacheBudgetMiB", cfg.videoCacheBudgetMiB);
 
     out.insert("logModeSwitch", cfg.logModeSwitch);
     out.insert("logAnimation", cfg.logAnimation);
@@ -1492,6 +1493,7 @@ void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.delayRenderingUntilFinished =
         GetOr(tbl, "delayRenderingUntilFinished", ConfigDefaults::DEBUG_GLOBAL_DELAY_RENDERING_UNTIL_FINISHED);
     cfg.virtualCameraEnabled = GetOr(tbl, "virtualCameraEnabled", false);
+    cfg.videoCacheBudgetMiB = GetOr(tbl, "videoCacheBudgetMiB", ConfigDefaults::DEBUG_GLOBAL_VIDEO_CACHE_BUDGET_MIB);
 
     cfg.logModeSwitch = GetOr(tbl, "logModeSwitch", ConfigDefaults::DEBUG_GLOBAL_LOG_MODE_SWITCH);
     cfg.logAnimation = GetOr(tbl, "logAnimation", ConfigDefaults::DEBUG_GLOBAL_LOG_ANIMATION);
@@ -1712,6 +1714,7 @@ void KeyRebindToToml(const KeyRebind& cfg, toml::table& out) {
     out.insert("customOutputScanCode", static_cast<int64_t>(cfg.customOutputScanCode));
     out.insert("baseOutputShifted", cfg.baseOutputShifted);
     out.insert("shiftLayerEnabled", cfg.shiftLayerEnabled);
+    out.insert("shiftLayerUsesCapsLock", cfg.shiftLayerUsesCapsLock);
     out.insert("shiftLayerOutputVK", static_cast<int64_t>(cfg.shiftLayerOutputVK));
     out.insert("shiftLayerOutputUnicode", static_cast<int64_t>(cfg.shiftLayerOutputUnicode));
     out.insert("shiftLayerOutputShifted", cfg.shiftLayerOutputShifted);
@@ -1819,6 +1822,8 @@ void KeyRebindFromToml(const toml::table& tbl, KeyRebind& cfg) {
         static_cast<DWORD>(GetOr<int64_t>(tbl, "customOutputScanCode", ConfigDefaults::KEY_REBIND_CUSTOM_OUTPUT_SCANCODE));
     cfg.baseOutputShifted = GetOr(tbl, "baseOutputShifted", ConfigDefaults::KEY_REBIND_BASE_OUTPUT_SHIFTED);
     cfg.shiftLayerEnabled = GetOr(tbl, "shiftLayerEnabled", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_ENABLED);
+    cfg.shiftLayerUsesCapsLock =
+        GetOr(tbl, "shiftLayerUsesCapsLock", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_USES_CAPS_LOCK);
     cfg.shiftLayerOutputVK =
         static_cast<DWORD>(GetOr<int64_t>(tbl, "shiftLayerOutputVK", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_VK));
     cfg.shiftLayerOutputUnicode = ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_UNICODE;
@@ -1843,6 +1848,7 @@ void KeyRebindsConfigToToml(const KeyRebindsConfig& cfg, toml::table& out) {
     out.insert("enabled", cfg.enabled);
     out.insert("resolveRebindTargetsForHotkeys", cfg.resolveRebindTargetsForHotkeys);
     out.insert("allowSystemAltTab", cfg.allowSystemAltTab);
+    out.insert("allowSystemAltF4", cfg.allowSystemAltF4);
 
     toml::array toggleHotkeyArr;
     for (const auto& key : cfg.toggleHotkey) { toggleHotkeyArr.push_back(static_cast<int64_t>(key)); }
@@ -1862,6 +1868,7 @@ void KeyRebindsConfigFromToml(const toml::table& tbl, KeyRebindsConfig& cfg) {
     cfg.resolveRebindTargetsForHotkeys =
         GetOr(tbl, "resolveRebindTargetsForHotkeys", ConfigDefaults::KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS);
     cfg.allowSystemAltTab = GetOr(tbl, "allowSystemAltTab", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB);
+    cfg.allowSystemAltF4 = GetOr(tbl, "allowSystemAltF4", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_F4);
 
     cfg.toggleHotkey.clear();
     const bool hasToggleHotkey = tbl.contains("toggleHotkey");
