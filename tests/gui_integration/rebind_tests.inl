@@ -198,6 +198,15 @@ static void RenderKeyboardInputsFrame(DummyWindow& window) {
     RenderSettingsFrame(window, trc("tabs.inputs"), trc("inputs.keyboard"));
 }
 
+static bool SkipIfNoModernGuiTestGL(const DummyWindow& window) {
+    if (window.hasModernGL()) {
+        return false;
+    }
+
+    std::cout << "SKIP (no GL 3.3+)" << std::endl;
+    return true;
+}
+
 static GuiTestInteractionRect ExpectGuiInteractionRect(const char* id, const std::string& label) {
     GuiTestInteractionRect rect;
     Expect(GetGuiTestInteractionRect(id, rect), label + " missing GUI interaction rect '" + id + "'.");
@@ -543,6 +552,7 @@ void RunKeyRebindRuntimeDisabledRebindIgnoredTest(TestRunMode runMode = TestRunM
 
 void RunKeyRebindGuiKeyboardLayoutFullBindAndTriggerTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (SkipIfNoModernGuiTestGL(window)) { return; }
     PrepareRebindGuiCase("key_rebind_gui_keyboard_layout_full_bind_and_trigger");
 
     RenderKeyboardInputsFrame(window);
@@ -589,6 +599,7 @@ void RunKeyRebindGuiKeyboardLayoutFullBindAndTriggerTest(TestRunMode runMode = T
 
 void RunKeyRebindGuiKeyboardLayoutSplitBindAndTriggerTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (SkipIfNoModernGuiTestGL(window)) { return; }
     PrepareRebindGuiCase("key_rebind_gui_keyboard_layout_split_bind_and_trigger");
 
     RenderKeyboardInputsFrame(window);
@@ -654,6 +665,7 @@ void RunKeyRebindGuiKeyboardLayoutSplitBindAndTriggerTest(TestRunMode runMode = 
 
 void RunKeyRebindGuiKeyboardLayoutMouseSourceBindAndTriggerTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (SkipIfNoModernGuiTestGL(window)) { return; }
     PrepareRebindGuiCase("key_rebind_gui_keyboard_layout_mouse_source_bind_and_trigger");
 
     RenderKeyboardInputsFrame(window);
