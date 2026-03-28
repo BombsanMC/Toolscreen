@@ -19,6 +19,7 @@ set(TOOLSCREEN_PROJECT_NAME "Toolscreen")
 set(TOOLSCREEN_COMPANY_NAME "jojoe77777")
 set(TOOLSCREEN_COPYRIGHT "Copyright (c) 2026 jojoe77777")
 set(TOOLSCREEN_DLL_FILE_DESCRIPTION "Toolscreen hook DLL")
+set(TOOLSCREEN_LIBLOGGER_FILE_DESCRIPTION "Toolscreen liblogger")
 set(TOOLSCREEN_INSTALLER_FILE_DESCRIPTION "Toolscreen installer")
 set(TOOLSCREEN_DOWNLOADER_FILE_DESCRIPTION "Toolscreen downloader")
 
@@ -39,6 +40,7 @@ endif()
 
 option(TOOLSCREEN_ENABLE_JAR_PACKAGING "Enable the EasyInjectBundled jar packaging target." ON)
 set(TOOLSCREEN_PACKAGING_DLL_PATH "" CACHE FILEPATH "Optional override DLL path used for jar and EXE packaging inputs")
+set(TOOLSCREEN_PACKAGING_LIBLOGGER_PATH "" CACHE FILEPATH "Optional override liblogger DLL path used for jar and EXE packaging inputs")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -361,6 +363,8 @@ endif()
 toolscreen_configure_target_outputs(${PROJECT_NAME})
 toolscreen_enable_release_symbols(${PROJECT_NAME})
 
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/liblogger")
+
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll"
     COMMENT "Removing stale copied WebView2Loader.dll"
@@ -373,9 +377,19 @@ file(GENERATE
     CONTENT "if(NOT EXISTS \"$<TARGET_FILE:${PROJECT_NAME}>\")\n  message(FATAL_ERROR \"Expected built Toolscreen artifact at '$<TARGET_FILE:${PROJECT_NAME}>'\")\nendif()\nif(NOT EXISTS \"$<TARGET_PDB_FILE:${PROJECT_NAME}>\")\n  message(FATAL_ERROR \"Expected Toolscreen PDB at '$<TARGET_PDB_FILE:${PROJECT_NAME}>'\")\nendif()\n"
 )
 
+file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_liblogger_artifact_$<CONFIG>.cmake"
+    CONTENT "if(NOT EXISTS \"$<TARGET_FILE:liblogger_windows>\")\n  message(FATAL_ERROR \"Expected built liblogger artifact at '$<TARGET_FILE:liblogger_windows>'\")\nendif()\n"
+)
+
 add_test(
     NAME toolscreen_artifact_exists
     COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_artifact_$<CONFIG>.cmake"
+)
+
+add_test(
+    NAME liblogger_artifact_exists
+    COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_liblogger_artifact_$<CONFIG>.cmake"
 )
 
 if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
@@ -490,6 +504,11 @@ END
         set(TOOLSCREEN_PACKAGING_DLL_SOURCE "${TOOLSCREEN_PACKAGING_DLL_PATH}")
     endif()
 
+    set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "$<TARGET_FILE:liblogger_windows>")
+    if(TOOLSCREEN_PACKAGING_LIBLOGGER_PATH)
+        set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "${TOOLSCREEN_PACKAGING_LIBLOGGER_PATH}")
+    endif()
+
     file(GENERATE
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
         CONTENT "set(NEW_DOWNLOADER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\nset(TYPO_DOWNLOADER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\nset(LEGACY_INSTALLER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\nset(DOWNLOADER_JAR_OUTPUT \"${DOWNLOADER_JAR_OUTPUT}\")\nif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\nelseif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\nelseif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\nelse()\n  message(FATAL_ERROR \"Expected downloader jar at '${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}', typo downloader jar at '${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar', or legacy installer jar at '${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${DOWNLOADER_JAR_SOURCE}\" \"\${DOWNLOADER_JAR_OUTPUT}\" RESULT_VARIABLE COPY_RESULT)\nif(NOT COPY_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to copy downloader jar from '\${DOWNLOADER_JAR_SOURCE}' to '\${DOWNLOADER_JAR_OUTPUT}'\")\nendif()\n"
@@ -497,14 +516,16 @@ END
 
     add_custom_target(jar ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_SOURCE_DIR}/custom-dlls"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_SOURCE_DIR}/src/main/resources/dlls"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_DLL_SOURCE}" "${easyinjectbundled_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_LOGGER_SOURCE}" "${easyinjectbundled_SOURCE_DIR}/src/main/resources/dlls/liblogger_x64.dll"
         COMMAND ${CMAKE_COMMAND} -E rm -f "${easyinjectbundled_SOURCE_DIR}/custom-dlls/WebView2Loader.dll"
         COMMAND "${TOOLSCREEN_MAVEN_EXECUTABLE}" -f "${easyinjectbundled_SOURCE_DIR}/pom.xml" clean package -q
                 -Dbrand.name=Toolscreen
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${easyinjectbundled_SOURCE_DIR}/target/${JAR_NAME}" "${JAR_OUTPUT}"
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
-        DEPENDS ${PROJECT_NAME}
+        DEPENDS ${PROJECT_NAME} liblogger_windows
         COMMENT "Building ${JAR_NAME} and ${DOWNLOADER_JAR_NAME}"
         VERBATIM
     )
@@ -578,9 +599,11 @@ END
 
     add_custom_target(toolscreen_prepare_easyinject_exe_inputs
         COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_exe_SOURCE_DIR}/src/main/resources/dlls"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_DLL_SOURCE}" "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_LOGGER_SOURCE}" "${easyinjectbundled_exe_SOURCE_DIR}/src/main/resources/dlls/liblogger_x64.dll"
         COMMAND ${CMAKE_COMMAND} -E rm -f "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/WebView2Loader.dll"
-        DEPENDS ${PROJECT_NAME}
+        DEPENDS ${PROJECT_NAME} liblogger_windows
         COMMENT "Preparing EasyInject exe packaging inputs"
         VERBATIM
     )

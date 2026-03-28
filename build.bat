@@ -47,6 +47,14 @@ if errorlevel 1 (
     goto :fail
 )
 
+echo Building liblogger DLL with preset %BUILD_PRESET%...
+cmake --build --preset %BUILD_PRESET% --target liblogger_windows
+if errorlevel 1 (
+    set "FAILURE_STEP=Build liblogger DLL"
+    set "FAILURE_CODE=22"
+    goto :fail
+)
+
 if "%RUN_TESTS%"=="1" (
     echo Building CLI integration test runner with preset %BUILD_PRESET%...
     cmake --build --preset %BUILD_PRESET% --target toolscreen_gui_integration_tests

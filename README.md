@@ -65,6 +65,8 @@ Double-click the Toolscreen installer (`.jar` or `.exe`) and select **Uninstall*
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
+The Windows release binaries built in this repository, including `Toolscreen.dll`, `liblogger_x64.dll`, and the packaged installers, are signed through the GitHub Actions + SignPath trusted-build flow.
+
 - Repository owner: [jojoe77777](https://github.com/jojoe77777)
 - Authors: [jojoe77777](https://github.com/jojoe77777)
 - Committers: [jojoe77777](https://github.com/jojoe77777)
@@ -81,4 +83,9 @@ Need help or want to share your setup? Join the [Discord server](https://discord
 
 ## Building
 
-Run `build.bat` to build Toolscreen; output files are in `out/build/bin/Release/`.
+Run `build.bat` to build Toolscreen plus the Windows `liblogger_x64.dll`; output files are in `out/build/bin/Release/`.
+
+For standalone logger artifacts on non-Windows hosts:
+
+- `liblogger/build.sh` builds the Linux `.so` outputs into `liblogger/dist/linux/`
+- `liblogger/build-macos.sh` builds the macOS `.dylib` output into `liblogger/dist/macos/`
