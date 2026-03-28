@@ -463,7 +463,7 @@ jobs:
 
       - name: Build Linux liblogger binaries
         shell: bash
-        run: LINUX_TARGETS=x64 ./liblogger/build.sh
+        run: LINUX_TARGETS=x64 bash ./liblogger/build.sh
 
       - name: Upload Linux liblogger artifacts
         uses: actions/upload-artifact@v4
@@ -488,7 +488,7 @@ jobs:
 
       - name: Build macOS liblogger binary
         shell: bash
-        run: ./liblogger/build-macos.sh
+        run: bash ./liblogger/build-macos.sh
 
       - name: Upload macOS liblogger artifacts
         uses: actions/upload-artifact@v4
