@@ -28,6 +28,7 @@ project(Toolscreen VERSION ${TOOLSCREEN_VERSION} LANGUAGES C CXX RC)
 set(TOOLSCREEN_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(TOOLSCREEN_GENERATED_VERSION_HEADER "${TOOLSCREEN_GENERATED_DIR}/version.h")
 file(MAKE_DIRECTORY "${TOOLSCREEN_GENERATED_DIR}")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cmake")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.h.in"
     "${TOOLSCREEN_GENERATED_VERSION_HEADER}"
@@ -41,6 +42,9 @@ endif()
 option(TOOLSCREEN_ENABLE_JAR_PACKAGING "Enable the EasyInjectBundled jar packaging target." ON)
 set(TOOLSCREEN_PACKAGING_DLL_PATH "" CACHE FILEPATH "Optional override DLL path used for jar and EXE packaging inputs")
 set(TOOLSCREEN_PACKAGING_LIBLOGGER_PATH "" CACHE FILEPATH "Optional override liblogger DLL path used for jar and EXE packaging inputs")
+set(TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH "" CACHE FILEPATH "Path to the signed prebuilt liblogger DLL to stage into build outputs")
+set(TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH "" CACHE FILEPATH "Path to the matching prebuilt liblogger PDB to stage into build outputs")
+option(TOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE "Build liblogger locally instead of using a prebuilt signed artifact" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -363,7 +367,42 @@ endif()
 toolscreen_configure_target_outputs(${PROJECT_NAME})
 toolscreen_enable_release_symbols(${PROJECT_NAME})
 
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/liblogger")
+set(TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/liblogger_x64.dll")
+set(TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/liblogger_x64.pdb")
+set(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY "")
+
+if(NOT TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH)
+    set(TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/out/prebuilt-liblogger/liblogger_x64.dll")
+endif()
+
+if(NOT TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH)
+    set(TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/out/prebuilt-liblogger/liblogger_x64.pdb")
+endif()
+
+if(TOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/liblogger")
+    set(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY liblogger_windows)
+else()
+    get_filename_component(TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH "${TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    get_filename_component(TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH "${TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/stage_prebuilt_liblogger_$<CONFIG>.cmake"
+        CONTENT "set(SOURCE_DLL \"${TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH}\")\nset(SOURCE_PDB \"${TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH}\")\nset(DEST_DLL \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}\")\nset(DEST_PDB \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH}\")\nget_filename_component(DEST_DIR \"\${DEST_DLL}\" DIRECTORY)\nfile(MAKE_DIRECTORY \"\${DEST_DIR}\")\nif(NOT EXISTS \"\${SOURCE_DLL}\")\n  message(FATAL_ERROR \"Expected prebuilt liblogger DLL at '\${SOURCE_DLL}'\")\nendif()\nif(NOT EXISTS \"\${SOURCE_PDB}\")\n  message(FATAL_ERROR \"Expected prebuilt liblogger PDB at '\${SOURCE_PDB}'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${SOURCE_DLL}\" \"\${DEST_DLL}\" RESULT_VARIABLE COPY_DLL_RESULT)\nif(NOT COPY_DLL_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to stage prebuilt liblogger DLL from '\${SOURCE_DLL}' to '\${DEST_DLL}'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${SOURCE_PDB}\" \"\${DEST_PDB}\" RESULT_VARIABLE COPY_PDB_RESULT)\nif(NOT COPY_PDB_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to stage prebuilt liblogger PDB from '\${SOURCE_PDB}' to '\${DEST_PDB}'\")\nendif()\n"
+    )
+
+    add_custom_target(toolscreen_stage_liblogger_artifacts
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/stage_prebuilt_liblogger_$<CONFIG>.cmake"
+        COMMENT "Staging prebuilt liblogger artifacts"
+        VERBATIM
+    )
+
+    set(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY toolscreen_stage_liblogger_artifacts)
+endif()
+
+if(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY)
+    add_dependencies(${PROJECT_NAME} ${TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY})
+endif()
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll"
@@ -371,7 +410,6 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 )
 
 enable_testing()
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cmake")
 file(GENERATE
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_artifact_$<CONFIG>.cmake"
     CONTENT "if(NOT EXISTS \"$<TARGET_FILE:${PROJECT_NAME}>\")\n  message(FATAL_ERROR \"Expected built Toolscreen artifact at '$<TARGET_FILE:${PROJECT_NAME}>'\")\nendif()\nif(NOT EXISTS \"$<TARGET_PDB_FILE:${PROJECT_NAME}>\")\n  message(FATAL_ERROR \"Expected Toolscreen PDB at '$<TARGET_PDB_FILE:${PROJECT_NAME}>'\")\nendif()\n"
@@ -379,7 +417,7 @@ file(GENERATE
 
 file(GENERATE
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_liblogger_artifact_$<CONFIG>.cmake"
-    CONTENT "if(NOT EXISTS \"$<TARGET_FILE:liblogger_windows>\")\n  message(FATAL_ERROR \"Expected built liblogger artifact at '$<TARGET_FILE:liblogger_windows>'\")\nendif()\n"
+    CONTENT "if(NOT EXISTS \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}\")\n  message(FATAL_ERROR \"Expected liblogger DLL at '${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}'\")\nendif()\nif(NOT EXISTS \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH}\")\n  message(FATAL_ERROR \"Expected liblogger PDB at '${TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH}'\")\nendif()\n"
 )
 
 add_test(
@@ -504,9 +542,14 @@ END
         set(TOOLSCREEN_PACKAGING_DLL_SOURCE "${TOOLSCREEN_PACKAGING_DLL_PATH}")
     endif()
 
-    set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "$<TARGET_FILE:liblogger_windows>")
+    set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}")
     if(TOOLSCREEN_PACKAGING_LIBLOGGER_PATH)
         set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "${TOOLSCREEN_PACKAGING_LIBLOGGER_PATH}")
+    endif()
+
+    set(TOOLSCREEN_PACKAGING_DEPENDENCIES ${PROJECT_NAME})
+    if(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY)
+        list(APPEND TOOLSCREEN_PACKAGING_DEPENDENCIES ${TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY})
     endif()
 
     file(GENERATE
@@ -525,7 +568,7 @@ END
                 -Dbrand.name=Toolscreen
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${easyinjectbundled_SOURCE_DIR}/target/${JAR_NAME}" "${JAR_OUTPUT}"
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
-        DEPENDS ${PROJECT_NAME} liblogger_windows
+        DEPENDS ${TOOLSCREEN_PACKAGING_DEPENDENCIES}
         COMMENT "Building ${JAR_NAME} and ${DOWNLOADER_JAR_NAME}"
         VERBATIM
     )
@@ -603,7 +646,7 @@ END
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_DLL_SOURCE}" "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_LOGGER_SOURCE}" "${easyinjectbundled_exe_SOURCE_DIR}/src/main/resources/dlls/liblogger_x64.dll"
         COMMAND ${CMAKE_COMMAND} -E rm -f "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/WebView2Loader.dll"
-        DEPENDS ${PROJECT_NAME} liblogger_windows
+        DEPENDS ${TOOLSCREEN_PACKAGING_DEPENDENCIES}
         COMMENT "Preparing EasyInject exe packaging inputs"
         VERBATIM
     )
