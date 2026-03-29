@@ -193,7 +193,7 @@ constexpr bool KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB = false;
 constexpr bool KEY_REBINDS_ALLOW_SYSTEM_ALT_F4 = false;
 inline std::vector<DWORD> GetDefaultKeyRebindsToggleHotkey() { return {}; }
 
-constexpr int DEFAULT_CONFIG_VERSION = 4;
+constexpr int DEFAULT_CONFIG_VERSION = 5;
 inline const std::string CONFIG_DEFAULT_MODE = "Fullscreen";
 inline const std::string CONFIG_FONT_PATH = R"(c:\Windows\Fonts\Arial.ttf)";
 inline const std::string CONFIG_LANG = "en";

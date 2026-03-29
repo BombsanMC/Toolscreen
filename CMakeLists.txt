@@ -824,6 +824,7 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     config-load-eyezoom-legacy-margins-migrated
     config-load-eyezoom-legacy-custom-position-migrated
     config-load-eyezoom-invalid-active-overlay-reset
+    config-load-window-overlay-crop-migrated
     config-load-window-overlay-capture-method-migrated
     config-load-key-rebind-unicode-string-parsed
     config-load-key-rebind-escaped-unicode-string-parsed
