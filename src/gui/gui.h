@@ -527,6 +527,10 @@ struct KeyRebindsConfig {
     bool enabled = false;
     bool resolveRebindTargetsForHotkeys = ConfigDefaults::KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS;
     bool allowSystemAltTab = ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB;
+    int indicatorMode = ConfigDefaults::KEY_REBINDS_INDICATOR_MODE;
+    int indicatorPosition = ConfigDefaults::KEY_REBINDS_INDICATOR_POSITION;
+    std::string indicatorImageEnabled;
+    std::string indicatorImageDisabled;
     bool allowSystemAltF4 = ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_F4;
     std::vector<DWORD> toggleHotkey = {};
     std::vector<KeyRebind> rebinds;
@@ -797,6 +801,10 @@ void ClearGuiTabSelectionOverride();
 extern std::atomic<bool> g_welcomeToastVisible;
 extern std::atomic<bool> g_configurePromptDismissedThisSession;
 void RenderWelcomeToast(bool isFullscreen);
+
+void RenderRebindIndicator();
+bool IsRebindIndicatorVisible();
+void InvalidateRebindIndicatorTexture();
 
 void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC));
 void RenderImGuiWithStateProtection(bool useFullProtection);

@@ -2030,6 +2030,8 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
 
                 if (frameCfg.debug.delayRenderingUntilFinished) { glFinish(); }
 
+                if (IsRebindIndicatorVisible()) { RenderRebindIndicator(); }
+
                 auto swapStartTime = std::chrono::high_resolution_clock::now();
                 BOOL result = next(hDc);
 

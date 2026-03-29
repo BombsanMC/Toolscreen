@@ -1848,6 +1848,10 @@ void KeyRebindsConfigToToml(const KeyRebindsConfig& cfg, toml::table& out) {
     out.insert("enabled", cfg.enabled);
     out.insert("resolveRebindTargetsForHotkeys", cfg.resolveRebindTargetsForHotkeys);
     out.insert("allowSystemAltTab", cfg.allowSystemAltTab);
+    out.insert("indicatorMode", cfg.indicatorMode);
+    out.insert("indicatorPosition", cfg.indicatorPosition);
+    if (!cfg.indicatorImageEnabled.empty()) out.insert("indicatorImageEnabled", cfg.indicatorImageEnabled);
+    if (!cfg.indicatorImageDisabled.empty()) out.insert("indicatorImageDisabled", cfg.indicatorImageDisabled);
     out.insert("allowSystemAltF4", cfg.allowSystemAltF4);
 
     toml::array toggleHotkeyArr;
@@ -1868,6 +1872,14 @@ void KeyRebindsConfigFromToml(const toml::table& tbl, KeyRebindsConfig& cfg) {
     cfg.resolveRebindTargetsForHotkeys =
         GetOr(tbl, "resolveRebindTargetsForHotkeys", ConfigDefaults::KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS);
     cfg.allowSystemAltTab = GetOr(tbl, "allowSystemAltTab", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB);
+    if (tbl.contains("indicatorMode")) {
+        cfg.indicatorMode = GetOr(tbl, "indicatorMode", ConfigDefaults::KEY_REBINDS_INDICATOR_MODE);
+    } else {
+        cfg.indicatorMode = GetOr(tbl, "showIndicator", true) ? 1 : 0;
+    }
+    cfg.indicatorPosition = GetOr(tbl, "indicatorPosition", ConfigDefaults::KEY_REBINDS_INDICATOR_POSITION);
+    cfg.indicatorImageEnabled = GetStringOr(tbl, "indicatorImageEnabled", "");
+    cfg.indicatorImageDisabled = GetStringOr(tbl, "indicatorImageDisabled", "");
     cfg.allowSystemAltF4 = GetOr(tbl, "allowSystemAltF4", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_F4);
 
     cfg.toggleHotkey.clear();
