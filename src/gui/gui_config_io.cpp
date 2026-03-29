@@ -227,7 +227,7 @@ void SaveConfig() {
         ConfigToToml(g_config, tbl);
         Config profileSnapshot;
         ApplyProfileFields(g_config, profileSnapshot);
-        profileSnapshot.configVersion = g_config.configVersion;
+        profileSnapshot.configVersion = GetConfigVersion();
         const std::string activeProfileName = g_profilesConfig.activeProfile;
 
         PublishConfigSnapshot();
@@ -304,7 +304,7 @@ void SaveConfigImmediate() {
 
         Config profileSnapshot;
         ApplyProfileFields(g_config, profileSnapshot);
-        profileSnapshot.configVersion = g_config.configVersion;
+        profileSnapshot.configVersion = GetConfigVersion();
         if (!SaveProfileSnapshotIfTracked(g_profilesConfig.activeProfile, profileSnapshot)) {
             Log("INFO: Skipped immediate profile save for removed or renamed profile '" + g_profilesConfig.activeProfile + "'.");
         }

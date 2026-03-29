@@ -353,7 +353,9 @@ static bool SyncProfilesConfigWithDiskLocked(bool seedFromCurrentConfigIfEmpty) 
 
 static bool SaveProfileSnapshotLocked(const std::string& name, const Config& configSnapshot) {
     EnsureProfilesDirExists();
-    return SaveConfigAtomically(configSnapshot, GetProfilePath(name));
+    Config normalizedSnapshot = configSnapshot;
+    normalizedSnapshot.configVersion = GetConfigVersion();
+    return SaveConfigAtomically(normalizedSnapshot, GetProfilePath(name));
 }
 
 } // namespace
@@ -427,13 +429,13 @@ static void MoveProfileFields(Config& src, Config& dst) {
 static void ExtractProfileConfig(const Config& full, Config& profile) {
     profile = Config{};
     ApplyProfileFields(full, profile);
-    profile.configVersion = full.configVersion;
+    profile.configVersion = GetConfigVersion();
 }
 
 static void ExtractProfileConfigMove(Config&& full, Config& profile) {
     profile = Config{};
     MoveProfileFields(full, profile);
-    profile.configVersion = full.configVersion;
+    profile.configVersion = GetConfigVersion();
 }
 
 void SaveProfile(const std::string& name) {
