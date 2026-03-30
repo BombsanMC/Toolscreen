@@ -701,9 +701,9 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                     constexpr float kKeyCapInsetYMul = 0.45f;
                     constexpr float kKeyRoundingPx = 5.0f;
 
-                    const float keyboardScale = s_keyboardLayoutScale * kKeyboardScaleMult;
+                    float keyboardScale = s_keyboardLayoutScale * kKeyboardScaleMult;
 
-                    const float keyH = roundPx(ImGui::GetFrameHeight() * kKeyHeightMul * keyboardScale);
+                    float keyH = roundPx(ImGui::GetFrameHeight() * kKeyHeightMul * keyboardScale);
                     float unit = roundPx(keyH * kKeyUnitMul);
                     unit = (float)(((int)(unit + 2.0f) / 4) * 4);
                     if (unit < 20.0f) unit = 20.0f;
@@ -730,6 +730,38 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                             w += row[c].w * pitchX;
                         }
                         if (w > keyboardMaxRowW) keyboardMaxRowW = w;
+                    }
+
+                    if (keyboardLayoutOpenedThisFrame && keyboardMaxRowW > 0.0f) {
+                        const float mousePanelExtra = unit * 4.5f;
+                        const float totalLayoutW = keyboardMaxRowW + mousePanelExtra;
+                        const float platePad = 10.0f * s_keyboardLayoutScale;
+                        const float availW = ImGui::GetContentRegionAvail().x - platePad * 2.0f;
+                        if (availW > 0.0f && totalLayoutW > 0.0f) {
+                            float fitScale = s_keyboardLayoutScale * (availW / totalLayoutW);
+                            fitScale = std::clamp(fitScale, 0.6f, 3.0f);
+                            if (fabsf(fitScale - s_keyboardLayoutScale) > 0.01f) {
+                                s_keyboardLayoutScale = fitScale;
+                                keyboardLayoutScaleChanged = true;
+
+                                const float ks2 = s_keyboardLayoutScale * kKeyboardScaleMult;
+                                const float kH2 = roundPx(ImGui::GetFrameHeight() * kKeyHeightMul * ks2);
+                                float u2 = roundPx(kH2 * kKeyUnitMul);
+                                u2 = (float)(((int)(u2 + 2.0f) / 4) * 4);
+                                if (u2 < 20.0f) u2 = 20.0f;
+                                float g2 = roundPx(ImGui::GetStyle().ItemInnerSpacing.x * ks2 * kKeyGapMul);
+                                if (g2 < 1.0f) g2 = 1.0f;
+                                keyboardScale = ks2;
+                                keyH = kH2;
+                                unit = u2; gap = g2;
+                                keyboardMaxRowW = 0.0f;
+                                for (const auto& row : rows) {
+                                    float w = 0.0f;
+                                    for (size_t c = 0; c < row.size(); ++c) { w += row[c].w * u2; }
+                                    if (w > keyboardMaxRowW) keyboardMaxRowW = w;
+                                }
+                            }
+                        }
                     }
 
                     const ImVec2 layoutStart = ImGui::GetCursorPos();
@@ -2405,19 +2437,6 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                         triggersCustomPopupAnchor =
                                             ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y + 4.0f);
                                     }
-                                    ImGui::SameLine(0.0f, popupInlineGap);
-                                    if (ImGui::Button((tr("label.custom") + "##output_unicode_custom").c_str(), ImVec2(auxButtonW, 0))) {
-                                        idx = createRebindForKeyIfMissing(s_layoutContextVk);
-                                        s_layoutContextPreferredIndex = idx;
-                                        if (idx >= 0) {
-                                            s_layoutUnicodeEditIndex = idx;
-                                            s_layoutUnicodeEditTarget = LayoutUnicodeEditTarget::TypesBase;
-                                            const auto& r = g_config.keyRebinds.rebinds[idx];
-                                            s_layoutUnicodeEditText =
-                                                (r.customOutputUnicode != 0) ? formatCodepointUPlus((uint32_t)r.customOutputUnicode) : std::string();
-                                            MarkRebindBindingActive();
-                                        }
-                                    }
                                 }
                             } else {
                                 ImGui::TableNextRow();
@@ -2651,24 +2670,6 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                 ImGui::Text(tr("inputs.current_format", preview.c_str()).c_str());
                                 ImGui::Separator();
 
-                                bool isDefault = !(r && r->useCustomOutput && r->customOutputScanCode != 0);
-                                DWORD defaultScan = getScanCodeWithExtendedFlag(curTriggerVk);
-                                std::string defaultName = scanCodeToDisplayName(defaultScan, curTriggerVk);
-                                std::string defaultLabel = tr("inputs.scan_reset_default_format", defaultName.c_str()) + "##scan_default";
-                                ImGui::BeginDisabled(isDefault);
-                                if (ImGui::Button(defaultLabel.c_str())) {
-                                    idx = createRebindForKeyIfMissing(s_layoutContextVk);
-                                    s_layoutContextPreferredIndex = idx;
-                                    if (idx >= 0) {
-                                        auto& rr = g_config.keyRebinds.rebinds[idx];
-                                        rr.customOutputScanCode = 0;
-                                        if (rr.customOutputVK == 0 && rr.customOutputUnicode == 0) rr.useCustomOutput = false;
-                                        g_configIsDirty = true;
-                                    }
-                                }
-                                ImGui::EndDisabled();
-                                ImGui::Separator();
-
                                 static int s_scanFilterGroup = -1; // -1 = All
                                 if (ImGui::IsWindowAppearing()) s_scanFilterGroup = -1;
                                 const char* groupLabels[SG_COUNT + 1] = {
@@ -2709,6 +2710,22 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                     }
                                 }
                                 ImGui::EndChild();
+
+                                ImGui::Separator();
+                                ImGui::Text("%s", trc("inputs.tooltip.enter_unicode_or_codepoint"));
+                                if (ImGui::Button((tr("label.custom") + "##output_unicode_custom").c_str())) {
+                                    idx = createRebindForKeyIfMissing(s_layoutContextVk);
+                                    s_layoutContextPreferredIndex = idx;
+                                    if (idx >= 0) {
+                                        s_layoutUnicodeEditIndex = idx;
+                                        s_layoutUnicodeEditTarget = LayoutUnicodeEditTarget::TypesBase;
+                                        const auto& rr = g_config.keyRebinds.rebinds[idx];
+                                        s_layoutUnicodeEditText =
+                                            (rr.customOutputUnicode != 0) ? formatCodepointUPlus((uint32_t)rr.customOutputUnicode) : std::string();
+                                        MarkRebindBindingActive();
+                                    }
+                                    ImGui::CloseCurrentPopup();
+                                }
 
                                 ImGui::EndPopup();
                         }
