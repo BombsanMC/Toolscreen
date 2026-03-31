@@ -1908,8 +1908,10 @@ void KeyRebindsConfigFromToml(const toml::table& tbl, KeyRebindsConfig& cfg) {
     cfg.allowSystemAltTab = GetOr(tbl, "allowSystemAltTab", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB);
     if (tbl.contains("indicatorMode")) {
         cfg.indicatorMode = GetOr(tbl, "indicatorMode", ConfigDefaults::KEY_REBINDS_INDICATOR_MODE);
+    } else if (tbl.contains("showIndicator")) {
+        cfg.indicatorMode = GetOr(tbl, "showIndicator", false) ? 1 : 0;
     } else {
-        cfg.indicatorMode = GetOr(tbl, "showIndicator", true) ? 1 : 0;
+        cfg.indicatorMode = ConfigDefaults::KEY_REBINDS_INDICATOR_MODE;
     }
     cfg.indicatorPosition = GetOr(tbl, "indicatorPosition", ConfigDefaults::KEY_REBINDS_INDICATOR_POSITION);
     cfg.indicatorImageEnabled = GetStringOr(tbl, "indicatorImageEnabled", "");

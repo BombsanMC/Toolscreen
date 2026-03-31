@@ -832,6 +832,7 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     config-load-key-rebind-escaped-unicode-string-parsed
     config-load-key-rebind-hex-unicode-string-parsed
     config-load-key-rebind-invalid-unicode-defaulted
+    config-load-key-rebind-legacy-show-indicator-migrated
     config-load-key-rebind-shift-layer-caps-lock-parsed
     config-load-key-rebind-shift-layer-caps-lock-defaulted
     key-rebind-runtime-full-forwarding
@@ -869,6 +870,7 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     mode-browser-overlay-render
     mode-image-overlay-render-png
     mode-image-overlay-render-mpeg
+    rebind-indicator-renders-below-settings-gui
     config-error-gui
     settings-gui-basic
     settings-gui-advanced

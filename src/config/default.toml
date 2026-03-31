@@ -86,6 +86,7 @@ enabled = false
 resolveRebindTargetsForHotkeys = true
 allowSystemAltTab = false
 allowSystemAltF4 = false
+indicatorMode = 0
 toggleHotkey = [ ]
 rebinds = []
 

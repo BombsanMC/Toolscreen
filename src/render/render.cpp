@@ -4109,6 +4109,7 @@ struct SameThreadOverlayState {
 
     bool showWelcomeToast = false;
     bool welcomeToastIsFullscreen = false;
+    bool showRebindIndicator = false;
     bool modeHasMirrors = false;
     bool modeHasImages = false;
     bool modeHasWindowOverlays = false;
@@ -4143,7 +4144,7 @@ static bool HasSameThreadOverlayWork(const SameThreadOverlayState& request, cons
     if (request.modeHasMirrors || request.modeHasImages || request.modeHasWindowOverlays || request.modeHasBrowserOverlays ||
         request.shouldRenderGui ||
         request.showPerformanceOverlay || request.showProfiler || request.showTextureGrid || request.showEyeZoom ||
-        request.showWelcomeToast) {
+        request.showWelcomeToast || request.showRebindIndicator) {
         return true;
     }
 
@@ -4479,6 +4480,11 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
                                     request.overlayOpacity, request.excludeOnlyOnMyScreen);
     }
 
+    if (request.showRebindIndicator) {
+        PROFILE_SCOPE_CAT("Render Rebind Indicator", "Rendering");
+        RenderRebindIndicator();
+    }
+
     RenderSameThreadImGui(request);
     if (request.showWelcomeToast) {
         PROFILE_SCOPE_CAT("Render Welcome Toast", "Rendering");
@@ -4486,12 +4492,12 @@ static bool RenderSameThreadOverlayPass(const SameThreadOverlayState& request, c
     }
     return !activeMirrors.empty() || !eyeZoomSlideOutMirrors->empty() || !transitionSlideOutMirrors->empty() || !activeImages.empty() ||
             !activeWindowOverlays.empty() || !activeBrowserOverlays.empty() || request.shouldRenderGui || request.showPerformanceOverlay || request.showProfiler ||
-           request.showTextureGrid || request.showEyeZoom || request.showWelcomeToast;
+           request.showTextureGrid || request.showEyeZoom || request.showWelcomeToast || request.showRebindIndicator;
 }
 
 bool RenderModeOverlaysForIntegrationTest(const Config& config, const ModeConfig& modeToRender, const GLState& s, int fullW,
                                           int fullH, int gameX, int gameY, int gameW, int gameH,
-                                          bool excludeOnlyOnMyScreen, GLuint gameTextureId) {
+                                          bool excludeOnlyOnMyScreen, GLuint gameTextureId, bool renderGui) {
     SameThreadOverlayState request;
     request.fullW = fullW;
     request.fullH = fullH;
@@ -4516,12 +4522,14 @@ bool RenderModeOverlaysForIntegrationTest(const Config& config, const ModeConfig
     request.toY = gameY;
     request.toW = gameW;
     request.toH = gameH;
+    request.shouldRenderGui = renderGui;
     request.modeHasMirrors = gameTextureId != 0 && (!modeToRender.mirrorIds.empty() || !modeToRender.mirrorGroupIds.empty());
     request.modeHasImages = !modeToRender.imageIds.empty();
     request.modeHasWindowOverlays = g_windowOverlaysVisible.load(std::memory_order_acquire) &&
                                     !modeToRender.windowOverlayIds.empty();
     request.modeHasBrowserOverlays = g_browserOverlaysVisible.load(std::memory_order_acquire) &&
                                      !modeToRender.browserOverlayIds.empty();
+    request.showRebindIndicator = IsRebindIndicatorVisible();
     request.isRawWindowedMode = !request.modeHasMirrors;
     request.toSlideMirrorsIn = modeToRender.slideMirrorsIn;
     request.mirrorSlideProgress = 1.0f;
@@ -6767,6 +6775,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
     const bool wantAnyImGui = g_shouldRenderGui.load(std::memory_order_relaxed) || g_showPerformanceOverlay.load(std::memory_order_relaxed) ||
                               g_showProfiler.load(std::memory_order_relaxed) || g_showEyeZoom.load(std::memory_order_relaxed) ||
                               g_showTextureGrid.load(std::memory_order_relaxed);
+    const bool wantRebindIndicator = IsRebindIndicatorVisible();
     const bool isFullscreenMode = EqualsIgnoreCase(modeToRender->id, "Fullscreen");
 
     bool wantWelcomeToast = false;
@@ -6785,7 +6794,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
         }
     }
 
-    const bool wantOverlayThisFrame = wantOverlayElements || wantAnyImGui || wantWelcomeToast;
+    const bool wantOverlayThisFrame = wantOverlayElements || wantAnyImGui || wantWelcomeToast || wantRebindIndicator;
     const auto populateOverlayState = [&](auto& target) {
         target.fullW = (std::max)(1, fullW);
         target.fullH = (std::max)(1, fullH);
@@ -6859,6 +6868,7 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
 
         target.welcomeToastIsFullscreen = isFullscreenMode;
         target.showWelcomeToast = wantWelcomeToast;
+        target.showRebindIndicator = wantRebindIndicator;
         target.modeHasMirrors = hasMirrors;
         target.modeHasImages = g_imageOverlaysVisible.load(std::memory_order_acquire) && !modeToRender->imageIds.empty();
         target.modeHasWindowOverlays = g_windowOverlaysVisible.load(std::memory_order_acquire) &&
@@ -6894,8 +6904,6 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
             RenderDebugBordersForMirror(conf, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, s.va);
         }
     }
-
-    if (IsRebindIndicatorVisible()) { RenderRebindIndicator(); }
 }
 void RenderDebugBordersForMirror(const MirrorConfig* conf, Color captureColor, Color outputColor, GLint originalVAO) {
     if (!conf || !g_glInitialized.load(std::memory_order_acquire)) return;

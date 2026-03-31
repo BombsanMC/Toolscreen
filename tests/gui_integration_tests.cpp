@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <stdexcept>
 #include <array>
@@ -848,6 +849,69 @@ std::filesystem::path WriteEmbeddedFixtureToDisk(const std::filesystem::path& ro
     return fixturePath;
 }
 
+std::filesystem::path WriteSolidBmpFixtureToDisk(const std::filesystem::path& root, const std::filesystem::path& relativePath,
+                                                int width, int height, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    Expect(width > 0 && height > 0, "Solid BMP fixture dimensions must be positive.");
+
+    const std::filesystem::path fixturePath = root / relativePath;
+    std::error_code error;
+    std::filesystem::create_directories(fixturePath.parent_path(), error);
+    Expect(!error, "Failed to create BMP fixture directory: " + Narrow(fixturePath.parent_path().wstring()));
+
+    const int bytesPerPixel = 3;
+    const int rowStride = ((width * bytesPerPixel) + 3) & ~3;
+    const std::uint32_t pixelBytes = static_cast<std::uint32_t>(rowStride * height);
+    const std::uint32_t fileSize = 14u + 40u + pixelBytes;
+
+    std::vector<unsigned char> fileBytes(fileSize, 0);
+    fileBytes[0] = 'B';
+    fileBytes[1] = 'M';
+    std::memcpy(fileBytes.data() + 2, &fileSize, sizeof(fileSize));
+
+    const std::uint32_t pixelOffset = 14u + 40u;
+    std::memcpy(fileBytes.data() + 10, &pixelOffset, sizeof(pixelOffset));
+
+    const std::uint32_t dibHeaderSize = 40u;
+    const std::int32_t dibWidth = width;
+    const std::int32_t dibHeight = height;
+    const std::uint16_t planes = 1u;
+    const std::uint16_t bitsPerPixel = 24u;
+    const std::uint32_t compression = 0u;
+    const std::uint32_t imageSize = pixelBytes;
+    const std::int32_t pixelsPerMeter = 2835;
+    const std::uint32_t colorsUsed = 0u;
+    const std::uint32_t importantColors = 0u;
+
+    std::memcpy(fileBytes.data() + 14, &dibHeaderSize, sizeof(dibHeaderSize));
+    std::memcpy(fileBytes.data() + 18, &dibWidth, sizeof(dibWidth));
+    std::memcpy(fileBytes.data() + 22, &dibHeight, sizeof(dibHeight));
+    std::memcpy(fileBytes.data() + 26, &planes, sizeof(planes));
+    std::memcpy(fileBytes.data() + 28, &bitsPerPixel, sizeof(bitsPerPixel));
+    std::memcpy(fileBytes.data() + 30, &compression, sizeof(compression));
+    std::memcpy(fileBytes.data() + 34, &imageSize, sizeof(imageSize));
+    std::memcpy(fileBytes.data() + 38, &pixelsPerMeter, sizeof(pixelsPerMeter));
+    std::memcpy(fileBytes.data() + 42, &pixelsPerMeter, sizeof(pixelsPerMeter));
+    std::memcpy(fileBytes.data() + 46, &colorsUsed, sizeof(colorsUsed));
+    std::memcpy(fileBytes.data() + 50, &importantColors, sizeof(importantColors));
+
+    for (int y = 0; y < height; ++y) {
+        unsigned char* row = fileBytes.data() + pixelOffset + static_cast<size_t>(y) * static_cast<size_t>(rowStride);
+        for (int x = 0; x < width; ++x) {
+            const size_t pixelOffsetInRow = static_cast<size_t>(x) * static_cast<size_t>(bytesPerPixel);
+            row[pixelOffsetInRow + 0] = b;
+            row[pixelOffsetInRow + 1] = g;
+            row[pixelOffsetInRow + 2] = r;
+        }
+    }
+
+    std::ofstream out(fixturePath, std::ios::binary | std::ios::trunc);
+    Expect(out.is_open(), "Failed to open BMP fixture path for writing: " + Narrow(fixturePath.wstring()));
+    out.write(reinterpret_cast<const char*>(fileBytes.data()), static_cast<std::streamsize>(fileBytes.size()));
+    out.close();
+    Expect(std::filesystem::exists(fixturePath), "Failed to write BMP fixture file: " + Narrow(fixturePath.wstring()));
+    return fixturePath;
+}
+
 bool WaitForUserImageTextureUpload(const std::string& imageName, int timeoutMs = 2000) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -1109,7 +1173,8 @@ void ResetOverlayRenderTestResources() {
     InitializeGPUResources();
 }
 
-void RenderModeOverlayFrame(DummyWindow& window, const Config& config, const ModeConfig& mode, GLuint gameTextureId = 0) {
+void RenderModeOverlayFrame(DummyWindow& window, const Config& config, const ModeConfig& mode, GLuint gameTextureId = 0,
+                            bool renderGui = false) {
     if (!window.hasModernGL()) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
     Expect(window.PrepareRenderSurface(), "GUI integration test window closed unexpectedly.");
 
@@ -1119,7 +1184,7 @@ void RenderModeOverlayFrame(DummyWindow& window, const Config& config, const Mod
     const int surfaceWidth = (std::max)(1, GetCachedWindowWidth());
     const int surfaceHeight = (std::max)(1, GetCachedWindowHeight());
     const bool rendered = RenderModeOverlaysForIntegrationTest(config, mode, state, surfaceWidth, surfaceHeight, 0, 0,
-                                                               surfaceWidth, surfaceHeight, false, gameTextureId);
+                                                               surfaceWidth, surfaceHeight, false, gameTextureId, renderGui);
     Expect(rendered, "Expected mode overlay render path to produce overlay output.");
 }
 

@@ -12,6 +12,8 @@ void RunConfigDefaultLoadTest(TestRunMode runMode = TestRunMode::Automated) {
     Expect(!g_config.modes.empty(), "Expected loaded config to contain at least one mode.");
     Expect(!g_config.hotkeys.empty(), "Expected loaded config to contain at least one hotkey.");
     Expect(!g_config.defaultMode.empty(), "Expected loaded config to have a default mode.");
+    Expect(g_config.keyRebinds.indicatorMode == 0,
+           "Expected default config load to leave the key rebind indicator disabled.");
 
     if (runMode == TestRunMode::Visual) {
         RunVisualLoop(window, "config-default-load", &RenderInteractiveSettingsFrame);
@@ -826,6 +828,24 @@ shiftLayerOutputUnicode = "U+D800"
                                  "Expected invalid customOutputUnicode strings to fall back to the configured default.");
                           Expect(rebind.shiftLayerOutputUnicode == ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_UNICODE,
                                  "Expected invalid shiftLayerOutputUnicode strings to fall back to the configured default.");
+                      },
+                      runMode);
+}
+
+void RunConfigLoadKeyRebindLegacyShowIndicatorMigratedTest(TestRunMode runMode = TestRunMode::Automated) {
+    RunConfigLoadCase("config_load_key_rebind_legacy_show_indicator_migrated",
+                      []() {
+                          WriteRawConfigTomlToDisk(R"(configVersion = 4
+defaultMode = "Fullscreen"
+
+[keyRebinds]
+showIndicator = true
+)");
+                      },
+                      []() {
+                          ExpectConfigLoadSucceeded("config-load-key-rebind-legacy-show-indicator-migrated");
+                          Expect(g_config.keyRebinds.indicatorMode == 1,
+                                 "Expected legacy showIndicator=true to migrate to the active-only indicator mode.");
                       },
                       runMode);
 }

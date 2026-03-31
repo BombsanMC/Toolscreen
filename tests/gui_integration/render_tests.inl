@@ -900,3 +900,87 @@ void RunModeImageOverlayRenderMpegTest(TestRunMode runMode = TestRunMode::Automa
     CleanupGPUResources();
     CleanupShaders();
 }
+
+void RunRebindIndicatorRendersBelowSettingsGuiTest(TestRunMode runMode = TestRunMode::Automated) {
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (!g_hasModernGL) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
+
+    const std::filesystem::path root = PrepareCaseDirectory("rebind_indicator_renders_below_settings_gui");
+    ResetGlobalTestState(root);
+
+    LoadConfig();
+    Expect(!g_configLoadFailed.load(std::memory_order_acquire),
+        "Expected config load to succeed before rendering the rebind indicator below the settings GUI.");
+
+    const std::filesystem::path relativeFixturePath = std::filesystem::path("fixtures") / "rebind-indicator-large.bmp";
+    WriteSolidBmpFixtureToDisk(root, relativeFixturePath, 640, 640, 32, 192, 96);
+
+    g_config.basicModeEnabled = false;
+    g_config.keyRebinds.enabled = false;
+    g_config.keyRebinds.indicatorPosition = 1;
+    g_config.keyRebinds.indicatorImageEnabled.clear();
+    g_config.keyRebinds.indicatorImageDisabled = relativeFixturePath.generic_string();
+    g_configIsDirty.store(false, std::memory_order_release);
+
+    const std::string inputsTab = tr("tabs.inputs");
+    const std::string keyboardSubTab = tr("inputs.keyboard");
+
+    const SurfaceSize surface = GetWindowClientSize(window.hwnd());
+    const float guiScale = (std::max)(1.0f,
+                                      std::round(((std::min)(surface.width / 1920.0f, surface.height / 1080.0f)) * 4.0f) / 4.0f);
+    const int guiWidth = static_cast<int>(850.0f * guiScale);
+    const int guiHeight = static_cast<int>(650.0f * guiScale);
+    const int guiX = (surface.width - guiWidth) / 2;
+    const int guiY = (surface.height - guiHeight) / 2;
+
+    const float indicatorScale = static_cast<float>(surface.height) / 1080.0f;
+    const int indicatorWidth = static_cast<int>(std::lround(640.0f * indicatorScale));
+    const int indicatorHeight = static_cast<int>(std::lround(640.0f * indicatorScale));
+    const int indicatorMargin = static_cast<int>(std::lround(10.0f * indicatorScale));
+    const int indicatorX = surface.width - indicatorWidth - indicatorMargin;
+    const int indicatorY = indicatorMargin;
+
+    const int overlapLeft = (std::max)(guiX, indicatorX);
+    const int overlapTop = (std::max)(guiY, indicatorY);
+    const int overlapRight = (std::min)(guiX + guiWidth - 1, indicatorX + indicatorWidth - 1);
+    const int overlapBottom = (std::min)(guiY + guiHeight - 1, indicatorY + indicatorHeight - 1);
+    Expect(overlapLeft <= overlapRight && overlapTop <= overlapBottom,
+           "Expected the large rebind indicator fixture to overlap the centered settings GUI.");
+
+    const int sampleX = overlapLeft + (overlapRight - overlapLeft) / 2;
+    const int sampleY = overlapTop + (overlapBottom - overlapTop) / 2;
+
+    auto renderAndSample = [&](DummyWindow& targetWindow) {
+        g_guiNeedsRecenter.store(true, std::memory_order_release);
+        ScopedTabSelection scopedSelection(inputsTab.c_str(), keyboardSubTab.c_str());
+        const ModeConfig& fullscreenMode = FindModeOrThrow("Fullscreen");
+        RenderModeOverlayFrame(targetWindow, g_config, fullscreenMode, 0, true);
+        glFinish();
+        return ReadFramebufferPixelColor(sampleX, sampleY, surface.height);
+    };
+
+    if (runMode == TestRunMode::Visual) {
+        g_config.keyRebinds.indicatorMode = 2;
+        InvalidateRebindIndicatorTexture();
+        RunVisualLoop(window, "rebind-indicator-renders-below-settings-gui",
+                      [&](DummyWindow& visualWindow) {
+                          (void)renderAndSample(visualWindow);
+                          visualWindow.PresentSurface();
+                      });
+        return;
+    }
+
+    g_config.keyRebinds.indicatorMode = 0;
+    InvalidateRebindIndicatorTexture();
+    const Color baselineSample = renderAndSample(window);
+    Expect(!IsColorNear(baselineSample, kExpectedRenderSurfaceClear),
+           "Expected the sampled point to fall within the rendered settings GUI before drawing the rebind indicator overlay.");
+
+    g_config.keyRebinds.indicatorMode = 2;
+    InvalidateRebindIndicatorTexture();
+    const Color overlaySample = renderAndSample(window);
+    Expect(!IsColorNear(overlaySample, kExpectedPngFixtureColor),
+            "Expected the overlapping sampled pixel to stay below the raw rebind indicator color once the settings GUI renders above it.");
+        Expect(std::fabs(overlaySample.g - baselineSample.g) < 0.12f,
+            "Expected the settings GUI to remain visually dominant over the rebind indicator at the overlapping sample point.");
+}
