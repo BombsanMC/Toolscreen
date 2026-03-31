@@ -234,6 +234,61 @@ bool ContainsFileNameIgnoreCase(const std::vector<std::string>& fileNames, std::
     return false;
 }
 
+std::vector<std::string> GetTrackedProfileNamesSorted() {
+    std::vector<std::string> names;
+    names.reserve(g_profilesConfig.profiles.size());
+    for (const auto& profile : g_profilesConfig.profiles) {
+        names.push_back(profile.name);
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+Config LoadProfileConfigForTests(std::string_view profileName) {
+    const std::filesystem::path profilePath = GetProfilesDirectoryForTests() / (std::string(profileName) + ".toml");
+    Expect(std::filesystem::exists(profilePath),
+           "Expected profile file to exist for '" + std::string(profileName) + "'.");
+
+    Config profileConfig;
+    Expect(LoadConfigFromTomlFile(profilePath.wstring(), profileConfig),
+           "Expected profile TOML to remain loadable for '" + std::string(profileName) + "'.");
+    return profileConfig;
+}
+
+void ExpectProfilesMetadataMatchesDisk(const std::vector<std::string>& expectedProfiles, const std::string& context) {
+    Expect(LoadProfilesConfig(), context + " should keep profiles metadata loadable.");
+
+    std::vector<std::string> diskProfiles;
+    const std::filesystem::path profilesDir = GetProfilesDirectoryForTests();
+    if (std::filesystem::exists(profilesDir)) {
+        for (const auto& fileName : ListDirectoryFileNamesSorted(profilesDir)) {
+            const std::filesystem::path path(fileName);
+            if (EqualsIgnoreCase(path.extension().string(), ".toml")) {
+                diskProfiles.push_back(path.stem().string());
+            }
+        }
+    }
+    std::sort(diskProfiles.begin(), diskProfiles.end());
+
+    std::vector<std::string> trackedProfiles = GetTrackedProfileNamesSorted();
+    ExpectVectorEquals(trackedProfiles, diskProfiles,
+                       context + " should keep tracked profile metadata aligned with on-disk profile files.");
+
+    std::vector<std::string> expectedSorted = expectedProfiles;
+    std::sort(expectedSorted.begin(), expectedSorted.end());
+    ExpectVectorEquals(trackedProfiles, expectedSorted, context + " should preserve the expected profile set.");
+
+    bool foundActiveProfile = false;
+    for (const auto& profileName : trackedProfiles) {
+        if (EqualsIgnoreCase(profileName, g_profilesConfig.activeProfile)) {
+            foundActiveProfile = true;
+        }
+        (void)LoadProfileConfigForTests(profileName);
+    }
+
+    Expect(foundActiveProfile, context + " should keep the active profile present in tracked metadata.");
+}
+
 void RunProfileApplyFieldsRoundtripTest(TestRunMode runMode = TestRunMode::Automated) {
     (void)runMode;
     ResetProfileTestState("profile_apply_fields_roundtrip");
@@ -563,6 +618,252 @@ void RunProfileSwitchConcurrentReadersTest(TestRunMode runMode = TestRunMode::Au
     Expect(LoadProfilesConfig(), "Profiles metadata should remain loadable after concurrent switching.");
     Expect(g_profilesConfig.profiles.size() == 3, "All profiles should still be present after concurrent switching.");
     Expect(g_profilesConfig.activeProfile == "Third", "The final active profile should match the last switch target.");
+}
+
+void RunProfileSwitchConcurrentLifecycleTest(TestRunMode runMode = TestRunMode::Automated) {
+    (void)runMode;
+    ResetProfileTestState("profile_switch_concurrent_lifecycle");
+
+    Expect(CreateNewProfile("Second"), "CreateNewProfile should create the second profile.");
+    Expect(CreateNewProfile("Third"), "CreateNewProfile should create the third profile.");
+    Expect(CreateNewProfile("ScratchSource"), "CreateNewProfile should create the scratch source profile.");
+
+    std::atomic<bool> stopWorkers{ false };
+    std::atomic<int> failureCount{ 0 };
+    std::mutex failureMutex;
+    std::string failureMessage;
+
+    auto recordFailure = [&](const std::string& message) {
+        if (failureCount.fetch_add(1, std::memory_order_relaxed) == 0) {
+            std::lock_guard<std::mutex> lock(failureMutex);
+            failureMessage = message;
+        }
+        stopWorkers.store(true, std::memory_order_release);
+    };
+
+    auto switcher = [&]() {
+        try {
+            const std::array<std::string, 3> switchOrder = { kDefaultProfileName, "Second", "Third" };
+            for (int i = 0; i < 48 && !stopWorkers.load(std::memory_order_acquire); ++i) {
+                SwitchProfile(switchOrder[i % static_cast<int>(switchOrder.size())]);
+                std::this_thread::yield();
+            }
+        } catch (const std::exception& e) {
+            recordFailure(std::string("Switch thread failed: ") + e.what());
+        } catch (...) {
+            recordFailure("Switch thread failed with an unknown exception.");
+        }
+    };
+
+    auto lifecycleWorker = [&]() {
+        try {
+            for (int i = 0; i < 12 && !stopWorkers.load(std::memory_order_acquire); ++i) {
+                const std::string duplicateName = "Scratch Copy " + std::to_string(i);
+                const std::string renamedName = "Scratch Temp " + std::to_string(i);
+                if (!DuplicateProfile("ScratchSource", duplicateName)) {
+                    throw std::runtime_error("DuplicateProfile should succeed for lifecycle stress copy '" + duplicateName + "'.");
+                }
+
+                const float color[3] = {
+                    0.1f + (0.02f * static_cast<float>(i)),
+                    0.2f + (0.01f * static_cast<float>(i)),
+                    0.3f + (0.015f * static_cast<float>(i)),
+                };
+                if (!UpdateProfileMetadata(duplicateName, renamedName, color)) {
+                    throw std::runtime_error("UpdateProfileMetadata should succeed for lifecycle stress rename '" + renamedName + "'.");
+                }
+
+                DeleteProfile(renamedName);
+
+                const std::vector<std::string> profileFiles = ListDirectoryFileNamesSorted(GetProfilesDirectoryForTests());
+                if (ContainsFileNameIgnoreCase(profileFiles, renamedName + ".toml")) {
+                    throw std::runtime_error("Deleted scratch lifecycle profile file should not remain on disk.");
+                }
+
+                std::this_thread::yield();
+            }
+        } catch (const std::exception& e) {
+            recordFailure(std::string("Lifecycle worker failed: ") + e.what());
+        } catch (...) {
+            recordFailure("Lifecycle worker failed with an unknown exception.");
+        }
+    };
+
+    std::thread switchThread(switcher);
+    std::thread lifecycleThread(lifecycleWorker);
+    switchThread.join();
+    lifecycleThread.join();
+
+    Expect(failureCount.load(std::memory_order_acquire) == 0,
+           "Concurrent profile lifecycle operations should not fail while switching profiles." +
+               (failureMessage.empty() ? std::string() : (" First failure: " + failureMessage)));
+    ExpectProfilesMetadataMatchesDisk({ kDefaultProfileName, "Second", "Third", "ScratchSource" },
+                                      "profile-switch-concurrent-lifecycle");
+    Expect(EqualsIgnoreCase(g_profilesConfig.activeProfile, "Third"),
+           "The final active profile should match the last switch target after lifecycle stress.");
+}
+
+void RunProfileSwitchConcurrentMetadataRebuildTest(TestRunMode runMode = TestRunMode::Automated) {
+    (void)runMode;
+    ResetProfileTestState("profile_switch_concurrent_metadata_rebuild");
+
+    Expect(CreateNewProfile("Second"), "CreateNewProfile should create the second profile.");
+    Expect(CreateNewProfile("Third"), "CreateNewProfile should create the third profile.");
+    Expect(CreateNewProfile("Fourth"), "CreateNewProfile should create the fourth profile.");
+
+    std::atomic<bool> stopWorkers{ false };
+    std::atomic<int> failureCount{ 0 };
+    std::mutex failureMutex;
+    std::string failureMessage;
+
+    auto recordFailure = [&](const std::string& message) {
+        if (failureCount.fetch_add(1, std::memory_order_relaxed) == 0) {
+            std::lock_guard<std::mutex> lock(failureMutex);
+            failureMessage = message;
+        }
+        stopWorkers.store(true, std::memory_order_release);
+    };
+
+    auto switcher = [&]() {
+        try {
+            const std::array<std::string, 3> switchOrder = { kDefaultProfileName, "Second", "Third" };
+            for (int i = 0; i < 48 && !stopWorkers.load(std::memory_order_acquire); ++i) {
+                SwitchProfile(switchOrder[i % static_cast<int>(switchOrder.size())]);
+                std::this_thread::yield();
+            }
+        } catch (const std::exception& e) {
+            recordFailure(std::string("Switch thread failed: ") + e.what());
+        } catch (...) {
+            recordFailure("Switch thread failed with an unknown exception.");
+        }
+    };
+
+    auto rebuildWorker = [&]() {
+        try {
+            const std::filesystem::path metadataPath = GetProfilesMetadataPathForTests();
+            for (int i = 0; i < 16 && !stopWorkers.load(std::memory_order_acquire); ++i) {
+                std::error_code removeError;
+                std::filesystem::remove(metadataPath, removeError);
+
+                if (!EnsureProfilesConfigReady()) {
+                    throw std::runtime_error("EnsureProfilesConfigReady should rebuild metadata from on-disk profiles.");
+                }
+                if (!LoadProfilesConfig()) {
+                    throw std::runtime_error("LoadProfilesConfig should succeed after metadata rebuild.");
+                }
+
+                std::this_thread::yield();
+            }
+        } catch (const std::exception& e) {
+            recordFailure(std::string("Metadata rebuild worker failed: ") + e.what());
+        } catch (...) {
+            recordFailure("Metadata rebuild worker failed with an unknown exception.");
+        }
+    };
+
+    std::thread switchThread(switcher);
+    std::thread rebuildThread(rebuildWorker);
+    switchThread.join();
+    rebuildThread.join();
+
+    Expect(failureCount.load(std::memory_order_acquire) == 0,
+           "Concurrent metadata rebuilds should not fail while switching profiles." +
+               (failureMessage.empty() ? std::string() : (" First failure: " + failureMessage)));
+    ExpectProfilesMetadataMatchesDisk({ kDefaultProfileName, "Second", "Third", "Fourth" },
+                                      "profile-switch-concurrent-metadata-rebuild");
+    Expect(EqualsIgnoreCase(g_profilesConfig.activeProfile, "Third"),
+           "The final active profile should match the last switch target after metadata rebuild stress.");
+}
+
+void RunProfileSwitchConcurrentSnapshotWritesTest(TestRunMode runMode = TestRunMode::Automated) {
+    (void)runMode;
+    ResetProfileTestState("profile_switch_concurrent_snapshot_writes");
+
+    Expect(CreateNewProfile("Second"), "CreateNewProfile should create the second profile.");
+    Expect(CreateNewProfile("Third"), "CreateNewProfile should create the third profile.");
+    Expect(CreateNewProfile("Snapshot Target"), "CreateNewProfile should create the snapshot target profile.");
+
+    std::atomic<bool> stopWorkers{ false };
+    std::atomic<int> failureCount{ 0 };
+    std::mutex failureMutex;
+    std::string failureMessage;
+
+    auto recordFailure = [&](const std::string& message) {
+        if (failureCount.fetch_add(1, std::memory_order_relaxed) == 0) {
+            std::lock_guard<std::mutex> lock(failureMutex);
+            failureMessage = message;
+        }
+        stopWorkers.store(true, std::memory_order_release);
+    };
+
+    auto switcher = [&]() {
+        try {
+            const std::array<std::string, 3> switchOrder = { kDefaultProfileName, "Second", "Third" };
+            for (int i = 0; i < 48 && !stopWorkers.load(std::memory_order_acquire); ++i) {
+                SwitchProfile(switchOrder[i % static_cast<int>(switchOrder.size())]);
+                std::this_thread::yield();
+            }
+        } catch (const std::exception& e) {
+            recordFailure(std::string("Switch thread failed: ") + e.what());
+        } catch (...) {
+            recordFailure("Switch thread failed with an unknown exception.");
+        }
+    };
+
+    constexpr int kSnapshotWriteCount = 18;
+    auto snapshotWriter = [&]() {
+        try {
+            for (int i = 0; i < kSnapshotWriteCount && !stopWorkers.load(std::memory_order_acquire); ++i) {
+                Config snapshot;
+                if (!LoadEmbeddedDefaultConfig(snapshot)) {
+                    throw std::runtime_error("LoadEmbeddedDefaultConfig should succeed for snapshot stress fixtures.");
+                }
+
+                snapshot.configVersion = GetConfigVersion();
+                snapshot.defaultMode = "Fullscreen";
+                snapshot.mouseSensitivity = 1.25f + (0.125f * static_cast<float>(i));
+                snapshot.windowsMouseSpeed = 6 + (i % 5);
+                snapshot.autoBorderless = (i % 2) == 0;
+                snapshot.hideAnimationsInGame = (i % 3) == 0;
+
+                if (!SaveProfileSnapshotIfTracked("Snapshot Target", snapshot)) {
+                    throw std::runtime_error("SaveProfileSnapshotIfTracked should keep writing the tracked inactive profile.");
+                }
+
+                std::this_thread::yield();
+            }
+        } catch (const std::exception& e) {
+            recordFailure(std::string("Snapshot writer failed: ") + e.what());
+        } catch (...) {
+            recordFailure("Snapshot writer failed with an unknown exception.");
+        }
+    };
+
+    std::thread switchThread(switcher);
+    std::thread snapshotThread(snapshotWriter);
+    switchThread.join();
+    snapshotThread.join();
+
+    Expect(failureCount.load(std::memory_order_acquire) == 0,
+           "Concurrent snapshot writes should not fail while switching profiles." +
+               (failureMessage.empty() ? std::string() : (" First failure: " + failureMessage)));
+    ExpectProfilesMetadataMatchesDisk({ kDefaultProfileName, "Second", "Third", "Snapshot Target" },
+                                      "profile-switch-concurrent-snapshot-writes");
+    Expect(EqualsIgnoreCase(g_profilesConfig.activeProfile, "Third"),
+           "The final active profile should match the last switch target after snapshot stress.");
+
+    const Config snapshotTarget = LoadProfileConfigForTests("Snapshot Target");
+    const float expectedSensitivity = 1.25f + (0.125f * static_cast<float>(kSnapshotWriteCount - 1));
+    Expect(std::abs(snapshotTarget.mouseSensitivity - expectedSensitivity) < 0.0001f,
+           "The snapshot target should retain the last concurrent snapshot's mouse sensitivity.");
+    Expect(snapshotTarget.windowsMouseSpeed == 6 + ((kSnapshotWriteCount - 1) % 5),
+           "The snapshot target should retain the last concurrent snapshot's Windows mouse speed.");
+    Expect(snapshotTarget.autoBorderless == (((kSnapshotWriteCount - 1) % 2) == 0),
+           "The snapshot target should retain the last concurrent snapshot's autoBorderless flag.");
+    Expect(snapshotTarget.hideAnimationsInGame == (((kSnapshotWriteCount - 1) % 3) == 0),
+           "The snapshot target should retain the last concurrent snapshot's hideAnimationsInGame flag.");
+    Expect(snapshotTarget.configVersion == GetConfigVersion(),
+           "Concurrent snapshot writes should persist the current config version.");
 }
 
 void RunLogMultiInstanceLatestSuffixTest(TestRunMode runMode = TestRunMode::Automated) {

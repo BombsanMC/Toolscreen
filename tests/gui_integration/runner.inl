@@ -127,6 +127,9 @@ const auto& GetTestCaseDefinitions() {
         {"profile-recover-missing-metadata", &RunProfileRecoverMissingMetadataTest},
         {"profile-async-save-skip-deleted-profile", &RunProfileAsyncSaveSkipDeletedProfileTest},
         {"profile-switch-concurrent-readers", &RunProfileSwitchConcurrentReadersTest},
+        {"profile-switch-concurrent-lifecycle", &RunProfileSwitchConcurrentLifecycleTest},
+        {"profile-switch-concurrent-metadata-rebuild", &RunProfileSwitchConcurrentMetadataRebuildTest},
+        {"profile-switch-concurrent-snapshot-writes", &RunProfileSwitchConcurrentSnapshotWritesTest},
     };
 
     return testCases;

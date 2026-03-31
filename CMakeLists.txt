@@ -909,6 +909,9 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     profile-recover-missing-metadata
     profile-async-save-skip-deleted-profile
     profile-switch-concurrent-readers
+    profile-switch-concurrent-lifecycle
+    profile-switch-concurrent-metadata-rebuild
+    profile-switch-concurrent-snapshot-writes
 )
 
 foreach(test_case IN LISTS TOOLSCREEN_GUI_INTEGRATION_TEST_CASES)
