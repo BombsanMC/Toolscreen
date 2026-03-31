@@ -2426,6 +2426,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                 }
                             }
                         }
+
+                        if (ConsumeGuiTestKeyboardLayoutOpenScanPickerRequest()) {
+                            openTriggersCustomPopup = true;
+                            triggersCustomPopupAnchor = ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight());
+                        }
 #endif
 
                         const ImVec2 fullRebindRectMin = ImGui::GetCursorScreenPos();
@@ -2730,12 +2735,60 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                 DWORD curScan = (r && r->useCustomOutput && r->customOutputScanCode != 0) ? r->customOutputScanCode
                                                                                                           : getScanCodeWithExtendedFlag(curTriggerVk);
                                 std::string preview = scanCodeToDisplayName(curScan, curTriggerVk);
+                                const DWORD defaultScan = getScanCodeWithExtendedFlag(curTriggerVk);
+                                const std::string defaultPreview = scanCodeToDisplayName(defaultScan, curTriggerVk);
 
                                 ImGui::Text(tr("inputs.current_format", preview.c_str()).c_str());
                                 ImGui::Separator();
 
                                 static int s_scanFilterGroup = -1; // -1 = All
                                 if (ImGui::IsWindowAppearing()) s_scanFilterGroup = -1;
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+                                if (const int requestedScanFilterGroup = ConsumeGuiTestKeyboardLayoutScanFilterRequest();
+                                    requestedScanFilterGroup >= -1 && requestedScanFilterGroup < SG_Raw) {
+                                    s_scanFilterGroup = requestedScanFilterGroup;
+                                }
+#endif
+
+                                auto clearTriggerCustomScan = [&]() {
+                                    if (idx < 0 || idx >= (int)g_config.keyRebinds.rebinds.size()) return;
+                                    auto& rr = g_config.keyRebinds.rebinds[idx];
+                                    rr.customOutputScanCode = 0;
+                                    if (rr.customOutputVK == 0 && rr.customOutputUnicode == 0) rr.useCustomOutput = false;
+                                    g_configIsDirty = true;
+                                    r = &rr;
+                                };
+
+                                auto tryApplyTriggerCustomScan = [&](DWORD requestedScan) -> bool {
+                                    const auto found = std::find_if(s_knownScanCodes.begin(), s_knownScanCodes.end(),
+                                                                    [&](const KnownScanCode& known) { return known.scan == requestedScan; });
+                                    if (found == s_knownScanCodes.end()) return false;
+                                    if (found->group == SG_Raw) return false;
+                                    if (s_scanFilterGroup >= 0 && found->group != s_scanFilterGroup) return false;
+
+                                    idx = createRebindForKeyIfMissing(s_layoutContextVk);
+                                    s_layoutContextPreferredIndex = idx;
+                                    if (idx < 0) return false;
+
+                                    auto& rr = g_config.keyRebinds.rebinds[idx];
+                                    rr.useCustomOutput = true;
+                                    rr.customOutputScanCode = requestedScan;
+                                    g_configIsDirty = true;
+                                    r = &rr;
+                                    return true;
+                                };
+
+                                const bool isDefaultScan = !(r && r->useCustomOutput && r->customOutputScanCode != 0);
+                                if (ImGui::Selectable(tr("inputs.scan_reset_default_format", defaultPreview.c_str()).c_str(), isDefaultScan)) {
+                                    clearTriggerCustomScan();
+                                }
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+                                if (ConsumeGuiTestKeyboardLayoutResetScanToDefaultRequest()) {
+                                    clearTriggerCustomScan();
+                                }
+#endif
+                                ImGui::Separator();
+
                                 const char* groupLabels[SG_COUNT + 1] = {
                                     trc("inputs.scan_group_all"), trc("inputs.scan_group_alpha"), trc("inputs.scan_group_digit"),
                                     trc("inputs.scan_group_function"), trc("inputs.scan_group_nav"), trc("inputs.scan_group_numpad"),
@@ -2753,6 +2806,12 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                 }
                                 ImGui::Spacing();
 
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+                                if (const DWORD requestedScan = ConsumeGuiTestKeyboardLayoutSelectScanRequest(); requestedScan != 0) {
+                                    (void)tryApplyTriggerCustomScan(requestedScan);
+                                }
+#endif
+
                                 ImGui::BeginChild("##triggers_custom_list", ImVec2(0.0f, 260.0f), true);
                                 for (const auto& it : s_knownScanCodes) {
                                     if (it.group == SG_Raw) continue;
@@ -2763,14 +2822,7 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
 
                                     const bool selected = (r && r->useCustomOutput && r->customOutputScanCode == scan);
                                     if (ImGui::Selectable(itemLabel.c_str(), selected)) {
-                                        idx = createRebindForKeyIfMissing(s_layoutContextVk);
-                                        s_layoutContextPreferredIndex = idx;
-                                        if (idx >= 0) {
-                                            auto& rr = g_config.keyRebinds.rebinds[idx];
-                                            rr.useCustomOutput = true;
-                                            rr.customOutputScanCode = scan;
-                                            g_configIsDirty = true;
-                                        }
+                                        (void)tryApplyTriggerCustomScan(scan);
                                     }
                                 }
                                 ImGui::EndChild();
