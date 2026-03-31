@@ -864,6 +864,8 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     mode-mirror-render-viewport-anchor-size-matrix
     mode-mirror-group-render
     mode-window-overlay-render
+    mode-window-overlay-render-resets-blend-equation
+    mode-window-overlay-render-unbinds-sampler
     mode-browser-overlay-render
     mode-image-overlay-render-png
     mode-image-overlay-render-mpeg

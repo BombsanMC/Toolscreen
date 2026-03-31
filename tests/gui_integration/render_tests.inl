@@ -634,6 +634,151 @@ void RunModeBrowserOverlayRenderTest(TestRunMode runMode = TestRunMode::Automate
     CleanupShaders();
 }
 
+void RunModeWindowOverlayRenderResetsBlendEquationTest(TestRunMode runMode = TestRunMode::Automated) {
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (!g_hasModernGL) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
+
+    const std::filesystem::path root = PrepareCaseDirectory("mode_window_overlay_render_resets_blend_equation");
+    ResetGlobalTestState(root);
+
+    constexpr char kModeId[] = "Window Overlay Hostile Blend Mode";
+    constexpr char kOverlayName[] = "Window Overlay Hostile Blend";
+    constexpr int kOverlayX = 88;
+    constexpr int kOverlayY = 120;
+
+    WindowOverlayConfig overlay;
+    overlay.name = kOverlayName;
+    overlay.x = kOverlayX;
+    overlay.y = kOverlayY;
+    overlay.scale = 20.0f;
+    overlay.relativeTo = "topLeftScreen";
+    overlay.opacity = 1.0f;
+    overlay.onlyOnMyScreen = false;
+    overlay.pixelatedScaling = true;
+    overlay.background.enabled = false;
+    overlay.border.enabled = false;
+
+    ModeConfig mode;
+    mode.id = kModeId;
+    mode.width = kWindowWidth;
+    mode.height = kWindowHeight;
+    mode.manualWidth = kWindowWidth;
+    mode.manualHeight = kWindowHeight;
+    mode.windowOverlayIds = { kOverlayName };
+
+    g_config.defaultMode = kModeId;
+    g_config.windowOverlays = { overlay };
+    g_config.modes = { mode };
+    g_configLoaded.store(true, std::memory_order_release);
+
+    ResetOverlayRenderTestResources();
+    Expect(StageWindowOverlayTestFrame(overlay, MakeSolidRgbaPixels(2, 2, 255, 64, 32), 2, 2),
+           "Failed to stage hostile-blend window overlay pixels for integration testing.");
+
+    auto renderAndAssert = [&](DummyWindow& targetWindow) {
+        glEnable(GL_BLEND);
+        glBlendEquationSeparate(GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_ADD);
+
+        RenderModeOverlayFrame(targetWindow, g_config, g_config.modes.front());
+        if (runMode == TestRunMode::Automated) {
+            ExpectFramebufferPixelColorNear(kOverlayX + 12, kOverlayY + 12, GetCachedWindowHeight(),
+                                            { 1.0f, 64.0f / 255.0f, 32.0f / 255.0f, 1.0f },
+                                            "Expected the overlay pass to reset hostile blend equations before drawing overlays.");
+        }
+    };
+
+    if (runMode == TestRunMode::Visual) {
+        RunVisualLoop(window, "mode-window-overlay-render-resets-blend-equation",
+                      [&](DummyWindow& visualWindow) { renderAndAssert(visualWindow); });
+    } else {
+        renderAndAssert(window);
+    }
+
+    CleanupBrowserOverlayCache();
+    CleanupWindowOverlayCache();
+    CleanupGPUResources();
+    CleanupShaders();
+}
+
+void RunModeWindowOverlayRenderUnbindsSamplerTest(TestRunMode runMode = TestRunMode::Automated) {
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (!g_hasModernGL) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
+    if (!(GLEW_VERSION_3_3 || GLEW_ARB_sampler_objects)) {
+        std::cout << "SKIP (no sampler object support)" << std::endl;
+        return;
+    }
+
+    const std::filesystem::path root = PrepareCaseDirectory("mode_window_overlay_render_unbinds_sampler");
+    ResetGlobalTestState(root);
+
+    constexpr char kModeId[] = "Window Overlay Hostile Sampler Mode";
+    constexpr char kOverlayName[] = "Window Overlay Hostile Sampler";
+    constexpr int kOverlayX = 104;
+    constexpr int kOverlayY = 136;
+
+    WindowOverlayConfig overlay;
+    overlay.name = kOverlayName;
+    overlay.x = kOverlayX;
+    overlay.y = kOverlayY;
+    overlay.scale = 20.0f;
+    overlay.relativeTo = "topLeftScreen";
+    overlay.opacity = 1.0f;
+    overlay.onlyOnMyScreen = false;
+    overlay.pixelatedScaling = true;
+    overlay.background.enabled = false;
+    overlay.border.enabled = false;
+
+    ModeConfig mode;
+    mode.id = kModeId;
+    mode.width = kWindowWidth;
+    mode.height = kWindowHeight;
+    mode.manualWidth = kWindowWidth;
+    mode.manualHeight = kWindowHeight;
+    mode.windowOverlayIds = { kOverlayName };
+
+    g_config.defaultMode = kModeId;
+    g_config.windowOverlays = { overlay };
+    g_config.modes = { mode };
+    g_configLoaded.store(true, std::memory_order_release);
+
+    ResetOverlayRenderTestResources();
+    Expect(StageWindowOverlayTestFrame(overlay, MakeSolidRgbaPixels(2, 2, 255, 64, 32), 2, 2),
+           "Failed to stage hostile-sampler window overlay pixels for integration testing.");
+
+    auto renderAndAssert = [&](DummyWindow& targetWindow) {
+        GLuint hostileSampler = 0;
+        glGenSamplers(1, &hostileSampler);
+        Expect(hostileSampler != 0, "Failed to create a hostile sampler object for integration testing.");
+
+        glSamplerParameteri(hostileSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glSamplerParameteri(hostileSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glBindSampler(0, hostileSampler);
+
+        RenderModeOverlayFrame(targetWindow, g_config, g_config.modes.front());
+
+        glBindSampler(0, 0);
+        glDeleteSamplers(1, &hostileSampler);
+
+        if (runMode == TestRunMode::Automated) {
+            ExpectFramebufferPixelColorNear(kOverlayX + 12, kOverlayY + 12, GetCachedWindowHeight(),
+                                            { 1.0f, 64.0f / 255.0f, 32.0f / 255.0f, 1.0f },
+                                            "Expected the overlay pass to unbind hostile sampler objects before sampling textures.");
+        }
+    };
+
+    if (runMode == TestRunMode::Visual) {
+        RunVisualLoop(window, "mode-window-overlay-render-unbinds-sampler",
+                      [&](DummyWindow& visualWindow) { renderAndAssert(visualWindow); });
+    } else {
+        renderAndAssert(window);
+    }
+
+    CleanupBrowserOverlayCache();
+    CleanupWindowOverlayCache();
+    CleanupGPUResources();
+    CleanupShaders();
+}
+
 void RunModeImageOverlayRenderPngTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
     if (!g_hasModernGL) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }

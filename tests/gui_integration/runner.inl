@@ -82,6 +82,8 @@ const auto& GetTestCaseDefinitions() {
         {"mode-mirror-render-viewport-anchor-size-matrix", &RunModeMirrorRenderViewportAnchorSizeMatrixTest},
         {"mode-mirror-group-render", &RunModeMirrorGroupRenderTest},
         {"mode-window-overlay-render", &RunModeWindowOverlayRenderTest},
+        {"mode-window-overlay-render-resets-blend-equation", &RunModeWindowOverlayRenderResetsBlendEquationTest},
+        {"mode-window-overlay-render-unbinds-sampler", &RunModeWindowOverlayRenderUnbindsSamplerTest},
         {"mode-browser-overlay-render", &RunModeBrowserOverlayRenderTest},
         {"mode-image-overlay-render-png", &RunModeImageOverlayRenderPngTest},
         {"mode-image-overlay-render-mpeg", &RunModeImageOverlayRenderMpegTest},

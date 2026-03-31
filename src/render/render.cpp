@@ -1802,6 +1802,10 @@ struct PixelStoreStateGuard {
     }
 };
 
+static bool SupportsSamplerObjects() {
+    return GLEW_VERSION_3_3 || GLEW_ARB_sampler_objects;
+}
+
 void SaveGLState(GLState* s) {
     {
         PROFILE_SCOPE_CAT("Save GL Bindings", "SwapBuffers");
@@ -1813,18 +1817,30 @@ void SaveGLState(GLState* s) {
         glGetIntegerv(GL_ACTIVE_TEXTURE, &s->at);
 
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t);
+        if (SupportsSamplerObjects()) {
+            glGetIntegerv(GL_SAMPLER_BINDING, &s->smp);
+        } else {
+            s->smp = 0;
+            s->smp0 = 0;
+            s->smp1 = 0;
+        }
+
         if (s->at == GL_TEXTURE0) {
             s->t0 = s->t;
+            s->smp0 = s->smp;
         } else {
             glActiveTexture(GL_TEXTURE0);
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t0);
+            if (SupportsSamplerObjects()) { glGetIntegerv(GL_SAMPLER_BINDING, &s->smp0); }
         }
 
         if (s->at == GL_TEXTURE1) {
             s->t1 = s->t;
+            s->smp1 = s->smp;
         } else {
             glActiveTexture(GL_TEXTURE1);
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->t1);
+            if (SupportsSamplerObjects()) { glGetIntegerv(GL_SAMPLER_BINDING, &s->smp1); }
         }
 
         glActiveTexture(s->at);
@@ -1840,6 +1856,8 @@ void SaveGLState(GLState* s) {
         s->ce = glIsEnabled(GL_CULL_FACE);
         s->ste = glIsEnabled(GL_STENCIL_TEST);
         s->srgb_enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+        s->rasterizer_discard = glIsEnabled(GL_RASTERIZER_DISCARD);
+        s->color_logic_op = glIsEnabled(GL_COLOR_LOGIC_OP);
         glGetBooleanv(GL_DEPTH_WRITEMASK, &s->depth_mask);
     }
 
@@ -1849,6 +1867,8 @@ void SaveGLState(GLState* s) {
         glGetIntegerv(GL_BLEND_DST_RGB, &s->blend_dst_rgb);
         glGetIntegerv(GL_BLEND_SRC_ALPHA, &s->blend_src_alpha);
         glGetIntegerv(GL_BLEND_DST_ALPHA, &s->blend_dst_alpha);
+        glGetIntegerv(GL_BLEND_EQUATION_RGB, &s->blend_eq_rgb);
+        glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s->blend_eq_alpha);
         glGetIntegerv(GL_DRAW_BUFFER, &s->draw_buffer);
         glGetIntegerv(GL_READ_BUFFER, &s->read_buffer);
 
@@ -1856,6 +1876,7 @@ void SaveGLState(GLState* s) {
         glGetIntegerv(GL_SCISSOR_BOX, s->sb);
 
         glGetFloatv(GL_COLOR_CLEAR_VALUE, s->cc);
+        glGetFloatv(GL_BLEND_COLOR, s->blend_color);
         glGetFloatv(GL_LINE_WIDTH, &s->lw);
         glGetBooleanv(GL_COLOR_WRITEMASK, s->color_mask);
     }
@@ -1874,9 +1895,16 @@ void RestoreGLState(const GLState& s) {
         BindTextureDirect(GL_TEXTURE_2D, s.t0);
         glActiveTexture(GL_TEXTURE1);
         BindTextureDirect(GL_TEXTURE_2D, s.t1);
+        if (SupportsSamplerObjects()) {
+            glBindSampler(0, static_cast<GLuint>(s.smp0));
+            glBindSampler(1, static_cast<GLuint>(s.smp1));
+        }
         if (s.at != GL_TEXTURE0 && s.at != GL_TEXTURE1) {
             glActiveTexture(s.at);
             BindTextureDirect(GL_TEXTURE_2D, s.t);
+            if (SupportsSamplerObjects() && s.at >= GL_TEXTURE0) {
+                glBindSampler(static_cast<GLuint>(s.at - GL_TEXTURE0), static_cast<GLuint>(s.smp));
+            }
         } else {
             glActiveTexture(s.at);
         }
@@ -1908,11 +1936,21 @@ void RestoreGLState(const GLState& s) {
             glEnable(GL_FRAMEBUFFER_SRGB);
         else
             glDisable(GL_FRAMEBUFFER_SRGB);
+        if (s.rasterizer_discard)
+            glEnable(GL_RASTERIZER_DISCARD);
+        else
+            glDisable(GL_RASTERIZER_DISCARD);
+        if (s.color_logic_op)
+            glEnable(GL_COLOR_LOGIC_OP);
+        else
+            glDisable(GL_COLOR_LOGIC_OP);
     }
 
     {
         PROFILE_SCOPE_CAT("Restore GL Draw State", "SwapBuffers");
+        glBlendEquationSeparate(s.blend_eq_rgb, s.blend_eq_alpha);
         glBlendFuncSeparate(s.blend_src_rgb, s.blend_dst_rgb, s.blend_src_alpha, s.blend_dst_alpha);
+        glBlendColor(s.blend_color[0], s.blend_color[1], s.blend_color[2], s.blend_color[3]);
         glDepthMask(s.depth_mask);
         glDrawBuffer(s.draw_buffer);
         glReadBuffer(s.read_buffer);
@@ -1946,6 +1984,14 @@ static void PrepareSameThreadOverlayState(const GLState& s, int fullW, int fullH
     glDisable(GL_CULL_FACE);
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_FRAMEBUFFER_SRGB);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glDisable(GL_COLOR_LOGIC_OP);
+    if (SupportsSamplerObjects()) {
+        glBindSampler(0, 0);
+        glBindSampler(1, 0);
+    }
+    glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
+    glBlendColor(0.0f, 0.0f, 0.0f, 0.0f);
     glDepthMask(GL_FALSE);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }

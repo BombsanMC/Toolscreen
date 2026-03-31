@@ -104,6 +104,9 @@ struct GLState {
     GLint t;
     GLint t0;
     GLint t1;
+    GLint smp;
+    GLint smp0;
+    GLint smp1;
     GLint ab;
     GLint va;
     GLint fb;
@@ -117,8 +120,11 @@ struct GLState {
     GLboolean ste;
     GLboolean srgb_enabled;
     GLboolean depth_mask;
+    GLboolean rasterizer_discard;
+    GLboolean color_logic_op;
 
     GLint blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
+    GLint blend_eq_rgb, blend_eq_alpha;
     GLint draw_buffer;
     GLint read_buffer;
 
@@ -126,6 +132,7 @@ struct GLState {
     GLint sb[4];
 
     GLfloat cc[4];
+    GLfloat blend_color[4];
     GLfloat lw;
     GLboolean color_mask[4];
 };
