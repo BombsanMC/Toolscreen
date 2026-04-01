@@ -1,4 +1,4 @@
-if (ImGui::BeginTabItem(trc("tabs.general"))) {
+if (BeginSelectableSettingsTopTabItem(trc("tabs.general"))) {
     g_currentlyEditingMirror = "";
     g_imageDragMode.store(false);
     g_windowOverlayDragMode.store(false);
@@ -95,6 +95,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         g_config.hotkeys.erase(std::remove_if(g_config.hotkeys.begin(), g_config.hotkeys.end(),
                                               [&](const HotkeyConfig& h) { return EqualsIgnoreCase(h.secondaryMode, modeId); }),
                                g_config.hotkeys.end());
+        RemoveInvalidHotkeyModeReferences(g_config);
         ResetAllHotkeySecondaryModes();
         std::lock_guard<std::mutex> hotkeyLock(g_hotkeyMainKeysMutex);
         RebuildHotkeyMainKeys_Internal();
@@ -175,7 +176,46 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         None,
         LabelsOnly,
         ControlsOnly,
+        CopiedFromEyeZoom,
     };
+
+    auto SyncPreemptiveFromEyeZoom = [&]() {
+        ModeConfig* eyezoomMode = GetModeConfig("EyeZoom");
+        ModeConfig* preemptiveMode = GetModeConfig("Preemptive");
+        if (!eyezoomMode || !preemptiveMode) { return false; }
+
+        bool changed = false;
+        if (preemptiveMode->relativeWidth >= 0.0f || preemptiveMode->relativeHeight >= 0.0f || preemptiveMode->useRelativeSize) {
+            preemptiveMode->relativeWidth = -1.0f;
+            preemptiveMode->relativeHeight = -1.0f;
+            preemptiveMode->useRelativeSize = false;
+            changed = true;
+        }
+
+        if (preemptiveMode->width != eyezoomMode->width) {
+            preemptiveMode->width = eyezoomMode->width;
+            changed = true;
+        }
+        const int syncedManualWidth = (eyezoomMode->manualWidth > 0) ? eyezoomMode->manualWidth : eyezoomMode->width;
+        if (preemptiveMode->manualWidth != syncedManualWidth) {
+            preemptiveMode->manualWidth = syncedManualWidth;
+            changed = true;
+        }
+
+        if (preemptiveMode->height != eyezoomMode->height) {
+            preemptiveMode->height = eyezoomMode->height;
+            changed = true;
+        }
+        const int syncedManualHeight = (eyezoomMode->manualHeight > 0) ? eyezoomMode->manualHeight : eyezoomMode->height;
+        if (preemptiveMode->manualHeight != syncedManualHeight) {
+            preemptiveMode->manualHeight = syncedManualHeight;
+            changed = true;
+        }
+
+        return changed;
+    };
+
+    if (SyncPreemptiveFromEyeZoom()) { g_configIsDirty = true; }
 
     auto RenderModeTableRow = [&](const std::string& modeId, const char* label, const char* hotkeyLabel, int defaultWidth,
                                   int defaultHeight, int maxWidth, int maxHeight,
@@ -197,6 +237,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         ImGui::TableNextColumn();
         if (modeConfig) {
             ImGui::PushID((std::string(label) + "_width").c_str());
+            const float widthColumnAvail = ImGui::GetContentRegionAvail().x;
             if (relativeOnlySizing) {
                 float minWidthPct = 1.0f;
                 if (EqualsIgnoreCase(modeId, "Thin")) {
@@ -209,9 +250,9 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                                  100.0f;
                 widthPct = (std::max)(minWidthPct, (std::min)(100.0f, widthPct));
 
+                ImGui::SetNextItemWidth(widthColumnAvail);
                 if (ImGui::SliderFloat("##w_pct", &widthPct, minWidthPct, 100.0f, "%.1f%%")) {
                     modeConfig->useRelativeSize = true;
-                    if (!modeConfig->widthExpr.empty()) { modeConfig->widthExpr.clear(); }
                     modeConfig->relativeWidth = widthPct / 100.0f;
 
                     int computedWidth = static_cast<int>(modeConfig->relativeWidth * static_cast<float>(safeMaxWidth));
@@ -219,12 +260,29 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                         computedWidth = (std::max)(330, computedWidth);
                     }
                     modeConfig->width = (std::max)(1, computedWidth);
+                    if (EqualsIgnoreCase(modeId, "Fullscreen")) {
+                        modeConfig->stretch.enabled = true;
+                        modeConfig->stretch.x = 0;
+                        modeConfig->stretch.y = 0;
+                        modeConfig->stretch.width = safeMaxWidth;
+                        modeConfig->stretch.height = safeMaxHeight;
+                        if (g_currentModeId == modeId) {
+                            HWND hwnd = g_minecraftHwnd.load();
+                            if (hwnd) { RequestWindowClientResize(hwnd, modeConfig->width, modeConfig->height, "gui:basic_fullscreen_width_slider"); }
+                        }
+                    }
                     g_configIsDirty = true;
                 }
-            } else if (Spinner("##w", &modeConfig->width, 10, 1, maxWidth, 64, 3)) {
-                if (!modeConfig->widthExpr.empty()) { modeConfig->widthExpr.clear(); }
-                modeConfig->relativeWidth = -1.0f;
-                g_configIsDirty = true;
+            } else {
+                const float spinnerInputWidth = (std::max)(1.0f, widthColumnAvail - (ImGui::GetFrameHeight() * 2.0f) - 6.0f);
+                if (Spinner("##w", &modeConfig->width, 10, 1, maxWidth, spinnerInputWidth, 3)) {
+                    if (EqualsIgnoreCase(modeId, "EyeZoom")) {
+                        modeConfig->manualWidth = modeConfig->width;
+                        if (SyncPreemptiveFromEyeZoom()) { g_configIsDirty = true; }
+                    }
+                    modeConfig->relativeWidth = -1.0f;
+                    g_configIsDirty = true;
+                }
             }
             ImGui::PopID();
         }
@@ -232,6 +290,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         ImGui::TableNextColumn();
         if (modeConfig) {
             ImGui::PushID((std::string(label) + "_height").c_str());
+            const float heightColumnAvail = ImGui::GetContentRegionAvail().x;
             if (relativeOnlySizing) {
                 float heightPct = ((modeConfig->relativeHeight >= 0.0f && modeConfig->relativeHeight <= 1.0f)
                                        ? modeConfig->relativeHeight
@@ -239,17 +298,34 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                                   100.0f;
                 heightPct = (std::max)(1.0f, (std::min)(100.0f, heightPct));
 
+                ImGui::SetNextItemWidth(heightColumnAvail);
                 if (ImGui::SliderFloat("##h_pct", &heightPct, 1.0f, 100.0f, "%.1f%%")) {
                     modeConfig->useRelativeSize = true;
-                    if (!modeConfig->heightExpr.empty()) { modeConfig->heightExpr.clear(); }
                     modeConfig->relativeHeight = heightPct / 100.0f;
                     modeConfig->height = (std::max)(1, static_cast<int>(modeConfig->relativeHeight * static_cast<float>(safeMaxHeight)));
+                    if (EqualsIgnoreCase(modeId, "Fullscreen")) {
+                        modeConfig->stretch.enabled = true;
+                        modeConfig->stretch.x = 0;
+                        modeConfig->stretch.y = 0;
+                        modeConfig->stretch.width = safeMaxWidth;
+                        modeConfig->stretch.height = safeMaxHeight;
+                        if (g_currentModeId == modeId) {
+                            HWND hwnd = g_minecraftHwnd.load();
+                            if (hwnd) { RequestWindowClientResize(hwnd, modeConfig->width, modeConfig->height, "gui:basic_fullscreen_height_slider"); }
+                        }
+                    }
                     g_configIsDirty = true;
                 }
-            } else if (Spinner("##h", &modeConfig->height, 10, 1, maxHeight, 64, 3)) {
-                if (!modeConfig->heightExpr.empty()) { modeConfig->heightExpr.clear(); }
-                modeConfig->relativeHeight = -1.0f;
-                g_configIsDirty = true;
+            } else {
+                const float spinnerInputWidth = (std::max)(1.0f, heightColumnAvail - (ImGui::GetFrameHeight() * 2.0f) - 6.0f);
+                if (Spinner("##h", &modeConfig->height, 10, 1, maxHeight, spinnerInputWidth, 3)) {
+                    if (EqualsIgnoreCase(modeId, "EyeZoom")) {
+                        modeConfig->manualHeight = modeConfig->height;
+                        if (SyncPreemptiveFromEyeZoom()) { g_configIsDirty = true; }
+                    }
+                    modeConfig->relativeHeight = -1.0f;
+                    g_configIsDirty = true;
+                }
             }
             ImGui::PopID();
         }
@@ -263,6 +339,14 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         if (eyezoomInline != EyeZoomInlineKind::None) {
             ImGui::PushID((std::string("eyezoom_inline_settings_") + modeId).c_str());
 
+            if (eyezoomInline == EyeZoomInlineKind::CopiedFromEyeZoom) {
+                ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x);
+                ImGui::TextDisabled("%s", trc("modes.preemptive.copied_from_eyezoom"));
+                ImGui::PopTextWrapPos();
+                ImGui::PopID();
+                return;
+            }
+
             if (ImGui::BeginTable("##eyezoom_inline_tbl", 2, ImGuiTableFlags_SizingStretchSame)) {
                 ImGui::TableNextRow();
 
@@ -275,9 +359,10 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                     HelpMarker(trc("eyezoom.tooltip"));
                 } else if (eyezoomInline == EyeZoomInlineKind::ControlsOnly) {
                     ImGui::TableSetColumnIndex(0);
-                    int maxCloneWidth = (modeConfig ? modeConfig->width : maxWidth);
+                        int maxCloneWidth = (modeConfig ? modeConfig->width : maxWidth);
                     if (maxCloneWidth < 2) maxCloneWidth = 2;
-                    if (Spinner("##EyeZoomCloneWidth", &g_config.eyezoom.cloneWidth, 2, 2, maxCloneWidth, 64, 3)) {
+                        if (maxCloneWidth < g_config.eyezoom.cloneWidth) maxCloneWidth = g_config.eyezoom.cloneWidth;
+                    if (SpinnerDeferredTextInput("##EyeZoomCloneWidth", &g_config.eyezoom.cloneWidth, 2, 2, maxCloneWidth, 64, 3)) {
                         if (g_config.eyezoom.cloneWidth % 2 != 0) { g_config.eyezoom.cloneWidth = (g_config.eyezoom.cloneWidth / 2) * 2; }
                         int maxOverlay = g_config.eyezoom.cloneWidth / 2;
                         if (g_config.eyezoom.overlayWidth > maxOverlay) g_config.eyezoom.overlayWidth = maxOverlay;
@@ -287,7 +372,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                     ImGui::TableSetColumnIndex(1);
                     {
                         int maxOverlay = g_config.eyezoom.cloneWidth / 2;
-                        if (Spinner("##EyeZoomOverlayWidth", &g_config.eyezoom.overlayWidth, 1, 0, maxOverlay, 64, 3)) g_configIsDirty = true;
+                        if (SpinnerDeferredTextInput("##EyeZoomOverlayWidth", &g_config.eyezoom.overlayWidth, 1, 0, maxOverlay, 64, 3)) g_configIsDirty = true;
                     }
                 }
 
@@ -299,7 +384,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
     };
 
     if (ImGui::BeginTable("ModeTable", 5, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Mode", ImGuiTableColumnFlags_WidthFixed, 80);
+        ImGui::TableSetupColumn("Mode", ImGuiTableColumnFlags_WidthFixed, 100);
         ImGui::TableSetupColumn("Width", ImGuiTableColumnFlags_WidthFixed, 120);
         ImGui::TableSetupColumn("Height", ImGuiTableColumnFlags_WidthFixed, 120);
         ImGui::TableSetupColumn("Hotkey", ImGuiTableColumnFlags_WidthFixed, 150);
@@ -326,6 +411,9 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         RenderModeTableRow("Wide", "Wide", "wide_hotkey", monitorWidth, 400, monitorWidth, monitorHeight, EyeZoomInlineKind::LabelsOnly);
 
         RenderModeTableRow("EyeZoom", "EyeZoom", "eyezoom_hotkey", 384, 16384, monitorWidth, 16384, EyeZoomInlineKind::ControlsOnly);
+
+        RenderModeTableRow("Preemptive", "Preemptive", "preemptive_hotkey", 384, 16384, monitorWidth, 16384,
+                           EyeZoomInlineKind::CopiedFromEyeZoom, true);
 
         ImGui::EndTable();
     }
@@ -357,6 +445,23 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
         }
     }
 
+    {
+        ModeConfig* preemptiveMode = GetModeConfig("Preemptive");
+        if (preemptiveMode) {
+            RawInputSensitivityNote();
+            ImGui::Text(trc("general.preemptive_sensitivity"));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("##preemptiveSensBasic", &preemptiveMode->modeSensitivity, 0.001f, 10.0f, "%.3fx")) {
+                if (preemptiveMode->modeSensitivity < 0.001f) preemptiveMode->modeSensitivity = 0.001f;
+                preemptiveMode->sensitivityOverrideEnabled = true;
+                g_configIsDirty = true;
+            }
+            ImGui::SameLine();
+            HelpMarker(trc("general.sens.tooltip.preemptive_sensitivity"));
+        }
+    }
+
     ImGui::Separator();
     ImGui::SeparatorText(trc("label.overlays"));
 
@@ -378,7 +483,8 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
                 ninjabrainBot.x = 0;
                 ninjabrainBot.y = 0;
                 ninjabrainBot.scale = 1.2f;
-                ninjabrainBot.relativeTo = "topLeft";
+                ninjabrainBot.relativeSizing = true;
+                ninjabrainBot.relativeTo = "topLeftScreen";
                 ninjabrainBot.opacity = 1.0f;
                 ninjabrainBot.colorKey = { 55 / 255.0f, 60 / 255.0f, 66 / 255.0f };
                 ninjabrainBot.enableColorKey = true;
@@ -413,19 +519,21 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
             }
         };
 
-        bool ninjabrainEnabled =
-            ModeHasNinjabrain("Fullscreen") || ModeHasNinjabrain("EyeZoom") || ModeHasNinjabrain("Thin") || ModeHasNinjabrain("Wide");
+        bool ninjabrainEnabled = ModeHasNinjabrain("Fullscreen") || ModeHasNinjabrain("EyeZoom") || ModeHasNinjabrain("Preemptive") ||
+                                ModeHasNinjabrain("Thin") || ModeHasNinjabrain("Wide");
 
         if (ImGui::Checkbox(trc("general.ninjabrainbot_overlay"), &ninjabrainEnabled)) {
             if (ninjabrainEnabled) {
                 if (!FindNinjabrainBotImage()) { CreateNinjabrainBotImage(); }
                 AddNinjabrainToMode("Fullscreen");
                 AddNinjabrainToMode("EyeZoom");
+                AddNinjabrainToMode("Preemptive");
                 AddNinjabrainToMode("Thin");
                 AddNinjabrainToMode("Wide");
             } else {
                 RemoveNinjabrainFromMode("Fullscreen");
                 RemoveNinjabrainFromMode("EyeZoom");
+                RemoveNinjabrainFromMode("Preemptive");
                 RemoveNinjabrainFromMode("Thin");
                 RemoveNinjabrainFromMode("Wide");
             }
@@ -509,6 +617,7 @@ if (ImGui::BeginTabItem(trc("tabs.general"))) {
     RenderMirrorAssignments("Thin", "Thin");
     RenderMirrorAssignments("Wide", "Wide");
     RenderMirrorAssignments("EyeZoom", "EyeZoom");
+    RenderMirrorAssignments("Preemptive", "Preemptive");
 
     ImGui::EndTabItem();
 }

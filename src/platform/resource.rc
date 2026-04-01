@@ -7,7 +7,11 @@
 //
 // Generated from the TEXTINCLUDE 2 resource.
 //
+#include "version.h"
 #include "winres.h"
+
+#define TOOLSCREEN_FILE_VERSION TOOLSCREEN_VERSION_MAJOR, TOOLSCREEN_VERSION_MINOR, TOOLSCREEN_VERSION_PATCH, 0
+#define TOOLSCREEN_FILE_VERSION_STRING TOOLSCREEN_VERSION_STRING "\0"
 
 /////////////////////////////////////////////////////////////////////////////
 #undef APSTUDIO_READONLY_SYMBOLS
@@ -20,6 +24,44 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 /////////////////////////////////////////////////////////////////////////////
 //
+// Version
+//
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION TOOLSCREEN_FILE_VERSION
+ PRODUCTVERSION TOOLSCREEN_FILE_VERSION
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x2L
+ FILESUBTYPE 0x0L
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040904b0"
+		BEGIN
+			VALUE "CompanyName", "jojoe77777\0"
+			VALUE "FileDescription", "Toolscreen hook DLL\0"
+			VALUE "FileVersion", TOOLSCREEN_FILE_VERSION_STRING
+			VALUE "InternalName", "Toolscreen\0"
+			VALUE "LegalCopyright", "Copyright (c) 2026 jojoe77777\0"
+			VALUE "OriginalFilename", "Toolscreen.dll\0"
+			VALUE "ProductName", "Toolscreen\0"
+			VALUE "ProductVersion", TOOLSCREEN_FILE_VERSION_STRING
+		END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x409, 1200
+	END
+END
+
+/////////////////////////////////////////////////////////////////////////////
+//
 // RCDATA
 //
 
@@ -28,6 +70,12 @@ IDR_TOAST1_PNG         RCDATA                  "../toast1.png"
 IDR_TOAST2_PNG         RCDATA                  "../toast2.png"
 IDR_DISCORD_PNG        RCDATA                  "../discord.png"
 IDR_LANGUAGE_PNG       RCDATA                  "../language.png"
+IDR_ICON_DELETE        RCDATA                  "../icon_delete.png"
+IDR_ICON_RENAME        RCDATA                  "../icon_rename.png"
+IDR_ICON_DUPLICATE     RCDATA                  "../icon_duplicate.png"
+IDR_ICON_ADD           RCDATA                  "../icon_add.png"
+IDR_REBIND_ON_PNG      RCDATA                  "../rebind_indicator_on.png"
+IDR_REBIND_OFF_PNG     RCDATA                  "../rebind_indicator_off.png"
 IDR_LANG_LANGS         RCDATA                  "../../lang/langs.json"
 IDR_LANG_EN            RCDATA                  "../../lang/en.json"
 IDR_LANG_ZH_CN         RCDATA                  "../../lang/zh_CN.json"

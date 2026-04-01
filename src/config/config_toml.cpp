@@ -1,13 +1,16 @@
 #include "config_toml.h"
 #include "config_defaults.h"
+#include "common/expression_parser.h"
 #include "gui/gui.h"
 #include "runtime/logic_thread.h"
 #include "common/utils.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 
 template <typename T> T GetOr(const toml::table& tbl, const std::string& key, T defaultValue) {
     if (auto node = tbl.get(key)) {
@@ -33,44 +36,400 @@ const toml::array* GetArray(const toml::table& tbl, const std::string& key) {
     return nullptr;
 }
 
+std::optional<double> GetNumericValue(const toml::node* node) {
+    if (!node) {
+        return std::nullopt;
+    }
+
+    if (node->is_integer()) {
+        return static_cast<double>(node->as_integer()->get());
+    }
+
+    if (node->is_floating_point()) {
+        return node->as_floating_point()->get();
+    }
+
+    return std::nullopt;
+}
+
+std::optional<double> GetNumericValue(const toml::table& tbl, const std::string& key) {
+    return GetNumericValue(tbl.get(key));
+}
+
+bool IsZeroOrOneValue(double value) {
+    return value == 0.0 || value == 1.0;
+}
+
+const char* EyeZoomFontSizeModeToTomlString(EyeZoomFontSizeMode mode) {
+    switch (mode) {
+        case EyeZoomFontSizeMode::PerSquareAuto:
+            return "per_square_auto";
+        case EyeZoomFontSizeMode::Manual:
+            return "manual";
+        case EyeZoomFontSizeMode::Auto:
+        default:
+            return "auto";
+    }
+}
+
+EyeZoomFontSizeMode EyeZoomFontSizeModeFromLegacyBool(bool autoFontSize) {
+    return autoFontSize ? EyeZoomFontSizeMode::PerSquareAuto : EyeZoomFontSizeMode::Manual;
+}
+
+EyeZoomFontSizeMode ParseEyeZoomFontSizeMode(const toml::table& tbl) {
+    if (auto modeNode = tbl.get("fontSizeMode")) {
+        if (auto modeValue = modeNode->value<std::string>()) {
+            std::string lowered = *modeValue;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (lowered == "auto") { return EyeZoomFontSizeMode::Auto; }
+            if (lowered == "per_square_auto" || lowered == "per-square-auto" || lowered == "persquareauto") {
+                return EyeZoomFontSizeMode::PerSquareAuto;
+            }
+            if (lowered == "manual") { return EyeZoomFontSizeMode::Manual; }
+        }
+    }
+
+    return EyeZoomFontSizeModeFromLegacyBool(GetOr(tbl, "autoFontSize", false));
+}
+
+bool IsLiteralZeroOrOneString(const std::string& value) {
+    const size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return false;
+    }
+
+    const size_t end = value.find_last_not_of(" \t\r\n");
+    const std::string trimmed = value.substr(start, end - start + 1);
+
+    char* parseEnd = nullptr;
+    const double parsed = std::strtod(trimmed.c_str(), &parseEnd);
+    if (!parseEnd || *parseEnd != '\0') {
+        return false;
+    }
+
+    return IsZeroOrOneValue(parsed);
+}
+
+bool ShouldRestoreModeDimensionFromDefault(const toml::table& tbl, const char* key) {
+    const toml::node* node = tbl.get(key);
+    if (!node) {
+        return false;
+    }
+
+    if (auto numericValue = GetNumericValue(node)) {
+        return IsZeroOrOneValue(*numericValue);
+    }
+
+    if (auto stringValue = node->value<std::string>()) {
+        return IsLiteralZeroOrOneString(*stringValue);
+    }
+
+    return false;
+}
+
+const ModeConfig* FindDefaultModeById(const std::vector<ModeConfig>& defaultModes, const std::string& modeId) {
+    for (const auto& defaultMode : defaultModes) {
+        if (EqualsIgnoreCase(defaultMode.id, modeId)) {
+            return &defaultMode;
+        }
+    }
+
+    return nullptr;
+}
+
+void ApplyDefaultModeWidth(const ModeConfig& defaultMode, ModeConfig& mode) {
+    mode.width = defaultMode.width;
+    mode.manualWidth = defaultMode.manualWidth;
+    mode.relativeWidth = defaultMode.relativeWidth;
+    mode.widthExpr = defaultMode.widthExpr;
+}
+
+void ApplyDefaultModeHeight(const ModeConfig& defaultMode, ModeConfig& mode) {
+    mode.height = defaultMode.height;
+    mode.manualHeight = defaultMode.manualHeight;
+    mode.relativeHeight = defaultMode.relativeHeight;
+    mode.heightExpr = defaultMode.heightExpr;
+}
+
+void RestoreModeDimensionsFromDefaults(const toml::table& tbl, const std::vector<ModeConfig>* defaultModes, ModeConfig& mode) {
+    if (!defaultModes || defaultModes->empty() || mode.id.empty()) {
+        return;
+    }
+
+    const ModeConfig* defaultMode = FindDefaultModeById(*defaultModes, mode.id);
+    if (!defaultMode) {
+        return;
+    }
+
+    bool restoredWidth = false;
+    bool restoredHeight = false;
+
+    if (ShouldRestoreModeDimensionFromDefault(tbl, "width")) {
+        ApplyDefaultModeWidth(*defaultMode, mode);
+        restoredWidth = true;
+    }
+
+    if (ShouldRestoreModeDimensionFromDefault(tbl, "height")) {
+        ApplyDefaultModeHeight(*defaultMode, mode);
+        restoredHeight = true;
+    }
+
+    if (restoredWidth || restoredHeight) {
+        std::string repairedFields;
+        if (restoredWidth) {
+            repairedFields = "width";
+        }
+        if (restoredHeight) {
+            if (!repairedFields.empty()) {
+                repairedFields += ", ";
+            }
+            repairedFields += "height";
+        }
+
+        Log("[CONFIG] Restored mode '" + mode.id + "' " + repairedFields + " from embedded defaults because config.toml contained " +
+            (restoredWidth && restoredHeight ? "0/1 values for both dimensions." : "a 0/1 value."));
+    }
+}
+
+void ModeConfigFromTomlInternal(const toml::table& tbl, ModeConfig& cfg, const std::vector<ModeConfig>* defaultModes) {
+    cfg.id = GetStringOr(tbl, "id", "");
+
+    cfg.width = ConfigDefaults::MODE_WIDTH;
+    cfg.height = ConfigDefaults::MODE_HEIGHT;
+
+    cfg.useRelativeSize = false;
+    cfg.relativeWidth = -1.0f;
+    cfg.relativeHeight = -1.0f;
+    cfg.widthExpr.clear();
+    cfg.heightExpr.clear();
+
+    bool widthIsPercentage = false;
+    bool heightIsPercentage = false;
+
+    int cachedScreenWidth = GetCachedWindowWidth();
+    int cachedScreenHeight = GetCachedWindowHeight();
+
+    if (auto widthNode = tbl.get("width")) {
+        if (auto widthStr = widthNode->value<std::string>()) {
+            cfg.widthExpr = *widthStr;
+        } else if (auto widthVal = GetNumericValue(widthNode)) {
+            if (*widthVal >= 0.0 && *widthVal <= 1.0) {
+                cfg.relativeWidth = static_cast<float>(*widthVal);
+                widthIsPercentage = true;
+
+                if (cachedScreenWidth > 0) {
+                    cfg.width = (std::max)(1, static_cast<int>(std::lround(cfg.relativeWidth * static_cast<float>(cachedScreenWidth))));
+                }
+            } else {
+                cfg.width = static_cast<int>(*widthVal);
+            }
+        }
+    }
+
+    if (auto heightNode = tbl.get("height")) {
+        if (auto heightStr = heightNode->value<std::string>()) {
+            cfg.heightExpr = *heightStr;
+        } else if (auto heightVal = GetNumericValue(heightNode)) {
+            if (*heightVal >= 0.0 && *heightVal <= 1.0) {
+                cfg.relativeHeight = static_cast<float>(*heightVal);
+                heightIsPercentage = true;
+
+                if (cachedScreenHeight > 0) {
+                    cfg.height = (std::max)(1, static_cast<int>(std::lround(cfg.relativeHeight * static_cast<float>(cachedScreenHeight))));
+                }
+            } else {
+                cfg.height = static_cast<int>(*heightVal);
+            }
+        }
+    }
+
+    if (cfg.widthExpr.empty()) { cfg.widthExpr = GetStringOr(tbl, "widthExpr", ""); }
+    if (cfg.heightExpr.empty()) { cfg.heightExpr = GetStringOr(tbl, "heightExpr", ""); }
+
+    if (tbl.contains("useRelativeSize") || tbl.contains("relativeWidth") || tbl.contains("relativeHeight")) {
+        cfg.useRelativeSize = GetOr(tbl, "useRelativeSize", false);
+        if (auto relativeWidth = GetNumericValue(tbl, "relativeWidth")) {
+            cfg.relativeWidth = static_cast<float>(*relativeWidth);
+        }
+        if (auto relativeHeight = GetNumericValue(tbl, "relativeHeight")) {
+            cfg.relativeHeight = static_cast<float>(*relativeHeight);
+        }
+    } else if (widthIsPercentage || heightIsPercentage) {
+        cfg.useRelativeSize = true;
+    }
+
+    if (!cfg.widthExpr.empty()) { cfg.relativeWidth = -1.0f; }
+    if (!cfg.heightExpr.empty()) { cfg.relativeHeight = -1.0f; }
+
+    RestoreModeDimensionsFromDefaults(tbl, defaultModes, cfg);
+
+    const bool hasRelativeWidth = cfg.relativeWidth >= 0.0f && cfg.relativeWidth <= 1.0f;
+    const bool hasRelativeHeight = cfg.relativeHeight >= 0.0f && cfg.relativeHeight <= 1.0f;
+    if (hasRelativeWidth || hasRelativeHeight) {
+        cfg.useRelativeSize = true;
+    }
+
+    if (hasRelativeWidth && cfg.width < 1 && cachedScreenWidth > 0) {
+        cfg.width = (std::max)(1, static_cast<int>(std::lround(cfg.relativeWidth * static_cast<float>(cachedScreenWidth))));
+    }
+    if (hasRelativeHeight && cfg.height < 1 && cachedScreenHeight > 0) {
+        cfg.height = (std::max)(1, static_cast<int>(std::lround(cfg.relativeHeight * static_cast<float>(cachedScreenHeight))));
+    }
+
+    if (!cfg.widthExpr.empty() && cachedScreenWidth > 0 && cachedScreenHeight > 0) {
+        cfg.width = (std::max)(1, EvaluateExpression(cfg.widthExpr, cachedScreenWidth, cachedScreenHeight, cfg.width));
+    }
+    if (!cfg.heightExpr.empty() && cachedScreenWidth > 0 && cachedScreenHeight > 0) {
+        cfg.height = (std::max)(1, EvaluateExpression(cfg.heightExpr, cachedScreenWidth, cachedScreenHeight, cfg.height));
+    }
+
+    cfg.manualWidth = (cfg.width > 0) ? cfg.width : ConfigDefaults::MODE_WIDTH;
+    cfg.manualHeight = (cfg.height > 0) ? cfg.height : ConfigDefaults::MODE_HEIGHT;
+
+    // Note: Actual pixel conversion from percentages is done elsewhere (GUI/logic thread)
+
+    if (auto t = GetTable(tbl, "background")) { BackgroundConfigFromToml(*t, cfg.background); }
+
+    cfg.mirrorIds.clear();
+    if (auto arr = GetArray(tbl, "mirrorIds")) {
+        for (const auto& elem : *arr) {
+            if (auto val = elem.value<std::string>()) { cfg.mirrorIds.push_back(*val); }
+        }
+    }
+
+    cfg.mirrorGroupIds.clear();
+    if (auto arr = GetArray(tbl, "mirrorGroupIds")) {
+        for (const auto& elem : *arr) {
+            if (auto val = elem.value<std::string>()) { cfg.mirrorGroupIds.push_back(*val); }
+        }
+    }
+
+    cfg.imageIds.clear();
+    if (auto arr = GetArray(tbl, "imageIds")) {
+        for (const auto& elem : *arr) {
+            if (auto val = elem.value<std::string>()) { cfg.imageIds.push_back(*val); }
+        }
+    }
+
+    cfg.windowOverlayIds.clear();
+    if (auto arr = GetArray(tbl, "windowOverlayIds")) {
+        for (const auto& elem : *arr) {
+            if (auto val = elem.value<std::string>()) { cfg.windowOverlayIds.push_back(*val); }
+        }
+    }
+
+    cfg.browserOverlayIds.clear();
+    if (auto arr = GetArray(tbl, "browserOverlayIds")) {
+        for (const auto& elem : *arr) {
+            if (auto val = elem.value<std::string>()) { cfg.browserOverlayIds.push_back(*val); }
+        }
+    }
+
+    if (auto t = GetTable(tbl, "stretch")) { StretchConfigFromToml(*t, cfg.stretch); }
+
+    const toml::table* transitionTbl = GetTable(tbl, "transition");
+    const toml::table& transitionSrc = transitionTbl ? *transitionTbl : tbl;
+
+    cfg.gameTransition = StringToGameTransitionType(GetStringOr(transitionSrc, "gameTransition", ConfigDefaults::GAME_TRANSITION_BOUNCE));
+    cfg.overlayTransition =
+        StringToOverlayTransitionType(GetStringOr(transitionSrc, "overlayTransition", ConfigDefaults::OVERLAY_TRANSITION_CUT));
+    cfg.backgroundTransition =
+        StringToBackgroundTransitionType(GetStringOr(transitionSrc, "backgroundTransition", ConfigDefaults::BACKGROUND_TRANSITION_CUT));
+    cfg.transitionDurationMs = GetOr(transitionSrc, "transitionDurationMs", ConfigDefaults::MODE_TRANSITION_DURATION_MS);
+
+    cfg.easeInPower = GetOr(transitionSrc, "easeInPower", ConfigDefaults::MODE_EASE_IN_POWER);
+    cfg.easeOutPower = GetOr(transitionSrc, "easeOutPower", ConfigDefaults::MODE_EASE_OUT_POWER);
+    cfg.bounceCount = GetOr(transitionSrc, "bounceCount", ConfigDefaults::MODE_BOUNCE_COUNT);
+    cfg.bounceIntensity = GetOr(transitionSrc, "bounceIntensity", ConfigDefaults::MODE_BOUNCE_INTENSITY);
+    cfg.bounceDurationMs = GetOr(transitionSrc, "bounceDurationMs", ConfigDefaults::MODE_BOUNCE_DURATION_MS);
+    cfg.relativeStretching = GetOr(transitionSrc, "relativeStretching", ConfigDefaults::MODE_RELATIVE_STRETCHING);
+    cfg.skipAnimateX = GetOr(transitionSrc, "skipAnimateX", false);
+    cfg.skipAnimateY = GetOr(transitionSrc, "skipAnimateY", false);
+
+    if (auto t = GetTable(tbl, "border")) { BorderConfigFromToml(*t, cfg.border); }
+
+    cfg.sensitivityOverrideEnabled = GetOr(tbl, "sensitivityOverrideEnabled", ConfigDefaults::MODE_SENSITIVITY_OVERRIDE_ENABLED);
+    cfg.modeSensitivity = GetOr(tbl, "modeSensitivity", ConfigDefaults::MODE_SENSITIVITY);
+    cfg.separateXYSensitivity = GetOr(tbl, "separateXYSensitivity", ConfigDefaults::MODE_SEPARATE_XY_SENSITIVITY);
+    cfg.modeSensitivityX = GetOr(tbl, "modeSensitivityX", ConfigDefaults::MODE_SENSITIVITY_X);
+    cfg.modeSensitivityY = GetOr(tbl, "modeSensitivityY", ConfigDefaults::MODE_SENSITIVITY_Y);
+
+    cfg.slideMirrorsIn = GetOr(transitionSrc, "slideMirrorsIn", false);
+}
+
 static int ClampMirrorCaptureDimension(int value) {
     return std::clamp(value, ConfigDefaults::MIRROR_CAPTURE_MIN_DIMENSION, ConfigDefaults::MIRROR_CAPTURE_MAX_DIMENSION);
 }
 
-void WriteTableOrdered(std::ostream& out, const toml::table& tbl, const std::vector<std::string>& orderedKeys) {
+static void WriteInlineTable(std::ostream& out, const toml::table& tbl, int depth = 0) {
+    if (depth > 8) { out << "{ }"; return; }
+    out << "{ ";
+    bool first = true;
+    for (const auto& [k, v] : tbl) {
+        if (!first) out << ", ";
+        first = false;
+        out << k.str() << " = ";
+        if (v.is_table()) {
+            WriteInlineTable(out, *v.as_table(), depth + 1);
+        } else if (v.is_array()) {
+            out << *v.as_array();
+        } else {
+            v.visit([&out](auto&& val) { out << val; });
+        }
+    }
+    out << " }";
+}
+
+static void WriteNode(std::ostream& out, const std::string& key, const toml::node& node, bool insideArrayElement) {
+    if (node.is_table()) {
+        const toml::table* subtbl = node.as_table();
+        if (!subtbl) return;
+        if (insideArrayElement) {
+            out << key << " = ";
+            WriteInlineTable(out, *subtbl);
+            out << "\n";
+        } else {
+            out << "[" << key << "]\n";
+            for (const auto& [subKey, subNode] : *subtbl) {
+                std::string subKeyStr(subKey.str());
+                if (subNode.is_table()) {
+                    WriteNode(out, key + "." + subKeyStr, subNode, false);
+                } else {
+                    out << subKeyStr << " = ";
+                    if (subNode.is_array()) {
+                        out << *subNode.as_array();
+                    } else {
+                        subNode.visit([&out](auto&& val) { out << val; });
+                    }
+                    out << "\n";
+                }
+            }
+        }
+    } else if (node.is_array()) {
+        const toml::array* arr = node.as_array();
+        if (arr) out << key << " = " << *arr << "\n";
+    } else {
+        out << key << " = ";
+        node.visit([&out](auto&& val) { out << val; });
+        out << "\n";
+    }
+}
+
+void WriteTableOrdered(std::ostream& out, const toml::table& tbl, const std::vector<std::string>& orderedKeys,
+                       bool insideArrayElement = false) {
     for (const auto& key : orderedKeys) {
         if (tbl.contains(key)) {
             const toml::node* nodePtr = tbl.get(key);
             if (!nodePtr) continue;
-
-            if (nodePtr->is_table()) {
-                const toml::table* subtbl = nodePtr->as_table();
-                if (subtbl) out << key << " = " << *subtbl << "\n";
-            } else if (nodePtr->is_array()) {
-                const toml::array* arr = nodePtr->as_array();
-                if (arr) out << key << " = " << *arr << "\n";
-            } else {
-                out << key << " = ";
-                nodePtr->visit([&out](auto&& val) { out << val; });
-                out << "\n";
-            }
+            WriteNode(out, key, *nodePtr, insideArrayElement);
         }
     }
 
     for (const auto& [key, node] : tbl) {
         std::string keyStr(key.str());
         if (std::find(orderedKeys.begin(), orderedKeys.end(), keyStr) == orderedKeys.end()) {
-            if (node.is_table()) {
-                const toml::table* subtbl = node.as_table();
-                if (subtbl) out << keyStr << " = " << *subtbl << "\n";
-            } else if (node.is_array()) {
-                const toml::array* arr = node.as_array();
-                if (arr) out << keyStr << " = " << *arr << "\n";
-            } else {
-                out << keyStr << " = ";
-                node.visit([&out](auto&& val) { out << val; });
-                out << "\n";
-            }
+            WriteNode(out, keyStr, node, insideArrayElement);
         }
     }
 }
@@ -366,25 +725,6 @@ static MirrorGammaMode StringToMirrorGammaMode(const std::string& str) {
     return MirrorGammaMode::Auto;
 }
 
-static std::string HookChainingNextTargetToString(HookChainingNextTarget v) {
-    switch (v) {
-    case HookChainingNextTarget::OriginalFunction:
-        return "Original";
-    default:
-        return "LatestHook";
-    }
-}
-
-static HookChainingNextTarget StringToHookChainingNextTarget(const std::string& str) {
-    if (str == "OriginalFunction" || str == "Original" || str == "original" || str == "originalFunction" || str == "ORIGINAL") {
-        return HookChainingNextTarget::OriginalFunction;
-    }
-    if (str == "LatestHook" || str == "Latest" || str == "latest" || str == "latestHook" || str == "LATEST") {
-        return HookChainingNextTarget::LatestHook;
-    }
-    return HookChainingNextTarget::OriginalFunction;
-}
-
 std::string MirrorBorderTypeToString(MirrorBorderType type) {
     switch (type) {
     case MirrorBorderType::Static:
@@ -476,7 +816,7 @@ void MirrorConfigToToml(const MirrorConfig& cfg, toml::table& out) {
     GradientConfigToToml(cfg.gradient, gradientTbl);
     out.insert("gradient", gradientTbl);
 
-    out.insert("onlyOnMyScreen", false);
+    out.insert("onlyOnMyScreen", cfg.onlyOnMyScreen);
 }
 
 void MirrorConfigFromToml(const toml::table& tbl, MirrorConfig& cfg) {
@@ -518,9 +858,7 @@ void MirrorConfigFromToml(const toml::table& tbl, MirrorConfig& cfg) {
     } else {
         cfg.gradient = GradientConfig{};
     }
-    const bool parsedOnlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::MIRROR_ONLY_ON_MY_SCREEN);
-    (void)parsedOnlyOnMyScreen;
-    cfg.onlyOnMyScreen = false;
+    cfg.onlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::MIRROR_ONLY_ON_MY_SCREEN);
 }
 
 void MirrorGroupItemToToml(const MirrorGroupItem& item, toml::table& out) {
@@ -610,11 +948,6 @@ void StretchConfigToToml(const StretchConfig& cfg, toml::table& out) {
     out.insert("height", cfg.height);
     out.insert("x", cfg.x);
     out.insert("y", cfg.y);
-
-    if (!cfg.widthExpr.empty()) { out.insert("widthExpr", cfg.widthExpr); }
-    if (!cfg.heightExpr.empty()) { out.insert("heightExpr", cfg.heightExpr); }
-    if (!cfg.xExpr.empty()) { out.insert("xExpr", cfg.xExpr); }
-    if (!cfg.yExpr.empty()) { out.insert("yExpr", cfg.yExpr); }
 }
 
 void StretchConfigFromToml(const toml::table& tbl, StretchConfig& cfg) {
@@ -623,11 +956,6 @@ void StretchConfigFromToml(const toml::table& tbl, StretchConfig& cfg) {
     cfg.height = GetOr(tbl, "height", ConfigDefaults::STRETCH_HEIGHT);
     cfg.x = GetOr(tbl, "x", ConfigDefaults::STRETCH_X);
     cfg.y = GetOr(tbl, "y", ConfigDefaults::STRETCH_Y);
-
-    cfg.widthExpr = GetStringOr(tbl, "widthExpr", "");
-    cfg.heightExpr = GetStringOr(tbl, "heightExpr", "");
-    cfg.xExpr = GetStringOr(tbl, "xExpr", "");
-    cfg.yExpr = GetStringOr(tbl, "yExpr", "");
 }
 
 void BorderConfigToToml(const BorderConfig& cfg, toml::table& out) {
@@ -662,11 +990,16 @@ void ImageConfigToToml(const ImageConfig& cfg, toml::table& out) {
     out.insert("x", cfg.x);
     out.insert("y", cfg.y);
     out.insert("scale", cfg.scale);
+    out.insert("relativeSizing", cfg.relativeSizing);
+    out.insert("width", cfg.width);
+    out.insert("height", cfg.height);
     out.insert("relativeTo", cfg.relativeTo);
     out.insert("crop_top", cfg.crop_top);
     out.insert("crop_bottom", cfg.crop_bottom);
     out.insert("crop_left", cfg.crop_left);
     out.insert("crop_right", cfg.crop_right);
+    out.insert("cropToWidth", cfg.cropToWidth);
+    out.insert("cropToHeight", cfg.cropToHeight);
     out.insert("enableColorKey", cfg.enableColorKey);
 
     toml::array colorKeysArr;
@@ -697,11 +1030,16 @@ void ImageConfigFromToml(const toml::table& tbl, ImageConfig& cfg) {
     cfg.x = GetOr(tbl, "x", ConfigDefaults::IMAGE_X);
     cfg.y = GetOr(tbl, "y", ConfigDefaults::IMAGE_Y);
     cfg.scale = GetOr(tbl, "scale", ConfigDefaults::IMAGE_SCALE);
+    cfg.relativeSizing = GetOr(tbl, "relativeSizing", ConfigDefaults::IMAGE_RELATIVE_SIZING);
+    cfg.width = GetOr(tbl, "width", ConfigDefaults::IMAGE_WIDTH);
+    cfg.height = GetOr(tbl, "height", ConfigDefaults::IMAGE_HEIGHT);
     cfg.relativeTo = GetStringOr(tbl, "relativeTo", ConfigDefaults::IMAGE_RELATIVE_TO);
     cfg.crop_top = GetOr(tbl, "crop_top", ConfigDefaults::IMAGE_CROP_TOP);
     cfg.crop_bottom = GetOr(tbl, "crop_bottom", ConfigDefaults::IMAGE_CROP_BOTTOM);
     cfg.crop_left = GetOr(tbl, "crop_left", ConfigDefaults::IMAGE_CROP_LEFT);
     cfg.crop_right = GetOr(tbl, "crop_right", ConfigDefaults::IMAGE_CROP_RIGHT);
+    cfg.cropToWidth = GetOr(tbl, "cropToWidth", false);
+    cfg.cropToHeight = GetOr(tbl, "cropToHeight", false);
     cfg.enableColorKey = GetOr(tbl, "enableColorKey", ConfigDefaults::IMAGE_ENABLE_COLOR_KEY);
 
     cfg.colorKeys.clear();
@@ -739,6 +1077,8 @@ void WindowOverlayConfigToToml(const WindowOverlayConfig& cfg, toml::table& out)
     out.insert("crop_bottom", cfg.crop_bottom);
     out.insert("crop_left", cfg.crop_left);
     out.insert("crop_right", cfg.crop_right);
+    out.insert("cropToWidth", cfg.cropToWidth);
+    out.insert("cropToHeight", cfg.cropToHeight);
     out.insert("enableColorKey", cfg.enableColorKey);
 
     toml::array colorKeysArr;
@@ -758,6 +1098,7 @@ void WindowOverlayConfigToToml(const WindowOverlayConfig& cfg, toml::table& out)
     out.insert("pixelatedScaling", cfg.pixelatedScaling);
     out.insert("onlyOnMyScreen", cfg.onlyOnMyScreen);
     out.insert("fps", cfg.fps);
+    out.insert("searchInterval", cfg.searchInterval);
     out.insert("captureMethod", cfg.captureMethod);
     out.insert("forceUpdate", cfg.forceUpdate);
     out.insert("enableInteraction", cfg.enableInteraction);
@@ -781,6 +1122,8 @@ void WindowOverlayConfigFromToml(const toml::table& tbl, WindowOverlayConfig& cf
     cfg.crop_bottom = GetOr(tbl, "crop_bottom", ConfigDefaults::IMAGE_CROP_BOTTOM);
     cfg.crop_left = GetOr(tbl, "crop_left", ConfigDefaults::IMAGE_CROP_LEFT);
     cfg.crop_right = GetOr(tbl, "crop_right", ConfigDefaults::IMAGE_CROP_RIGHT);
+    cfg.cropToWidth = GetOr(tbl, "cropToWidth", false);
+    cfg.cropToHeight = GetOr(tbl, "cropToHeight", false);
     cfg.enableColorKey = GetOr(tbl, "enableColorKey", ConfigDefaults::IMAGE_ENABLE_COLOR_KEY);
 
     cfg.colorKeys.clear();
@@ -801,6 +1144,7 @@ void WindowOverlayConfigFromToml(const toml::table& tbl, WindowOverlayConfig& cf
     cfg.pixelatedScaling = GetOr(tbl, "pixelatedScaling", ConfigDefaults::IMAGE_PIXELATED_SCALING);
     cfg.onlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::IMAGE_ONLY_ON_MY_SCREEN);
     cfg.fps = GetOr(tbl, "fps", ConfigDefaults::WINDOW_OVERLAY_FPS);
+    cfg.searchInterval = GetOr(tbl, "searchInterval", ConfigDefaults::WINDOW_OVERLAY_SEARCH_INTERVAL);
     cfg.captureMethod = GetStringOr(tbl, "captureMethod", ConfigDefaults::WINDOW_OVERLAY_CAPTURE_METHOD);
     cfg.forceUpdate = GetOr(tbl, "forceUpdate", ConfigDefaults::WINDOW_OVERLAY_FORCE_UPDATE);
     cfg.enableInteraction = GetOr(tbl, "enableInteraction", ConfigDefaults::WINDOW_OVERLAY_ENABLE_INTERACTION);
@@ -813,13 +1157,110 @@ void WindowOverlayConfigFromToml(const toml::table& tbl, WindowOverlayConfig& cf
     if (auto t = GetTable(tbl, "border")) { BorderConfigFromToml(*t, cfg.border); }
 }
 
+void BrowserOverlayConfigToToml(const BrowserOverlayConfig& cfg, toml::table& out) {
+    out.insert("name", cfg.name);
+    out.insert("url", cfg.url);
+    out.insert("customCss", cfg.customCss);
+    out.insert("browserWidth", cfg.browserWidth);
+    out.insert("browserHeight", cfg.browserHeight);
+    out.insert("x", cfg.x);
+    out.insert("y", cfg.y);
+    out.insert("scale", cfg.scale);
+    out.insert("relativeTo", cfg.relativeTo);
+    out.insert("crop_top", cfg.crop_top);
+    out.insert("crop_bottom", cfg.crop_bottom);
+    out.insert("crop_left", cfg.crop_left);
+    out.insert("crop_right", cfg.crop_right);
+    out.insert("cropToWidth", cfg.cropToWidth);
+    out.insert("cropToHeight", cfg.cropToHeight);
+    out.insert("enableColorKey", cfg.enableColorKey);
+
+    toml::array colorKeysArr;
+    for (const auto& ck : cfg.colorKeys) {
+        toml::table ckTbl;
+        ColorKeyConfigToToml(ck, ckTbl);
+        colorKeysArr.push_back(ckTbl);
+    }
+    out.insert("colorKeys", colorKeysArr);
+
+    out.insert("opacity", cfg.opacity);
+
+    toml::table bgTbl;
+    ImageBackgroundConfigToToml(cfg.background, bgTbl);
+    out.insert("background", bgTbl);
+
+    out.insert("pixelatedScaling", cfg.pixelatedScaling);
+    out.insert("onlyOnMyScreen", cfg.onlyOnMyScreen);
+    out.insert("fps", cfg.fps);
+    out.insert("transparentBackground", cfg.transparentBackground);
+    out.insert("muteAudio", cfg.muteAudio);
+    out.insert("hardwareAcceleration", cfg.hardwareAcceleration);
+    out.insert("allowSystemMediaKeys", cfg.allowSystemMediaKeys);
+    out.insert("reloadOnUpdate", cfg.reloadOnUpdate);
+    out.insert("reloadInterval", cfg.reloadInterval);
+
+    toml::table borderTbl;
+    BorderConfigToToml(cfg.border, borderTbl);
+    out.insert("border", borderTbl);
+}
+
+void BrowserOverlayConfigFromToml(const toml::table& tbl, BrowserOverlayConfig& cfg) {
+    cfg.name = GetStringOr(tbl, "name", "");
+    cfg.url = GetStringOr(tbl, "url", "https://example.com");
+    cfg.customCss = GetStringOr(tbl, "customCss", ConfigDefaults::BROWSER_OVERLAY_CUSTOM_CSS);
+    cfg.browserWidth = GetOr(tbl, "browserWidth", ConfigDefaults::BROWSER_OVERLAY_WIDTH);
+    cfg.browserHeight = GetOr(tbl, "browserHeight", ConfigDefaults::BROWSER_OVERLAY_HEIGHT);
+    cfg.x = GetOr(tbl, "x", ConfigDefaults::IMAGE_X);
+    cfg.y = GetOr(tbl, "y", ConfigDefaults::IMAGE_Y);
+    cfg.scale = GetOr(tbl, "scale", ConfigDefaults::IMAGE_SCALE);
+    cfg.relativeTo = GetStringOr(tbl, "relativeTo", ConfigDefaults::IMAGE_RELATIVE_TO);
+    cfg.crop_top = GetOr(tbl, "crop_top", ConfigDefaults::IMAGE_CROP_TOP);
+    cfg.crop_bottom = GetOr(tbl, "crop_bottom", ConfigDefaults::IMAGE_CROP_BOTTOM);
+    cfg.crop_left = GetOr(tbl, "crop_left", ConfigDefaults::IMAGE_CROP_LEFT);
+    cfg.crop_right = GetOr(tbl, "crop_right", ConfigDefaults::IMAGE_CROP_RIGHT);
+    cfg.cropToWidth = GetOr(tbl, "cropToWidth", false);
+    cfg.cropToHeight = GetOr(tbl, "cropToHeight", false);
+    cfg.enableColorKey = GetOr(tbl, "enableColorKey", ConfigDefaults::BROWSER_OVERLAY_ENABLE_COLOR_KEY);
+
+    cfg.colorKeys.clear();
+    if (auto arr = GetArray(tbl, "colorKeys")) {
+        for (const auto& elem : *arr) {
+            if (auto t = elem.as_table()) {
+                ColorKeyConfig ck;
+                ColorKeyConfigFromToml(*t, ck);
+                cfg.colorKeys.push_back(ck);
+            }
+        }
+    }
+
+    cfg.opacity = GetOr(tbl, "opacity", ConfigDefaults::IMAGE_OPACITY);
+
+    if (auto t = GetTable(tbl, "background")) { ImageBackgroundConfigFromToml(*t, cfg.background); }
+
+    cfg.pixelatedScaling = GetOr(tbl, "pixelatedScaling", ConfigDefaults::IMAGE_PIXELATED_SCALING);
+    cfg.onlyOnMyScreen = GetOr(tbl, "onlyOnMyScreen", ConfigDefaults::IMAGE_ONLY_ON_MY_SCREEN);
+    cfg.fps = GetOr(tbl, "fps", ConfigDefaults::BROWSER_OVERLAY_FPS);
+    cfg.transparentBackground = GetOr(tbl, "transparentBackground", ConfigDefaults::BROWSER_OVERLAY_TRANSPARENT_BACKGROUND);
+    cfg.muteAudio = GetOr(tbl, "muteAudio", ConfigDefaults::BROWSER_OVERLAY_MUTE_AUDIO);
+    cfg.hardwareAcceleration = GetOr(tbl, "hardwareAcceleration", ConfigDefaults::BROWSER_OVERLAY_HARDWARE_ACCELERATION);
+    cfg.allowSystemMediaKeys = GetOr(tbl, "allowSystemMediaKeys", ConfigDefaults::BROWSER_OVERLAY_ALLOW_SYSTEM_MEDIA_KEYS);
+    cfg.reloadOnUpdate = GetOr(tbl, "reloadOnUpdate", ConfigDefaults::BROWSER_OVERLAY_RELOAD_ON_UPDATE);
+    cfg.reloadInterval = GetOr(tbl, "reloadInterval", ConfigDefaults::BROWSER_OVERLAY_RELOAD_INTERVAL);
+
+    if (auto t = GetTable(tbl, "border")) { BorderConfigFromToml(*t, cfg.border); }
+}
+
 void ModeConfigToToml(const ModeConfig& cfg, toml::table& out) {
     out.insert("id", cfg.id);
 
     const bool widthHasRelative = cfg.relativeWidth >= 0.0f && cfg.relativeWidth <= 1.0f;
     const bool heightHasRelative = cfg.relativeHeight >= 0.0f && cfg.relativeHeight <= 1.0f;
-    const bool widthIsDynamic = !cfg.widthExpr.empty() || (cfg.useRelativeSize && widthHasRelative);
-    const bool heightIsDynamic = !cfg.heightExpr.empty() || (cfg.useRelativeSize && heightHasRelative);
+    const bool widthUsesRelative = cfg.useRelativeSize && widthHasRelative;
+    const bool heightUsesRelative = cfg.useRelativeSize && heightHasRelative;
+    const bool widthUsesExpression = !widthUsesRelative && !cfg.widthExpr.empty();
+    const bool heightUsesExpression = !heightUsesRelative && !cfg.heightExpr.empty();
+    const bool widthIsDynamic = widthUsesExpression || widthUsesRelative;
+    const bool heightIsDynamic = heightUsesExpression || heightUsesRelative;
 
     int persistedWidth = cfg.width;
     int persistedHeight = cfg.height;
@@ -834,15 +1275,20 @@ void ModeConfigToToml(const ModeConfig& cfg, toml::table& out) {
     if (persistedWidth < 1) persistedWidth = ConfigDefaults::MODE_WIDTH;
     if (persistedHeight < 1) persistedHeight = ConfigDefaults::MODE_HEIGHT;
 
-    out.insert("width", persistedWidth);
-    out.insert("height", persistedHeight);
+    if (widthUsesExpression) {
+        out.insert("width", cfg.widthExpr);
+    } else {
+        out.insert("width", persistedWidth);
+    }
+    if (heightUsesExpression) {
+        out.insert("height", cfg.heightExpr);
+    } else {
+        out.insert("height", persistedHeight);
+    }
 
     out.insert("useRelativeSize", cfg.useRelativeSize);
-    if (widthHasRelative) { out.insert("relativeWidth", cfg.relativeWidth); }
-    if (heightHasRelative) { out.insert("relativeHeight", cfg.relativeHeight); }
-
-    if (!cfg.widthExpr.empty()) { out.insert("widthExpr", cfg.widthExpr); }
-    if (!cfg.heightExpr.empty()) { out.insert("heightExpr", cfg.heightExpr); }
+    if (widthUsesRelative) { out.insert("relativeWidth", cfg.relativeWidth); }
+    if (heightUsesRelative) { out.insert("relativeHeight", cfg.relativeHeight); }
 
     toml::table bgTbl;
     BackgroundConfigToToml(cfg.background, bgTbl);
@@ -863,6 +1309,10 @@ void ModeConfigToToml(const ModeConfig& cfg, toml::table& out) {
     toml::array windowOverlayIds;
     for (const auto& id : cfg.windowOverlayIds) { windowOverlayIds.push_back(id); }
     out.insert("windowOverlayIds", windowOverlayIds);
+
+    toml::array browserOverlayIds;
+    for (const auto& id : cfg.browserOverlayIds) { browserOverlayIds.push_back(id); }
+    out.insert("browserOverlayIds", browserOverlayIds);
 
     toml::table stretchTbl;
     StretchConfigToToml(cfg.stretch, stretchTbl);
@@ -898,142 +1348,7 @@ void ModeConfigToToml(const ModeConfig& cfg, toml::table& out) {
 }
 
 void ModeConfigFromToml(const toml::table& tbl, ModeConfig& cfg) {
-    cfg.id = GetStringOr(tbl, "id", "");
-
-    cfg.useRelativeSize = false;
-    cfg.relativeWidth = -1.0f;
-    cfg.relativeHeight = -1.0f;
-    cfg.widthExpr.clear();
-    cfg.heightExpr.clear();
-
-    bool widthIsPercentage = false;
-    bool heightIsPercentage = false;
-
-    if (auto widthNode = tbl.get("width")) {
-        if (auto widthStr = widthNode->value<std::string>()) {
-            cfg.widthExpr = *widthStr;
-        } else if (widthNode->is_floating_point()) {
-            double widthVal = widthNode->as_floating_point()->get();
-            if (widthVal >= 0.0 && widthVal <= 1.0) {
-                cfg.relativeWidth = static_cast<float>(widthVal);
-                widthIsPercentage = true;
-            } else {
-                cfg.width = static_cast<int>(widthVal);
-            }
-        } else if (widthNode->is_integer()) {
-            cfg.width = static_cast<int>(widthNode->as_integer()->get());
-        } else {
-            cfg.width = ConfigDefaults::MODE_WIDTH;
-        }
-    } else {
-        cfg.width = ConfigDefaults::MODE_WIDTH;
-    }
-
-    if (auto heightNode = tbl.get("height")) {
-        if (auto heightStr = heightNode->value<std::string>()) {
-            cfg.heightExpr = *heightStr;
-        } else if (heightNode->is_floating_point()) {
-            double heightVal = heightNode->as_floating_point()->get();
-            if (heightVal >= 0.0 && heightVal <= 1.0) {
-                cfg.relativeHeight = static_cast<float>(heightVal);
-                heightIsPercentage = true;
-            } else {
-                cfg.height = static_cast<int>(heightVal);
-            }
-        } else if (heightNode->is_integer()) {
-            cfg.height = static_cast<int>(heightNode->as_integer()->get());
-        } else {
-            cfg.height = ConfigDefaults::MODE_HEIGHT;
-        }
-    } else {
-        cfg.height = ConfigDefaults::MODE_HEIGHT;
-    }
-
-    if (cfg.widthExpr.empty()) { cfg.widthExpr = GetStringOr(tbl, "widthExpr", ""); }
-    if (cfg.heightExpr.empty()) { cfg.heightExpr = GetStringOr(tbl, "heightExpr", ""); }
-
-    if (tbl.contains("useRelativeSize") || tbl.contains("relativeWidth") || tbl.contains("relativeHeight")) {
-        cfg.useRelativeSize = GetOr(tbl, "useRelativeSize", false);
-        cfg.relativeWidth = GetOr(tbl, "relativeWidth", cfg.relativeWidth);
-        cfg.relativeHeight = GetOr(tbl, "relativeHeight", cfg.relativeHeight);
-    } else if (widthIsPercentage || heightIsPercentage) {
-        cfg.useRelativeSize = true;
-    }
-
-    const bool hasRelativeWidth = cfg.relativeWidth >= 0.0f && cfg.relativeWidth <= 1.0f;
-    const bool hasRelativeHeight = cfg.relativeHeight >= 0.0f && cfg.relativeHeight <= 1.0f;
-    if ((hasRelativeWidth || hasRelativeHeight) && cfg.widthExpr.empty() && cfg.heightExpr.empty()) {
-        cfg.useRelativeSize = true;
-    }
-
-    if (!cfg.widthExpr.empty()) { cfg.relativeWidth = -1.0f; }
-    if (!cfg.heightExpr.empty()) { cfg.relativeHeight = -1.0f; }
-
-    cfg.manualWidth = (cfg.width > 0) ? cfg.width : ConfigDefaults::MODE_WIDTH;
-    cfg.manualHeight = (cfg.height > 0) ? cfg.height : ConfigDefaults::MODE_HEIGHT;
-
-    // Note: Actual pixel conversion from percentages is done elsewhere (GUI/logic thread)
-
-    if (auto t = GetTable(tbl, "background")) { BackgroundConfigFromToml(*t, cfg.background); }
-
-    cfg.mirrorIds.clear();
-    if (auto arr = GetArray(tbl, "mirrorIds")) {
-        for (const auto& elem : *arr) {
-            if (auto val = elem.value<std::string>()) { cfg.mirrorIds.push_back(*val); }
-        }
-    }
-
-    cfg.mirrorGroupIds.clear();
-    if (auto arr = GetArray(tbl, "mirrorGroupIds")) {
-        for (const auto& elem : *arr) {
-            if (auto val = elem.value<std::string>()) { cfg.mirrorGroupIds.push_back(*val); }
-        }
-    }
-
-    cfg.imageIds.clear();
-    if (auto arr = GetArray(tbl, "imageIds")) {
-        for (const auto& elem : *arr) {
-            if (auto val = elem.value<std::string>()) { cfg.imageIds.push_back(*val); }
-        }
-    }
-
-    cfg.windowOverlayIds.clear();
-    if (auto arr = GetArray(tbl, "windowOverlayIds")) {
-        for (const auto& elem : *arr) {
-            if (auto val = elem.value<std::string>()) { cfg.windowOverlayIds.push_back(*val); }
-        }
-    }
-
-    if (auto t = GetTable(tbl, "stretch")) { StretchConfigFromToml(*t, cfg.stretch); }
-
-    const toml::table* transitionTbl = GetTable(tbl, "transition");
-    const toml::table& transitionSrc = transitionTbl ? *transitionTbl : tbl;
-
-    cfg.gameTransition = StringToGameTransitionType(GetStringOr(transitionSrc, "gameTransition", ConfigDefaults::GAME_TRANSITION_BOUNCE));
-    cfg.overlayTransition =
-        StringToOverlayTransitionType(GetStringOr(transitionSrc, "overlayTransition", ConfigDefaults::OVERLAY_TRANSITION_CUT));
-    cfg.backgroundTransition =
-        StringToBackgroundTransitionType(GetStringOr(transitionSrc, "backgroundTransition", ConfigDefaults::BACKGROUND_TRANSITION_CUT));
-    cfg.transitionDurationMs = GetOr(transitionSrc, "transitionDurationMs", ConfigDefaults::MODE_TRANSITION_DURATION_MS);
-
-    cfg.easeInPower = GetOr(transitionSrc, "easeInPower", ConfigDefaults::MODE_EASE_IN_POWER);
-    cfg.easeOutPower = GetOr(transitionSrc, "easeOutPower", ConfigDefaults::MODE_EASE_OUT_POWER);
-    cfg.bounceCount = GetOr(transitionSrc, "bounceCount", ConfigDefaults::MODE_BOUNCE_COUNT);
-    cfg.bounceIntensity = GetOr(transitionSrc, "bounceIntensity", ConfigDefaults::MODE_BOUNCE_INTENSITY);
-    cfg.bounceDurationMs = GetOr(transitionSrc, "bounceDurationMs", ConfigDefaults::MODE_BOUNCE_DURATION_MS);
-    cfg.relativeStretching = GetOr(transitionSrc, "relativeStretching", ConfigDefaults::MODE_RELATIVE_STRETCHING);
-    cfg.skipAnimateX = GetOr(transitionSrc, "skipAnimateX", false);
-    cfg.skipAnimateY = GetOr(transitionSrc, "skipAnimateY", false);
-
-    if (auto t = GetTable(tbl, "border")) { BorderConfigFromToml(*t, cfg.border); }
-
-    cfg.sensitivityOverrideEnabled = GetOr(tbl, "sensitivityOverrideEnabled", ConfigDefaults::MODE_SENSITIVITY_OVERRIDE_ENABLED);
-    cfg.modeSensitivity = GetOr(tbl, "modeSensitivity", ConfigDefaults::MODE_SENSITIVITY);
-    cfg.separateXYSensitivity = GetOr(tbl, "separateXYSensitivity", ConfigDefaults::MODE_SEPARATE_XY_SENSITIVITY);
-    cfg.modeSensitivityX = GetOr(tbl, "modeSensitivityX", ConfigDefaults::MODE_SENSITIVITY_X);
-    cfg.modeSensitivityY = GetOr(tbl, "modeSensitivityY", ConfigDefaults::MODE_SENSITIVITY_Y);
-
-    cfg.slideMirrorsIn = GetOr(transitionSrc, "slideMirrorsIn", false);
+    ModeConfigFromTomlInternal(tbl, cfg, nullptr);
 }
 
 void HotkeyConditionsToToml(const HotkeyConditions& cfg, toml::table& out) {
@@ -1181,10 +1496,12 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("showPerformanceOverlay", cfg.showPerformanceOverlay);
     out.insert("showProfiler", cfg.showProfiler);
     out.insert("profilerScale", cfg.profilerScale);
+    out.insert("showHotkeyDebug", cfg.showHotkeyDebug);
     out.insert("fakeCursor", cfg.fakeCursor);
     out.insert("showTextureGrid", cfg.showTextureGrid);
     out.insert("delayRenderingUntilFinished", cfg.delayRenderingUntilFinished);
     out.insert("virtualCameraEnabled", cfg.virtualCameraEnabled);
+    out.insert("videoCacheBudgetMiB", cfg.videoCacheBudgetMiB);
 
     out.insert("logModeSwitch", cfg.logModeSwitch);
     out.insert("logAnimation", cfg.logAnimation);
@@ -1197,17 +1514,20 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("logTextureOps", cfg.logTextureOps);
     out.insert("logGui", cfg.logGui);
     out.insert("logInit", cfg.logInit);
+    out.insert("logCursorTextures", cfg.logCursorTextures);
 }
 
 void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.showPerformanceOverlay = GetOr(tbl, "showPerformanceOverlay", ConfigDefaults::DEBUG_GLOBAL_SHOW_PERFORMANCE_OVERLAY);
     cfg.showProfiler = GetOr(tbl, "showProfiler", ConfigDefaults::DEBUG_GLOBAL_SHOW_PROFILER);
     cfg.profilerScale = GetOr(tbl, "profilerScale", ConfigDefaults::DEBUG_GLOBAL_PROFILER_SCALE);
+    cfg.showHotkeyDebug = GetOr(tbl, "showHotkeyDebug", ConfigDefaults::DEBUG_GLOBAL_SHOW_HOTKEY_DEBUG);
     cfg.fakeCursor = GetOr(tbl, "fakeCursor", ConfigDefaults::DEBUG_GLOBAL_FAKE_CURSOR);
     cfg.showTextureGrid = GetOr(tbl, "showTextureGrid", ConfigDefaults::DEBUG_GLOBAL_SHOW_TEXTURE_GRID);
     cfg.delayRenderingUntilFinished =
         GetOr(tbl, "delayRenderingUntilFinished", ConfigDefaults::DEBUG_GLOBAL_DELAY_RENDERING_UNTIL_FINISHED);
     cfg.virtualCameraEnabled = GetOr(tbl, "virtualCameraEnabled", false);
+    cfg.videoCacheBudgetMiB = GetOr(tbl, "videoCacheBudgetMiB", ConfigDefaults::DEBUG_GLOBAL_VIDEO_CACHE_BUDGET_MIB);
 
     cfg.logModeSwitch = GetOr(tbl, "logModeSwitch", ConfigDefaults::DEBUG_GLOBAL_LOG_MODE_SWITCH);
     cfg.logAnimation = GetOr(tbl, "logAnimation", ConfigDefaults::DEBUG_GLOBAL_LOG_ANIMATION);
@@ -1220,6 +1540,7 @@ void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.logTextureOps = GetOr(tbl, "logTextureOps", ConfigDefaults::DEBUG_GLOBAL_LOG_TEXTURE_OPS);
     cfg.logGui = GetOr(tbl, "logGui", ConfigDefaults::DEBUG_GLOBAL_LOG_GUI);
     cfg.logInit = GetOr(tbl, "logInit", ConfigDefaults::DEBUG_GLOBAL_LOG_INIT);
+    cfg.logCursorTextures = GetOr(tbl, "logCursorTextures", ConfigDefaults::DEBUG_GLOBAL_LOG_CURSOR_TEXTURES);
 }
 
 void CursorConfigToToml(const CursorConfig& cfg, toml::table& out) {
@@ -1229,14 +1550,8 @@ void CursorConfigToToml(const CursorConfig& cfg, toml::table& out) {
 
 void CursorConfigFromToml(const toml::table& tbl, CursorConfig& cfg) {
     cfg.cursorName = GetStringOr(tbl, "cursorName", "");
-    cfg.cursorSize = GetOr(tbl, "cursorSize", ConfigDefaults::CURSOR_SIZE);
-
-    static const std::vector<int> validSizes = {
-        16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128, 144, 160, 192, 224, 256, 288, 320
-    };
-    if (std::find(validSizes.begin(), validSizes.end(), cfg.cursorSize) == validSizes.end()) {
-        cfg.cursorSize = ConfigDefaults::CURSOR_SIZE;
-    }
+    cfg.cursorSize = std::clamp(GetOr(tbl, "cursorSize", ConfigDefaults::CURSOR_SIZE), ConfigDefaults::CURSOR_MIN_SIZE,
+                                ConfigDefaults::CURSOR_MAX_SIZE);
 }
 
 void CursorsConfigToToml(const CursorsConfig& cfg, toml::table& out) {
@@ -1275,7 +1590,7 @@ void EyeZoomConfigToToml(const EyeZoomConfig& cfg, toml::table& out) {
     out.insert("useCustomSizePosition", cfg.useCustomSizePosition);
     out.insert("positionX", cfg.positionX);
     out.insert("positionY", cfg.positionY);
-    out.insert("autoFontSize", cfg.autoFontSize);
+    out.insert("fontSizeMode", EyeZoomFontSizeModeToTomlString(cfg.fontSizeMode));
     out.insert("textFontSize", cfg.textFontSize);
     out.insert("textFontPath", cfg.textFontPath);
     out.insert("rectHeight", cfg.rectHeight);
@@ -1305,6 +1620,7 @@ void EyeZoomConfigToToml(const EyeZoomConfig& cfg, toml::table& out) {
             }
             ovTbl.insert("manualWidth", ov.manualWidth);
             ovTbl.insert("manualHeight", ov.manualHeight);
+            ovTbl.insert("clipToZoomArea", ov.clipToZoomArea);
             ovTbl.insert("opacity", ov.opacity);
             overlayArr.push_back(std::move(ovTbl));
         }
@@ -1380,7 +1696,7 @@ void EyeZoomConfigFromToml(const toml::table& tbl, EyeZoomConfig& cfg) {
 
     cfg.positionX = GetOr(tbl, "positionX", ConfigDefaults::EYEZOOM_POSITION_X);
     cfg.positionY = GetOr(tbl, "positionY", ConfigDefaults::EYEZOOM_POSITION_Y);
-    cfg.autoFontSize = GetOr(tbl, "autoFontSize", ConfigDefaults::EYEZOOM_AUTO_FONT_SIZE);
+    cfg.fontSizeMode = ParseEyeZoomFontSizeMode(tbl);
     cfg.textFontSize = GetOr(tbl, "textFontSize", ConfigDefaults::EYEZOOM_TEXT_FONT_SIZE);
     cfg.textFontPath = GetStringOr(tbl, "textFontPath", ConfigDefaults::EYEZOOM_TEXT_FONT_PATH);
     cfg.rectHeight = GetOr(tbl, "rectHeight", ConfigDefaults::EYEZOOM_RECT_HEIGHT);
@@ -1410,6 +1726,7 @@ void EyeZoomConfigFromToml(const toml::table& tbl, EyeZoomConfig& cfg) {
                 else                           ov.displayMode = EyeZoomOverlayDisplayMode::Fit;
                 ov.manualWidth = GetOr(*t, "manualWidth", 100);
                 ov.manualHeight = GetOr(*t, "manualHeight", 100);
+                ov.clipToZoomArea = GetOr(*t, "clipToZoomArea", false);
                 ov.opacity = GetOr(*t, "opacity", 1.0f);
                 cfg.overlays.push_back(std::move(ov));
             }
@@ -1431,6 +1748,7 @@ void KeyRebindToToml(const KeyRebind& cfg, toml::table& out) {
     out.insert("customOutputScanCode", static_cast<int64_t>(cfg.customOutputScanCode));
     out.insert("baseOutputShifted", cfg.baseOutputShifted);
     out.insert("shiftLayerEnabled", cfg.shiftLayerEnabled);
+    out.insert("shiftLayerUsesCapsLock", cfg.shiftLayerUsesCapsLock);
     out.insert("shiftLayerOutputVK", static_cast<int64_t>(cfg.shiftLayerOutputVK));
     out.insert("shiftLayerOutputUnicode", static_cast<int64_t>(cfg.shiftLayerOutputUnicode));
     out.insert("shiftLayerOutputShifted", cfg.shiftLayerOutputShifted);
@@ -1457,23 +1775,53 @@ static bool TryParseUnicodeCodepointString(const std::string& in, uint32_t& outC
     };
 
     std::string hex = s;
-    if (startsWithI("U+")) hex = s.substr(2);
-    else if (startsWithI("\\\\U")) hex = s.substr(2);
-    else if (startsWithI("\\\\u")) hex = s.substr(2);
-    else if (startsWithI("0X")) hex = s.substr(2);
+    bool explicitCodepointNotation = false;
+    if (startsWithI("U+")) {
+        hex = s.substr(2);
+        explicitCodepointNotation = true;
+    } else if (startsWithI("\\U")) {
+        hex = s.substr(2);
+        explicitCodepointNotation = true;
+    } else if (startsWithI("\\u")) {
+        hex = s.substr(2);
+        explicitCodepointNotation = true;
+    } else if (startsWithI("0X")) {
+        hex = s.substr(2);
+        explicitCodepointNotation = true;
+    }
 
     // Strip optional surrounding braces like "{00F8}".
-    if (!hex.empty() && hex.front() == '{' && hex.back() == '}') hex = hex.substr(1, hex.size() - 2);
+    if (!hex.empty() && hex.front() == '{' && hex.back() == '}') {
+        hex = hex.substr(1, hex.size() - 2);
+        explicitCodepointNotation = true;
+    }
+
+    if (explicitCodepointNotation) {
+        try {
+            size_t idx = 0;
+            unsigned long v = std::stoul(hex, &idx, 16);
+            if (idx == 0 || idx != hex.size()) return false;
+            if (v == 0 || v > 0x10FFFFul) return false;
+            if (v >= 0xD800ul && v <= 0xDFFFul) return false;
+            outCp = (uint32_t)v;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
 
     {
         std::wstring w = Utf8ToWide(s);
         if (!w.empty()) {
             uint32_t cp = 0;
-            if (w.size() >= 2 && w[0] >= 0xD800 && w[0] <= 0xDBFF && w[1] >= 0xDC00 && w[1] <= 0xDFFF) {
+            if (w.size() == 1) {
+                cp = (uint32_t)w[0];
+            } else if (w.size() == 2 && w[0] >= 0xD800 && w[0] <= 0xDBFF && w[1] >= 0xDC00 && w[1] <= 0xDFFF) {
                 cp = 0x10000u + (((uint32_t)w[0] - 0xD800u) << 10) + ((uint32_t)w[1] - 0xDC00u);
             } else {
-                cp = (uint32_t)w[0];
+                return false;
             }
+
             if (cp != 0 && cp <= 0x10FFFFu && !(cp >= 0xD800u && cp <= 0xDFFFu)) {
                 outCp = cp;
                 return true;
@@ -1481,17 +1829,7 @@ static bool TryParseUnicodeCodepointString(const std::string& in, uint32_t& outC
         }
     }
 
-    try {
-        size_t idx = 0;
-        unsigned long v = std::stoul(hex, &idx, 16);
-        if (idx == 0) return false;
-        if (v == 0 || v > 0x10FFFFul) return false;
-        if (v >= 0xD800ul && v <= 0xDFFFul) return false;
-        outCp = (uint32_t)v;
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return false;
 }
 
 void KeyRebindFromToml(const toml::table& tbl, KeyRebind& cfg) {
@@ -1518,6 +1856,8 @@ void KeyRebindFromToml(const toml::table& tbl, KeyRebind& cfg) {
         static_cast<DWORD>(GetOr<int64_t>(tbl, "customOutputScanCode", ConfigDefaults::KEY_REBIND_CUSTOM_OUTPUT_SCANCODE));
     cfg.baseOutputShifted = GetOr(tbl, "baseOutputShifted", ConfigDefaults::KEY_REBIND_BASE_OUTPUT_SHIFTED);
     cfg.shiftLayerEnabled = GetOr(tbl, "shiftLayerEnabled", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_ENABLED);
+    cfg.shiftLayerUsesCapsLock =
+        GetOr(tbl, "shiftLayerUsesCapsLock", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_USES_CAPS_LOCK);
     cfg.shiftLayerOutputVK =
         static_cast<DWORD>(GetOr<int64_t>(tbl, "shiftLayerOutputVK", ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_VK));
     cfg.shiftLayerOutputUnicode = ConfigDefaults::KEY_REBIND_SHIFT_LAYER_OUTPUT_UNICODE;
@@ -1541,6 +1881,12 @@ void KeyRebindFromToml(const toml::table& tbl, KeyRebind& cfg) {
 void KeyRebindsConfigToToml(const KeyRebindsConfig& cfg, toml::table& out) {
     out.insert("enabled", cfg.enabled);
     out.insert("resolveRebindTargetsForHotkeys", cfg.resolveRebindTargetsForHotkeys);
+    out.insert("allowSystemAltTab", cfg.allowSystemAltTab);
+    out.insert("indicatorMode", cfg.indicatorMode);
+    out.insert("indicatorPosition", cfg.indicatorPosition);
+    if (!cfg.indicatorImageEnabled.empty()) out.insert("indicatorImageEnabled", cfg.indicatorImageEnabled);
+    if (!cfg.indicatorImageDisabled.empty()) out.insert("indicatorImageDisabled", cfg.indicatorImageDisabled);
+    out.insert("allowSystemAltF4", cfg.allowSystemAltF4);
 
     toml::array toggleHotkeyArr;
     for (const auto& key : cfg.toggleHotkey) { toggleHotkeyArr.push_back(static_cast<int64_t>(key)); }
@@ -1559,6 +1905,18 @@ void KeyRebindsConfigFromToml(const toml::table& tbl, KeyRebindsConfig& cfg) {
     cfg.enabled = GetOr(tbl, "enabled", ConfigDefaults::KEY_REBINDS_ENABLED);
     cfg.resolveRebindTargetsForHotkeys =
         GetOr(tbl, "resolveRebindTargetsForHotkeys", ConfigDefaults::KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS);
+    cfg.allowSystemAltTab = GetOr(tbl, "allowSystemAltTab", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB);
+    if (tbl.contains("indicatorMode")) {
+        cfg.indicatorMode = GetOr(tbl, "indicatorMode", ConfigDefaults::KEY_REBINDS_INDICATOR_MODE);
+    } else if (tbl.contains("showIndicator")) {
+        cfg.indicatorMode = GetOr(tbl, "showIndicator", false) ? 1 : 0;
+    } else {
+        cfg.indicatorMode = ConfigDefaults::KEY_REBINDS_INDICATOR_MODE;
+    }
+    cfg.indicatorPosition = GetOr(tbl, "indicatorPosition", ConfigDefaults::KEY_REBINDS_INDICATOR_POSITION);
+    cfg.indicatorImageEnabled = GetStringOr(tbl, "indicatorImageEnabled", "");
+    cfg.indicatorImageDisabled = GetStringOr(tbl, "indicatorImageDisabled", "");
+    cfg.allowSystemAltF4 = GetOr(tbl, "allowSystemAltF4", ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_F4);
 
     cfg.toggleHotkey.clear();
     const bool hasToggleHotkey = tbl.contains("toggleHotkey");
@@ -1609,10 +1967,13 @@ static int ClampObsFramerateConfigValue(int value) {
     return value;
 }
 
+static int ClampKeyRepeatConfigValue(int value) {
+    return std::clamp(value, -1, 300);
+}
+
 void ConfigToToml(const Config& config, toml::table& out) {
     out.insert("configVersion", config.configVersion);
     out.insert("disableHookChaining", config.disableHookChaining);
-    out.insert("hookChainingNextTarget", HookChainingNextTargetToString(config.hookChainingNextTarget));
     out.insert("defaultMode", config.defaultMode);
     out.insert("fontPath", config.fontPath);
     out.insert("lang", config.lang);
@@ -1620,13 +1981,16 @@ void ConfigToToml(const Config& config, toml::table& out) {
     out.insert("fpsLimitSleepThreshold", config.fpsLimitSleepThreshold);
     out.insert("mirrorMatchColorspace", MirrorGammaModeToString(config.mirrorGammaMode));
     out.insert("allowCursorEscape", config.allowCursorEscape);
+    out.insert("confineCursor", config.confineCursor);
     out.insert("mouseSensitivity", config.mouseSensitivity);
     out.insert("windowsMouseSpeed", config.windowsMouseSpeed);
     out.insert("hideAnimationsInGame", config.hideAnimationsInGame);
     out.insert("limitCaptureFramerate", config.limitCaptureFramerate);
+    out.insert("obsFramerate", config.obsFramerate);
     out.insert("keyRepeatStartDelay", config.keyRepeatStartDelay);
     out.insert("keyRepeatDelay", config.keyRepeatDelay);
     out.insert("basicModeEnabled", config.basicModeEnabled);
+    out.insert("restoreWindowedModeOnFullscreenExit", config.restoreWindowedModeOnFullscreenExit);
     out.insert("disableFullscreenPrompt", config.disableFullscreenPrompt);
     out.insert("disableConfigurePrompt", config.disableConfigurePrompt);
 
@@ -1750,6 +2114,14 @@ void ConfigToToml(const Config& config, toml::table& out) {
     }
     out.insert("windowOverlay", windowOverlaysArr);
 
+    toml::array browserOverlaysArr;
+    for (const auto& overlay : config.browserOverlays) {
+        toml::table overlayTbl;
+        BrowserOverlayConfigToToml(overlay, overlayTbl);
+        browserOverlaysArr.push_back(overlayTbl);
+    }
+    out.insert("browserOverlay", browserOverlaysArr);
+
     toml::array hotkeysArr;
     for (const auto& hotkey : config.hotkeys) {
         toml::table hotkeyTbl;
@@ -1769,9 +2141,8 @@ void ConfigToToml(const Config& config, toml::table& out) {
 
 void ConfigFromToml(const toml::table& tbl, Config& config) {
     config.configVersion = GetOr(tbl, "configVersion", ConfigDefaults::DEFAULT_CONFIG_VERSION);
+    const int originalConfigVersion = config.configVersion;
     config.disableHookChaining = GetOr(tbl, "disableHookChaining", ConfigDefaults::CONFIG_DISABLE_HOOK_CHAINING);
-    config.hookChainingNextTarget = StringToHookChainingNextTarget(
-        GetStringOr(tbl, "hookChainingNextTarget", ConfigDefaults::CONFIG_HOOK_CHAINING_NEXT_TARGET));
     config.defaultMode = GetStringOr(tbl, "defaultMode", ConfigDefaults::CONFIG_DEFAULT_MODE);
     config.fontPath = GetStringOr(tbl, "fontPath", ConfigDefaults::CONFIG_FONT_PATH);
     config.lang = GetStringOr(tbl, "lang", ConfigDefaults::CONFIG_LANG);
@@ -1781,14 +2152,21 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
     config.mirrorGammaMode = StringToMirrorGammaMode(
         GetStringOr(tbl, "mirrorMatchColorspace", ConfigDefaults::CONFIG_MIRROR_MATCH_COLORSPACE));
     config.allowCursorEscape = GetOr(tbl, "allowCursorEscape", ConfigDefaults::CONFIG_ALLOW_CURSOR_ESCAPE);
+    config.confineCursor = GetOr(tbl, "confineCursor", false);
     config.mouseSensitivity = GetOr(tbl, "mouseSensitivity", ConfigDefaults::CONFIG_MOUSE_SENSITIVITY);
     config.windowsMouseSpeed = GetOr(tbl, "windowsMouseSpeed", ConfigDefaults::CONFIG_WINDOWS_MOUSE_SPEED);
     config.hideAnimationsInGame = GetOr(tbl, "hideAnimationsInGame", ConfigDefaults::CONFIG_HIDE_ANIMATIONS_IN_GAME);
     config.limitCaptureFramerate = GetOr(tbl, "limitCaptureFramerate", ConfigDefaults::CONFIG_LIMIT_CAPTURE_FRAMERATE);
     config.obsFramerate = ClampObsFramerateConfigValue(GetOr(tbl, "obsFramerate", ConfigDefaults::CONFIG_OBS_FRAMERATE));
-    config.keyRepeatStartDelay = GetOr(tbl, "keyRepeatStartDelay", ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY);
-    config.keyRepeatDelay = GetOr(tbl, "keyRepeatDelay", ConfigDefaults::CONFIG_KEY_REPEAT_DELAY);
+    config.keyRepeatStartDelay = ClampKeyRepeatConfigValue(GetOr(tbl, "keyRepeatStartDelay", ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY));
+    config.keyRepeatDelay = ClampKeyRepeatConfigValue(GetOr(tbl, "keyRepeatDelay", ConfigDefaults::CONFIG_KEY_REPEAT_DELAY));
+    if (originalConfigVersion < ConfigDefaults::DEFAULT_CONFIG_VERSION) {
+        if (config.keyRepeatStartDelay == 0) { config.keyRepeatStartDelay = ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY; }
+        if (config.keyRepeatDelay == 0) { config.keyRepeatDelay = ConfigDefaults::CONFIG_KEY_REPEAT_DELAY; }
+    }
     config.basicModeEnabled = GetOr(tbl, "basicModeEnabled", ConfigDefaults::CONFIG_BASIC_MODE_ENABLED);
+    config.restoreWindowedModeOnFullscreenExit =
+        GetOr(tbl, "restoreWindowedModeOnFullscreenExit", ConfigDefaults::CONFIG_RESTORE_WINDOWED_MODE_ON_FULLSCREEN_EXIT);
     config.disableFullscreenPrompt = GetOr(tbl, "disableFullscreenPrompt", ConfigDefaults::CONFIG_DISABLE_FULLSCREEN_PROMPT);
     config.disableConfigurePrompt = GetOr(tbl, "disableConfigurePrompt", ConfigDefaults::CONFIG_DISABLE_CONFIGURE_PROMPT);
 
@@ -1897,11 +2275,12 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
     if (auto t = GetTable(tbl, "appearance")) { AppearanceConfigFromToml(*t, config.appearance); }
 
     config.modes.clear();
+    const std::vector<ModeConfig> defaultModes = GetDefaultModesFromEmbedded();
     if (auto arr = GetArray(tbl, "mode")) {
         for (const auto& elem : *arr) {
             if (auto t = elem.as_table()) {
                 ModeConfig mode;
-                ModeConfigFromToml(*t, mode);
+                ModeConfigFromTomlInternal(*t, mode, &defaultModes);
                 config.modes.push_back(mode);
             }
         }
@@ -1955,6 +2334,17 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         }
     }
 
+    config.browserOverlays.clear();
+    if (auto arr = GetArray(tbl, "browserOverlay")) {
+        for (const auto& elem : *arr) {
+            if (auto t = elem.as_table()) {
+                BrowserOverlayConfig overlay;
+                BrowserOverlayConfigFromToml(*t, overlay);
+                config.browserOverlays.push_back(overlay);
+            }
+        }
+    }
+
     config.hotkeys.clear();
     if (auto arr = GetArray(tbl, "hotkey")) {
         for (const auto& elem : *arr) {
@@ -1976,6 +2366,15 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
             }
         }
     }
+
+    if (originalConfigVersion < 5) {
+        for (auto& wo : config.windowOverlays) {
+            wo.crop_top *= 2;
+            wo.crop_bottom *= 2;
+            wo.crop_left *= 2;
+            wo.crop_right *= 2;
+        }
+    }
 }
 
 bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
@@ -1990,19 +2389,22 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
 
         std::vector<std::string> orderedKeys = { "configVersion",
                      "disableHookChaining",
-                     "hookChainingNextTarget",
                              "defaultMode",
                                                  "fontPath",
+                             "lang",
                                                  "fpsLimit",
                                                  "fpsLimitSleepThreshold",
+                             "mirrorMatchColorspace",
                                                  "allowCursorEscape",
                                                  "mouseSensitivity",
                                                  "windowsMouseSpeed",
                                                  "hideAnimationsInGame",
                                                  "limitCaptureFramerate",
+                             "obsFramerate",
                                                  "keyRepeatStartDelay",
                                                  "keyRepeatDelay",
                                                  "basicModeEnabled",
+                                                 "restoreWindowedModeOnFullscreenExit",
                                                  "disableFullscreenPrompt",
                                                  "disableConfigurePrompt",
                                                  "guiHotkey",
@@ -2020,6 +2422,7 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                                  "mirrorGroup",
                                                  "image",
                                                  "windowOverlay",
+                                                 "browserOverlay",
                                                  "hotkey",
                                                  "sensitivityHotkey" };
 
@@ -2029,13 +2432,12 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                               "useRelativeSize",
                                               "relativeWidth",
                                               "relativeHeight",
-                                              "widthExpr",
-                                              "heightExpr",
                                               "background",
                                               "mirrorIds",
                                               "mirrorGroupIds",
                                               "imageIds",
                                               "windowOverlayIds",
+                                              "browserOverlayIds",
                                               "stretch",
                                               "gameTransition",
                                               "overlayTransition",
@@ -2056,9 +2458,9 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                               "modeSensitivityX",
                                               "modeSensitivityY" };
         std::vector<std::string> mirrorKeys = { "name",   "captureWidth", "captureHeight",    "input",
-                                                "output", "colors",       "colorSensitivity", "border",
-                                                "fps",    "rawOutput",    "colorPassthrough", "gradientOutput",
-                                                "gradient", "onlyOnMyScreen",
+                            "output", "colors",       "colorSensitivity", "border",
+                            "fps",    "rawOutput",    "colorPassthrough", "gradientOutput",
+                            "gradient", "onlyOnMyScreen",
                                                 "debug" };
         std::vector<std::string> mirrorGroupKeys = { "name", "output", "mirrorIds" };
         std::vector<std::string> imageKeys = { "name",           "path",      "x",           "y",          "scale",
@@ -2085,11 +2487,42 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                                                        "pixelatedScaling",
                                                        "onlyOnMyScreen",
                                                        "fps",
+                                                       "searchInterval",
                                                        "captureMethod",
                                                        "forceUpdate",
                                                        "enableInteraction",
                                                        "border" };
-        std::vector<std::string> hotkeyKeys = { "keys", "mainMode", "secondaryMode", "altSecondaryModes", "conditions", "debounce" };
+        std::vector<std::string> browserOverlayKeys = { "name",
+                                                        "url",
+                                                        "customCss",
+                                                        "browserWidth",
+                                                        "browserHeight",
+                                                        "x",
+                                                        "y",
+                                                        "scale",
+                                                        "relativeTo",
+                                                        "crop_top",
+                                                        "crop_bottom",
+                                                        "crop_left",
+                                                        "crop_right",
+                                                        "enableColorKey",
+                                                        "colorKeys",
+                                                        "opacity",
+                                                        "background",
+                                                        "pixelatedScaling",
+                                                        "onlyOnMyScreen",
+                                                        "fps",
+                                                        "transparentBackground",
+                                                        "muteAudio",
+                                                        "hardwareAcceleration",
+                                                        "allowSystemMediaKeys",
+                                                        "reloadOnUpdate",
+                                                        "reloadInterval",
+                                                        "border" };
+        std::vector<std::string> hotkeyKeys = { "keys", "mainMode", "secondaryMode", "altSecondaryModes",
+                                                       "conditions", "debounce",
+                                                       "allowExitToFullscreenRegardlessOfGameState",
+                                                       "blockKeyFromGame", "triggerOnHold", "triggerOnRelease" };
 
         auto getKeyOrder = [&](const std::string& arrayKey) -> const std::vector<std::string>* {
             if (arrayKey == "mode") return &modeKeys;
@@ -2097,6 +2530,7 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
             if (arrayKey == "mirrorGroup") return &mirrorGroupKeys;
             if (arrayKey == "image") return &imageKeys;
             if (arrayKey == "windowOverlay") return &windowOverlayKeys;
+            if (arrayKey == "browserOverlay") return &browserOverlayKeys;
             if (arrayKey == "hotkey") return &hotkeyKeys;
             return nullptr;
         };
@@ -2115,9 +2549,10 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                             const toml::table* elemTbl = elem.as_table();
                             if (elemTbl) {
                                 if (itemKeyOrder) {
-                                    WriteTableOrdered(file, *elemTbl, *itemKeyOrder);
+                                    WriteTableOrdered(file, *elemTbl, *itemKeyOrder, true);
                                 } else {
-                                    file << *elemTbl;
+                                    static const std::vector<std::string> emptyOrder;
+                                    WriteTableOrdered(file, *elemTbl, emptyOrder, true);
                                 }
                             }
                         }
@@ -2125,9 +2560,8 @@ bool SaveConfigToTomlFile(const Config& config, const std::wstring& path) {
                         file << key << " = " << *arr << "\n";
                     }
                 } else if (nodePtr->is_table()) {
-                    file << "\n[" << key << "]\n";
-                    const toml::table* subtbl = nodePtr->as_table();
-                    if (subtbl) file << *subtbl;
+                    file << "\n";
+                    WriteNode(file, key, *nodePtr, false);
                 } else {
                     file << key << " = ";
                     nodePtr->visit([&file](auto&& val) { file << val; });
@@ -2278,12 +2712,6 @@ std::vector<ModeConfig> GetDefaultModesFromEmbedded() {
                     mode.stretch.height = screenHeight;
                 }
             }
-            else if (mode.id == "Thin") {
-                mode.height = screenHeight;
-            }
-            else if (mode.id == "Wide") {
-                mode.width = screenWidth;
-            }
         }
 
     } catch (const std::exception& e) { Log("ERROR: Failed to parse embedded modes: " + std::string(e.what())); }
@@ -2430,8 +2858,7 @@ CursorsConfig GetDefaultCursorsFromEmbedded() {
         ReleaseDC(NULL, hdc);
 
         int systemCursorSize = GetSystemMetricsForDpi(SM_CYCURSOR, dpi);
-        if (systemCursorSize < 16) systemCursorSize = 16;
-        if (systemCursorSize > 320) systemCursorSize = 320;
+        systemCursorSize = std::clamp(systemCursorSize, ConfigDefaults::CURSOR_MIN_SIZE, ConfigDefaults::CURSOR_MAX_SIZE);
 
         cursors.title.cursorSize = systemCursorSize;
         cursors.wall.cursorSize = systemCursorSize;

@@ -16,6 +16,7 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 
 static std::recursive_mutex s_imguiContextMutex;
 
@@ -210,6 +211,38 @@ float ComputeGuiScaleFactorFromCachedWindowSize() {
     return scaleFactor;
 }
 
+void LoadEmbeddedResourceTexture(GLuint& tex, int resourceId, int filterMode) {
+    if (tex != 0) return;
+    HMODULE hModule = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)&g_showGui, &hModule);
+    if (!hModule) return;
+    HRSRC hResource = FindResourceW(hModule, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    if (!hResource) return;
+    HGLOBAL hData = LoadResource(hModule, hResource);
+    if (!hData) return;
+    DWORD dataSize = SizeofResource(hModule, hResource);
+    const unsigned char* rawData = (const unsigned char*)LockResource(hData);
+    if (!rawData || dataSize == 0) return;
+    stbi_set_flip_vertically_on_load_thread(0);
+    int w = 0, h = 0, ch = 0;
+    unsigned char* pixels = stbi_load_from_memory(rawData, (int)dataSize, &w, &h, &ch, 4);
+    if (!pixels || w <= 0 || h <= 0) { if (pixels) stbi_image_free(pixels); return; }
+    glGenTextures(1, &tex);
+    BindTextureDirect(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMode);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterMode);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
+    stbi_image_free(pixels);
+}
+
 void RequestDynamicGuiFontRefresh(bool forceRefresh) {
     std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
     s_pendingMainGuiFontRefresh.pending = true;
@@ -359,6 +392,130 @@ bool IsGuiHotkeyPressed(WPARAM wParam) { return CheckHotkeyMatch(g_config.guiHot
 std::atomic<bool> g_welcomeToastVisible{ false };
 std::atomic<bool> g_configurePromptDismissedThisSession{ false };
 
+static ImU32 ScaleToastAlpha(ImU32 color, float alpha) {
+    ImVec4 rgba = ImGui::ColorConvertU32ToFloat4(color);
+    rgba.w *= std::clamp(alpha, 0.0f, 1.0f);
+    return ImGui::ColorConvertFloat4ToU32(rgba);
+}
+
+static void RenderFullscreenWelcomeToastImGui(float toastOpacity) {
+    std::lock_guard<std::recursive_mutex> imguiLock(GetImGuiContextMutex());
+
+    HWND hwnd = g_minecraftHwnd.load();
+    if (!hwnd) { return; }
+
+    InitializeImGuiContext(hwnd);
+    if (ImGui::GetCurrentContext() == nullptr) { return; }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    SyncImGuiDisplayMetrics(hwnd);
+    ApplyDynamicGuiFontRefresh();
+    ImGui::NewFrame();
+
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
+        ImGui::Render();
+        RenderImGuiWithStateProtection(true);
+        return;
+    }
+
+    const float toastScale = (io.DisplaySize.y / 1080.0f) * 0.45f;
+    const ImVec2 toastSize(700.0f * toastScale, 250.0f * toastScale);
+    const float unit = toastSize.y / 250.0f;
+
+    std::string titleText = tr("label.toolscreen");
+    std::string hotkeyText = GetKeyComboString(g_config.guiHotkey);
+    if (hotkeyText.empty()) {
+        hotkeyText = tr("hotkeys.none");
+    }
+    const std::string messageText = tr("welcome_toast.fullscreen_press_to_configure", hotkeyText);
+
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(toastSize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    if (ImGui::Begin("##fullscreen_welcome_toast", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground)) {
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        ImFont* font = ImGui::GetFont();
+        const ImVec2 origin = ImGui::GetWindowPos();
+        const ImVec2 size = ImGui::GetWindowSize();
+        const float rounding = 28.0f * unit;
+
+        auto calcTextSize = [&](const std::string& text, float fontSize) {
+            return font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text.c_str());
+        };
+        auto addVec = [](const ImVec2& a, const ImVec2& b) {
+            return ImVec2(a.x + b.x, a.y + b.y);
+        };
+        auto subVec = [](const ImVec2& a, const ImVec2& b) {
+            return ImVec2(a.x - b.x, a.y - b.y);
+        };
+        auto fitTextSize = [&](const std::string& text, float desiredSize, float minSize, float maxWidth) {
+            float fontSize = desiredSize;
+            while (fontSize > minSize && calcTextSize(text, fontSize).x > maxWidth) {
+                fontSize -= unit;
+            }
+            return fontSize;
+        };
+        auto drawCenteredText = [&](const std::string& text, float centerY, float fontSize, ImU32 color) {
+            const ImVec2 textSize = calcTextSize(text, fontSize);
+            const ImVec2 textPos(origin.x + (size.x - textSize.x) * 0.5f, origin.y + centerY - textSize.y * 0.5f);
+            drawList->AddText(font, fontSize, addVec(textPos, ImVec2(2.0f * unit, 2.0f * unit)), ScaleToastAlpha(IM_COL32(20, 8, 31, 145), toastOpacity),
+                              text.c_str());
+            drawList->AddText(font, fontSize, textPos, color, text.c_str());
+        };
+        auto drawCenteredOutlinedText = [&](const std::string& text, float centerY, float fontSize, ImU32 fillColor, ImU32 outlineColor,
+                                            float outlineOffset) {
+            const ImVec2 textSize = calcTextSize(text, fontSize);
+            const ImVec2 textPos(origin.x + (size.x - textSize.x) * 0.5f, origin.y + centerY - textSize.y * 0.5f);
+            const ImVec2 offsets[] = {
+                ImVec2(-outlineOffset, 0.0f), ImVec2(outlineOffset, 0.0f), ImVec2(0.0f, -outlineOffset), ImVec2(0.0f, outlineOffset),
+                ImVec2(-outlineOffset, -outlineOffset), ImVec2(outlineOffset, -outlineOffset), ImVec2(-outlineOffset, outlineOffset),
+                ImVec2(outlineOffset, outlineOffset),
+            };
+
+            for (const ImVec2& offset : offsets) {
+                drawList->AddText(font, fontSize, addVec(textPos, offset), outlineColor, text.c_str());
+            }
+            drawList->AddText(font, fontSize, addVec(textPos, ImVec2(1.5f * unit, 1.5f * unit)), ScaleToastAlpha(IM_COL32(34, 15, 54, 120), toastOpacity),
+                              text.c_str());
+            drawList->AddText(font, fontSize, textPos, fillColor, text.c_str());
+        };
+
+        const ImVec2 panelMax = addVec(origin, size);
+        drawList->AddRectFilled(origin, panelMax, ScaleToastAlpha(IM_COL32(36, 10, 58, 244), toastOpacity), rounding,
+                                ImDrawFlags_RoundCornersBottomRight);
+        drawList->AddRectFilledMultiColor(origin, panelMax,
+                                          ScaleToastAlpha(IM_COL32(70, 45, 113, 208), toastOpacity),
+                                          ScaleToastAlpha(IM_COL32(40, 14, 64, 72), toastOpacity),
+                                          ScaleToastAlpha(IM_COL32(36, 10, 58, 0), toastOpacity),
+                                          ScaleToastAlpha(IM_COL32(65, 41, 107, 146), toastOpacity));
+        drawList->AddRectFilledMultiColor(origin, ImVec2(panelMax.x, origin.y + 118.0f * unit),
+                                          ScaleToastAlpha(IM_COL32(82, 58, 130, 88), toastOpacity),
+                                          ScaleToastAlpha(IM_COL32(63, 38, 102, 18), toastOpacity),
+                                          ScaleToastAlpha(IM_COL32(0, 0, 0, 0), toastOpacity),
+                                          ScaleToastAlpha(IM_COL32(0, 0, 0, 0), toastOpacity));
+
+        const float titleFontSize = fitTextSize(titleText, 66.0f * unit, 34.0f * unit, size.x - 80.0f * unit);
+        drawCenteredOutlinedText(titleText, 52.0f * unit, titleFontSize,
+                                 ScaleToastAlpha(IM_COL32(243, 224, 151, 255), toastOpacity),
+                                 ScaleToastAlpha(IM_COL32(74, 46, 35, 225), toastOpacity), 1.7f * unit);
+
+        const float messageFontSize = fitTextSize(messageText, 48.0f * unit, 22.0f * unit, size.x - 78.0f * unit);
+        drawCenteredText(messageText, 155.0f * unit, messageFontSize, ScaleToastAlpha(IM_COL32(247, 241, 224, 255), toastOpacity));
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+
+    ImGui::Render();
+    RenderImGuiWithStateProtection(true);
+}
+
 void RenderWelcomeToast(bool isFullscreen) {
     if (isFullscreen && g_configurePromptDismissedThisSession.load(std::memory_order_relaxed)) { return; }
 
@@ -398,6 +555,11 @@ void RenderWelcomeToast(bool isFullscreen) {
         }
     }
 
+    if (isFullscreen) {
+        RenderFullscreenWelcomeToastImGui(toastOpacity);
+        return;
+    }
+
     static GLuint s_program = 0;
     static GLuint s_vao = 0;
     static GLuint s_vbo = 0;
@@ -405,9 +567,7 @@ void RenderWelcomeToast(bool isFullscreen) {
     static GLint s_locOpacity = -1;
 
     static GLuint s_toast1Texture = 0;
-    static GLuint s_toast2Texture = 0;
     static int s_toast1Width = 0, s_toast1Height = 0;
-    static int s_toast2Width = 0, s_toast2Height = 0;
 
     static HGLRC s_lastCtx = NULL;
     HGLRC currentCtx = wglGetCurrentContext();
@@ -419,9 +579,7 @@ void RenderWelcomeToast(bool isFullscreen) {
         s_locTexture = -1;
         s_locOpacity = -1;
         s_toast1Texture = 0;
-        s_toast2Texture = 0;
         s_toast1Width = s_toast1Height = 0;
-        s_toast2Width = s_toast2Height = 0;
     }
 
     if (s_program == 0) {
@@ -515,11 +673,10 @@ void main() {
     };
 
     ensureToastTexture(IDR_TOAST1_PNG, s_toast1Texture, s_toast1Width, s_toast1Height);
-    ensureToastTexture(IDR_TOAST2_PNG, s_toast2Texture, s_toast2Width, s_toast2Height);
 
-    GLuint texture = isFullscreen ? s_toast2Texture : s_toast1Texture;
-    int imgW = isFullscreen ? s_toast2Width : s_toast1Width;
-    int imgH = isFullscreen ? s_toast2Height : s_toast1Height;
+    GLuint texture = s_toast1Texture;
+    int imgW = s_toast1Width;
+    int imgH = s_toast1Height;
     if (s_program == 0 || s_vao == 0 || s_vbo == 0 || texture == 0 || imgW <= 0 || imgH <= 0) { return; }
 
     GLint viewport[4];
@@ -629,6 +786,306 @@ void main() {
     glBlendFuncSeparate(savedBlendSrcRGB, savedBlendDstRGB, savedBlendSrcA, savedBlendDstA);
 }
 
+static bool s_rebindIndicatorPrevEnabled = false;
+static std::chrono::steady_clock::time_point s_rebindIndicatorToggleTime{};
+static float s_rebindIndicatorAlpha = 0.0f;
+
+static float UpdateRebindIndicatorAlpha() {
+    const bool enabled = g_config.keyRebinds.enabled;
+    if (enabled != s_rebindIndicatorPrevEnabled) {
+        s_rebindIndicatorToggleTime = std::chrono::steady_clock::now();
+        s_rebindIndicatorPrevEnabled = enabled;
+    }
+    constexpr float kFadeDuration = 0.25f;
+    const float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - s_rebindIndicatorToggleTime).count();
+    const float t = (elapsed < kFadeDuration) ? (elapsed / kFadeDuration) : 1.0f;
+    s_rebindIndicatorAlpha = enabled ? t : (1.0f - t);
+    return s_rebindIndicatorAlpha;
+}
+
+bool IsRebindIndicatorVisible() {
+    const int mode = g_config.keyRebinds.indicatorMode;
+    if (mode == 0) return false;
+    if (mode == 3) return true;
+    if (mode == 1) return g_config.keyRebinds.enabled || s_rebindIndicatorAlpha > 0.0f;
+    if (mode == 2) return !g_config.keyRebinds.enabled || s_rebindIndicatorAlpha < 1.0f;
+    return false;
+}
+
+static GLuint s_rebindIndicatorTexEnabled = 0;
+static int s_rebindIndicatorTexEnabledW = 0, s_rebindIndicatorTexEnabledH = 0;
+static GLuint s_rebindIndicatorTexDisabled = 0;
+static int s_rebindIndicatorTexDisabledW = 0, s_rebindIndicatorTexDisabledH = 0;
+static GLuint s_rebindIndicatorProgram = 0;
+static GLuint s_rebindIndicatorVao = 0;
+static GLuint s_rebindIndicatorVbo = 0;
+static GLint s_rebindIndicatorLocOpacity = -1;
+static HGLRC s_rebindIndicatorLastCtx = NULL;
+
+static std::atomic<bool> s_rebindIndicatorTextureInvalid{ false };
+
+void InvalidateRebindIndicatorTexture() {
+    s_rebindIndicatorTextureInvalid.store(true, std::memory_order_release);
+}
+
+static bool LoadTextureFromFile(const std::string& path, GLuint& outTex, int& outW, int& outH) {
+    if (path.empty()) return false;
+
+    std::string resolvedPath = path;
+    if (!g_toolscreenPath.empty() && !std::filesystem::path(path).is_absolute()) {
+        resolvedPath = WideToUtf8(g_toolscreenPath) + "\\" + path;
+    }
+
+    stbi_set_flip_vertically_on_load_thread(0);
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = stbi_load(resolvedPath.c_str(), &w, &h, &channels, 4);
+    if (!pixels || w <= 0 || h <= 0) {
+        if (pixels) stbi_image_free(pixels);
+        return false;
+    }
+
+    glGenTextures(1, &outTex);
+    BindTextureDirect(GL_TEXTURE_2D, outTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
+    outW = w;
+    outH = h;
+    stbi_image_free(pixels);
+    return true;
+}
+
+static void LoadDefaultIndicatorFromResource(int resourceId, GLuint& outTex, int& outW, int& outH) {
+    stbi_set_flip_vertically_on_load_thread(0);
+
+    HMODULE hModule = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)&RenderRebindIndicator, &hModule);
+    if (!hModule) return;
+
+    HRSRC hResource = FindResourceW(hModule, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    if (!hResource) return;
+    HGLOBAL hData = LoadResource(hModule, hResource);
+    if (!hData) return;
+
+    DWORD dataSize = SizeofResource(hModule, hResource);
+    const unsigned char* rawData = (const unsigned char*)LockResource(hData);
+    if (!rawData || dataSize == 0) return;
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = stbi_load_from_memory(rawData, (int)dataSize, &w, &h, &channels, 4);
+    if (!pixels || w <= 0 || h <= 0) return;
+
+    glGenTextures(1, &outTex);
+    BindTextureDirect(GL_TEXTURE_2D, outTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    BindTextureDirect(GL_TEXTURE_2D, 0);
+    outW = w;
+    outH = h;
+    stbi_image_free(pixels);
+}
+
+static void EnsureRebindIndicatorTextures() {
+    if (s_rebindIndicatorTextureInvalid.exchange(false, std::memory_order_acquire)) {
+        if (s_rebindIndicatorTexEnabled != 0) { glDeleteTextures(1, &s_rebindIndicatorTexEnabled); s_rebindIndicatorTexEnabled = 0; }
+        if (s_rebindIndicatorTexDisabled != 0) { glDeleteTextures(1, &s_rebindIndicatorTexDisabled); s_rebindIndicatorTexDisabled = 0; }
+        s_rebindIndicatorTexEnabledW = s_rebindIndicatorTexEnabledH = 0;
+        s_rebindIndicatorTexDisabledW = s_rebindIndicatorTexDisabledH = 0;
+    }
+
+    const int mode = g_config.keyRebinds.indicatorMode;
+
+    if ((mode == 1 || mode == 3) && s_rebindIndicatorTexEnabled == 0) {
+        if (!LoadTextureFromFile(g_config.keyRebinds.indicatorImageEnabled, s_rebindIndicatorTexEnabled,
+                                 s_rebindIndicatorTexEnabledW, s_rebindIndicatorTexEnabledH)) {
+            LoadDefaultIndicatorFromResource(IDR_REBIND_ON_PNG, s_rebindIndicatorTexEnabled,
+                                             s_rebindIndicatorTexEnabledW, s_rebindIndicatorTexEnabledH);
+        }
+    }
+    if ((mode == 2 || mode == 3) && s_rebindIndicatorTexDisabled == 0) {
+        if (!LoadTextureFromFile(g_config.keyRebinds.indicatorImageDisabled, s_rebindIndicatorTexDisabled,
+                                 s_rebindIndicatorTexDisabledW, s_rebindIndicatorTexDisabledH)) {
+            LoadDefaultIndicatorFromResource(IDR_REBIND_OFF_PNG, s_rebindIndicatorTexDisabled,
+                                             s_rebindIndicatorTexDisabledW, s_rebindIndicatorTexDisabledH);
+        }
+    }
+}
+
+void RenderRebindIndicator() {
+    const int mode = g_config.keyRebinds.indicatorMode;
+    if (mode == 0) return;
+
+    UpdateRebindIndicatorAlpha();
+    const float alpha = s_rebindIndicatorAlpha;
+
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    int vpW = viewport[2], vpH = viewport[3];
+    if (vpW <= 0 || vpH <= 0) return;
+
+    HGLRC currentCtx = wglGetCurrentContext();
+    if (currentCtx != s_rebindIndicatorLastCtx) {
+        s_rebindIndicatorLastCtx = currentCtx;
+        s_rebindIndicatorProgram = 0;
+        s_rebindIndicatorVao = 0;
+        s_rebindIndicatorVbo = 0;
+        s_rebindIndicatorLocOpacity = -1;
+        s_rebindIndicatorTexEnabled = 0;
+        s_rebindIndicatorTexDisabled = 0;
+        s_rebindIndicatorTexEnabledW = s_rebindIndicatorTexEnabledH = 0;
+        s_rebindIndicatorTexDisabledW = s_rebindIndicatorTexDisabledH = 0;
+    }
+
+    if (s_rebindIndicatorProgram == 0) {
+        const char* vtxSrc = R"(#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 TexCoord;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    TexCoord = aTexCoord;
+})";
+        const char* fragSrc = R"(#version 330 core
+out vec4 FragColor;
+in vec2 TexCoord;
+uniform sampler2D uTexture;
+uniform float uOpacity;
+void main() {
+    vec4 c = texture(uTexture, TexCoord);
+    FragColor = vec4(c.rgb, c.a * uOpacity);
+})";
+        s_rebindIndicatorProgram = CreateShaderProgram(vtxSrc, fragSrc);
+        if (s_rebindIndicatorProgram != 0) {
+            GLint locTex = glGetUniformLocation(s_rebindIndicatorProgram, "uTexture");
+            s_rebindIndicatorLocOpacity = glGetUniformLocation(s_rebindIndicatorProgram, "uOpacity");
+            glUseProgram(s_rebindIndicatorProgram);
+            glUniform1i(locTex, 0);
+            glUseProgram(0);
+        }
+    }
+    if (s_rebindIndicatorVao == 0) glGenVertexArrays(1, &s_rebindIndicatorVao);
+    if (s_rebindIndicatorVbo == 0) {
+        glGenBuffers(1, &s_rebindIndicatorVbo);
+        glBindVertexArray(s_rebindIndicatorVao);
+        glBindBuffer(GL_ARRAY_BUFFER, s_rebindIndicatorVbo);
+        glBufferData(GL_ARRAY_BUFFER, 6 * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    EnsureRebindIndicatorTextures();
+    if (s_rebindIndicatorProgram == 0) return;
+
+    struct IndicatorDraw { GLuint tex; int w, h; float opacity; };
+    IndicatorDraw draws[2];
+    int drawCount = 0;
+
+    if (mode == 1 && alpha > 0.0f && s_rebindIndicatorTexEnabled != 0) {
+        draws[drawCount++] = { s_rebindIndicatorTexEnabled, s_rebindIndicatorTexEnabledW, s_rebindIndicatorTexEnabledH, alpha };
+    } else if (mode == 2 && (1.0f - alpha) > 0.0f && s_rebindIndicatorTexDisabled != 0) {
+        draws[drawCount++] = { s_rebindIndicatorTexDisabled, s_rebindIndicatorTexDisabledW, s_rebindIndicatorTexDisabledH, 1.0f - alpha };
+    } else if (mode == 3) {
+        if (s_rebindIndicatorTexDisabled != 0 && (1.0f - alpha) > 0.0f)
+            draws[drawCount++] = { s_rebindIndicatorTexDisabled, s_rebindIndicatorTexDisabledW, s_rebindIndicatorTexDisabledH, 1.0f - alpha };
+        if (s_rebindIndicatorTexEnabled != 0 && alpha > 0.0f)
+            draws[drawCount++] = { s_rebindIndicatorTexEnabled, s_rebindIndicatorTexEnabledW, s_rebindIndicatorTexEnabledH, alpha };
+    }
+
+    if (drawCount == 0) return;
+
+    GLint savedProgram, savedVAO, savedVBO, savedTex, savedActiveTex;
+    GLint savedBlendSrcRGB, savedBlendDstRGB, savedBlendSrcA, savedBlendDstA;
+    GLboolean savedBlend, savedDepthTest, savedScissor, savedStencil;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &savedProgram);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &savedVAO);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &savedVBO);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &savedActiveTex);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &savedTex);
+    savedBlend = glIsEnabled(GL_BLEND);
+    savedDepthTest = glIsEnabled(GL_DEPTH_TEST);
+    savedScissor = glIsEnabled(GL_SCISSOR_TEST);
+    savedStencil = glIsEnabled(GL_STENCIL_TEST);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &savedBlendSrcRGB);
+    glGetIntegerv(GL_BLEND_DST_RGB, &savedBlendDstRGB);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &savedBlendSrcA);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &savedBlendDstA);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(s_rebindIndicatorProgram);
+    glBindVertexArray(s_rebindIndicatorVao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_rebindIndicatorVbo);
+
+    for (int i = 0; i < drawCount; ++i) {
+        float scale = static_cast<float>(vpH) / 1080.0f;
+        float drawW = draws[i].w * scale;
+        float drawH = draws[i].h * scale;
+        float margin = 10.0f * scale;
+
+        float px1, py1;
+        switch (g_config.keyRebinds.indicatorPosition) {
+        case 0: px1 = margin; py1 = margin; break;
+        case 1: px1 = vpW - drawW - margin; py1 = margin; break;
+        case 2: px1 = margin; py1 = vpH - drawH - margin; break;
+        case 3: default: px1 = vpW - drawW - margin; py1 = vpH - drawH - margin; break;
+        }
+
+        float nx1 = (px1 / vpW) * 2.0f - 1.0f;
+        float nx2 = ((px1 + drawW) / vpW) * 2.0f - 1.0f;
+        float ny_top = 1.0f - (py1 / vpH) * 2.0f;
+        float ny_bot = 1.0f - ((py1 + drawH) / vpH) * 2.0f;
+
+        float verts[] = {
+            nx1, ny_bot, 0.0f, 1.0f,
+            nx2, ny_bot, 1.0f, 1.0f,
+            nx2, ny_top, 1.0f, 0.0f,
+            nx1, ny_bot, 0.0f, 1.0f,
+            nx2, ny_top, 1.0f, 0.0f,
+            nx1, ny_top, 0.0f, 0.0f,
+        };
+
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+        BindTextureDirect(GL_TEXTURE_2D, draws[i].tex);
+        glUniform1f(s_rebindIndicatorLocOpacity, draws[i].opacity);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+
+    glUseProgram(savedProgram);
+    glBindVertexArray(savedVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, savedVBO);
+    glActiveTexture(GL_TEXTURE0);
+    BindTextureDirect(GL_TEXTURE_2D, savedTex);
+    glActiveTexture(savedActiveTex);
+    if (savedBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (savedDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (savedScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    if (savedStencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+    glBlendFuncSeparate(savedBlendSrcRGB, savedBlendDstRGB, savedBlendSrcA, savedBlendDstA);
+}
+
 void RenderPerformanceOverlay(bool showPerformanceOverlay) {
     if (!showPerformanceOverlay) return;
 
@@ -651,6 +1108,7 @@ void RenderPerformanceOverlay(bool showPerformanceOverlay) {
     ImGui::SetNextWindowBgAlpha(0.35f);
     ImGui::Begin("DebugOverlay", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing |
                      ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::Text("Render Hook Overhead: %.2f ms", cachedFrameTime);
     ImGui::Text("Original Frame Time: %.2f ms", cachedOriginalFrameTime);
@@ -667,6 +1125,7 @@ void RenderProfilerOverlay(bool showProfiler, bool showPerformanceOverlay) {
     ImGui::SetNextWindowBgAlpha(0.35f);
     ImGui::Begin("ProfilerOverlay", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing |
                      ImGuiWindowFlags_AlwaysAutoResize);
 
     ImGui::SetWindowFontScale(g_config.debug.profilerScale);

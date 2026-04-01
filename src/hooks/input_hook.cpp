@@ -1,7 +1,7 @@
 #include "input_hook.h"
 
-#include "common/expression_parser.h"
 #include "features/fake_cursor.h"
+#include "features/virtual_camera.h"
 #include "gui/gui.h"
 #include "gui/imgui_cache.h"
 #include "runtime/logic_thread.h"
@@ -51,9 +51,6 @@ extern std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_
 extern std::mutex g_hotkeyTimestampsMutex;
 extern std::unordered_set<DWORD> g_hotkeyMainKeys;
 extern std::mutex g_hotkeyMainKeysMutex;
-extern std::atomic<bool> g_tempSensitivityActiveAtomic;
-extern std::atomic<float> g_tempSensitivityXAtomic;
-extern std::atomic<float> g_tempSensitivityYAtomic;
 extern std::set<std::string> g_triggerOnReleasePending;
 extern std::set<std::string> g_triggerOnReleaseInvalidated;
 extern std::mutex g_triggerOnReleaseMutex;
@@ -62,10 +59,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMs
 static bool s_forcedShowCursor = false;
 static size_t s_bestMatchKeyCount = 0;
 static std::unordered_map<DWORD, size_t> s_bestMatchKeyCountByMainVk;
-static std::atomic<int> s_cachedSystemCursorVisible{ -1 };
-static std::atomic<ULONGLONG> s_cachedSystemCursorVisibilityTick{ 0 };
 static HHOOK s_lowLevelKeyboardHook = NULL;
 static std::mutex s_lowLevelKeyboardHookMutex;
+static std::atomic<bool> s_deferredFocusRegainWmSizePending{ false };
 
 struct LowLevelSuppressedKeyState {
     DWORD rawVk = 0;
@@ -75,44 +71,34 @@ struct LowLevelSuppressedKeyState {
 
 static std::unordered_map<DWORD, LowLevelSuppressedKeyState> s_lowLevelSuppressedKeys;
 static std::mutex s_lowLevelSuppressedKeysMutex;
+static bool s_systemAltTabPassthroughActive = false;
 
-static bool QuerySystemCursorVisibleCached() {
-    constexpr ULONGLONG kCursorVisibilityRefreshMs = 50;
+static bool SendMenuMaskKeyTap();
+static bool HotkeyUsesWindowsKey(const std::vector<DWORD>& keys);
+static bool ShouldMaskWindowsKeyForHotkey(const std::vector<DWORD>& keys, bool isKeyDown, bool isAutoRepeatKeyDown);
 
-    const ULONGLONG now = GetTickCount64();
-    const ULONGLONG lastTick = s_cachedSystemCursorVisibilityTick.load(std::memory_order_relaxed);
-    const int cachedVisible = s_cachedSystemCursorVisible.load(std::memory_order_relaxed);
-    if (cachedVisible != -1 && (now - lastTick) < kCursorVisibilityRefreshMs) {
-        return cachedVisible != 0;
+static UINT GetScanCodeWithExtendedFlagFromLParam(LPARAM lParam) {
+    UINT scanCodeWithFlags = static_cast<UINT>((lParam >> 16) & 0xFF);
+    if ((lParam & (1LL << 24)) != 0) {
+        scanCodeWithFlags |= 0xE000;
     }
-
-    CURSORINFO ci{ sizeof(CURSORINFO) };
-    if (!GetCursorInfo(&ci)) {
-        return cachedVisible > 0;
-    }
-
-    const bool isVisible = (ci.flags & CURSOR_SHOWING) != 0;
-    s_cachedSystemCursorVisible.store(isVisible ? 1 : 0, std::memory_order_relaxed);
-    s_cachedSystemCursorVisibilityTick.store(now, std::memory_order_relaxed);
-    return isVisible;
+    return scanCodeWithFlags;
 }
 
 static void EnsureSystemCursorVisible() {
     if (g_gameVersion < GameVersion(1, 13, 0)) { return; }
 
-    if (QuerySystemCursorVisibleCached()) { return; }
+    CURSORINFO ci{ sizeof(CURSORINFO) };
+    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) { return; }
     ShowCursor(TRUE);
-    s_cachedSystemCursorVisible.store(1, std::memory_order_relaxed);
-    s_cachedSystemCursorVisibilityTick.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
 static void EnsureSystemCursorHidden() {
     if (g_gameVersion < GameVersion(1, 13, 0)) { return; }
 
-    if (!QuerySystemCursorVisibleCached()) { return; }
+    CURSORINFO ci{ sizeof(CURSORINFO) };
+    if (GetCursorInfo(&ci) && !(ci.flags & CURSOR_SHOWING)) { return; }
     ShowCursor(FALSE);
-    s_cachedSystemCursorVisible.store(0, std::memory_order_relaxed);
-    s_cachedSystemCursorVisibilityTick.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
 static DWORD NormalizeModifierVkFromKeyMessage(DWORD rawVk, LPARAM lParam) {
@@ -188,15 +174,46 @@ static bool IsAltVk(DWORD vk) {
     return vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU;
 }
 
+static bool IsTabVk(DWORD vk) {
+    return vk == VK_TAB;
+}
+
 static bool IsShiftVk(DWORD vk) {
     return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
+}
+
+static bool IsAltCurrentlyDown() {
+    return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
+           (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+}
+
+static bool IsTabCurrentlyDown() {
+    return (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
+}
+
+static void UpdateSystemAltTabPassthroughState() {
+    if (!s_systemAltTabPassthroughActive) return;
+
+    if (IsAltCurrentlyDown() || IsTabCurrentlyDown()) {
+        return;
+    }
+
+    s_systemAltTabPassthroughActive = false;
+}
+
+static bool IsShiftCurrentlyDown() {
+    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
+static bool IsCapsLockCurrentlyOn() {
+    return (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
 }
 
 static bool IsShiftDownForIncomingEvent(DWORD incomingVk, DWORD incomingRawVk, bool isKeyDown) {
     if (IsShiftVk(incomingVk) || incomingRawVk == VK_SHIFT) {
         return isKeyDown;
     }
-    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    return IsShiftCurrentlyDown();
 }
 
 static bool HasShiftLayerOutputVk(const KeyRebind& rebind) {
@@ -211,8 +228,33 @@ static bool HasShiftLayerOutputOverride(const KeyRebind& rebind) {
     return HasShiftLayerOutputVk(rebind) || HasShiftLayerOutputUnicode(rebind);
 }
 
+static bool IsSplitRebindTextMode(const KeyRebind& rebind) {
+    if (rebind.customOutputUnicode != 0) return true;
+    if (rebind.baseOutputShifted) return true;
+    if (rebind.shiftLayerUsesCapsLock) return true;
+    if (HasShiftLayerOutputOverride(rebind)) return true;
+
+    DWORD baseTextVk = (rebind.useCustomOutput && rebind.customOutputVK != 0) ? rebind.customOutputVK : rebind.fromKey;
+    if (baseTextVk == 0) baseTextVk = rebind.fromKey;
+
+    DWORD triggerVk = rebind.toKey;
+    if (triggerVk == 0) triggerVk = rebind.fromKey;
+
+    return baseTextVk != triggerVk;
+}
+
+static bool ShouldIgnoreCapsLockForRebindText(const KeyRebind& rebind) {
+    return IsSplitRebindTextMode(rebind);
+}
+
+static bool IsShiftLayerActive(const KeyRebind& rebind, bool shiftDown, bool capsLockOn) {
+    if (!HasShiftLayerOutputOverride(rebind)) return false;
+    if (shiftDown) return true;
+    return rebind.shiftLayerUsesCapsLock && capsLockOn;
+}
+
 static bool IsShiftLayerActiveForRebind(const KeyRebind& rebind, DWORD incomingVk, DWORD incomingRawVk, bool isKeyDown) {
-    return HasShiftLayerOutputOverride(rebind) && IsShiftDownForIncomingEvent(incomingVk, incomingRawVk, isKeyDown);
+    return IsShiftLayerActive(rebind, IsShiftDownForIncomingEvent(incomingVk, incomingRawVk, isKeyDown), IsCapsLockCurrentlyOn());
 }
 
 static DWORD ResolveEffectiveCustomOutputVk(const KeyRebind& rebind, bool shiftLayerActive) {
@@ -267,8 +309,35 @@ static bool TryGetClientSize(HWND hWnd, int& outW, int& outH) {
     return true;
 }
 
+static void ResendCurrentModeWmSize(HWND hWnd, const char* source) {
+    if (!hWnd || !IsWindow(hWnd)) { return; }
+
+    auto cfgSnap = GetConfigSnapshot();
+    if (!cfgSnap) { return; }
+
+    const std::string currentModeId = g_modeIdBuffers[g_currentModeIdIndex.load(std::memory_order_acquire)];
+    const ModeConfig* mode = GetModeFromSnapshot(*cfgSnap, currentModeId);
+    if (!mode || mode->width <= 0 || mode->height <= 0) { return; }
+
+    RequestWindowClientResize(hWnd, mode->width, mode->height, source);
+}
+
+static bool IsFocusGainMessage(UINT uMsg) {
+    return uMsg == WM_ACTIVATE || uMsg == WM_ACTIVATEAPP || uMsg == WM_SETFOCUS;
+}
+
+static void QueueDeferredFocusRegainWmSize(HWND hWnd) {
+    if (!hWnd || !IsWindow(hWnd)) { return; }
+
+    if (!PostMessage(hWnd, WM_TOOLSCREEN_APPLY_FOCUS_REGAIN_SIZE, 0, 0)) {
+        s_deferredFocusRegainWmSizePending.store(false, std::memory_order_relaxed);
+        Log("[WINDOW] Failed to post deferred focus-regain WM_SIZE. Error=" + std::to_string(GetLastError()));
+    }
+}
+
 static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     constexpr int kInactiveTransientClientMin = 32;
+    constexpr int kFullscreenTolPx = 1;
     bool shouldInvalidateScreenMetrics = false;
     bool shouldRequestRecalc = false;
     bool shouldInvalidateImGui = false;
@@ -280,6 +349,7 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
     case WM_MOVE:
     case WM_MOVING:
         shouldInvalidateScreenMetrics = true;
+        shouldRequestRecalc = true;
         break;
 
     case WM_SIZE:
@@ -293,6 +363,7 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
         // During live-resize, client metrics are often transient.
         // Mark dirty only; WM_SIZE/WM_WINDOWPOSCHANGED will commit stable size.
         shouldInvalidateScreenMetrics = true;
+        // No-op: resize tracking removed
         break;
 
     case WM_WINDOWPOSCHANGED: {
@@ -311,6 +382,7 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
             sizeMayHaveChanged = true;
         } else {
             shouldInvalidateScreenMetrics = true;
+            shouldRequestRecalc = true;
         }
         break;
     }
@@ -338,9 +410,29 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
             const bool windowActive = g_gameWindowActive.load(std::memory_order_relaxed);
             const bool isInactiveTinySize = !windowActive && (clientW < kInactiveTransientClientMin || clientH < kInactiveTransientClientMin);
             if (!isInactiveTinySize) {
+                RECT monitorRect{};
+                const bool haveMonitorRect = GetMonitorRectForWindow(hWnd, monitorRect);
+                const int monitorW = haveMonitorRect ? (monitorRect.right - monitorRect.left) : 0;
+                const int monitorH = haveMonitorRect ? (monitorRect.bottom - monitorRect.top) : 0;
+                const bool previousSizeFilledMonitor = haveMonitorRect && prevW >= (monitorW - kFullscreenTolPx) && prevH >= (monitorH - kFullscreenTolPx);
+                const bool currentSizeIsWindowed = haveMonitorRect && (clientW < (monitorW - kFullscreenTolPx) || clientH < (monitorH - kFullscreenTolPx));
+                if (g_config.restoreWindowedModeOnFullscreenExit && previousSizeFilledMonitor && currentSizeIsWindowed) {
+                    if (CenterWindowedRestoreOnCurrentMonitor(hWnd, "input_hook:fullscreen_exit_restore")) { return; }
+                }
+
                 clientSizeChanged = (clientW != prevW) || (clientH != prevH);
                 UpdateCachedWindowMetricsFromSize(clientW, clientH);
             }
+        }
+
+        if (clientSizeChanged) {
+            // Record pending resize for debounced virtual camera update
+            int vcClientW = 0, vcClientH = 0;
+            if (TryGetClientSize(hWnd, vcClientW, vcClientH)) {
+                OnGameWindowResized(static_cast<uint32_t>(vcClientW), static_cast<uint32_t>(vcClientH));
+            }
+        } else {
+            // No-op: resize tracking removed
         }
     }
 
@@ -349,6 +441,10 @@ static void SyncWindowMetricsFromMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LP
     if (shouldInvalidateImGui) { InvalidateImGuiCache(); }
     if (shouldResetGameTexture && clientSizeChanged) { InvalidateTrackedGameTextureId(false); }
     if (clientSizeChanged) { shouldRecenterGui = true; }
+
+    if (clientSizeChanged) {
+        ResendCurrentModeWmSize(hWnd, "input_hook:external_resize");
+    }
     if (shouldRecenterGui) { g_guiNeedsRecenter = true; }
 }
 
@@ -446,7 +542,12 @@ InputHandlerResult HandleAltF4(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     if (uMsg != WM_SYSKEYDOWN) { return { false, 0 }; }
     PROFILE_SCOPE("HandleAltF4");
 
-    if (wParam == VK_F4) { return { true, CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, lParam) }; }
+    auto cfgSnap = GetConfigSnapshot();
+    if (!cfgSnap || !cfgSnap->keyRebinds.enabled || !cfgSnap->keyRebinds.allowSystemAltF4) {
+        return { false, 0 };
+    }
+
+    if (wParam == VK_F4 && IsAltCurrentlyDown()) { return { true, CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, lParam) }; }
     return { false, 0 };
 }
 
@@ -540,6 +641,9 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     }
     PROFILE_SCOPE("HandleGuiToggle");
 
+    const bool isAutoRepeatKeyDown =
+        (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) && ((lParam & (static_cast<LPARAM>(1) << 30)) != 0);
+
     DWORD vkCode = 0;
     bool isEscape = false;
     switch (uMsg) {
@@ -569,6 +673,10 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     }
 
     if (!isEscape && !CheckHotkeyMatch(g_config.guiHotkey, vkCode, {}, false, s_bestMatchKeyCount)) { return { false, 0 }; }
+
+    if (!isEscape && ShouldMaskWindowsKeyForHotkey(g_config.guiHotkey, true, isAutoRepeatKeyDown)) {
+        (void)SendMenuMaskKeyTap();
+    }
 
     if (g_showGui.load(std::memory_order_acquire) && !isEscape) {
         switch (uMsg) {
@@ -637,6 +745,7 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
         g_imageDragMode.store(false);
         g_windowOverlayDragMode.store(false);
+        g_browserOverlayDragMode.store(false);
 
         extern std::string s_hoveredImageName;
         extern std::string s_draggedImageName;
@@ -651,13 +760,22 @@ InputHandlerResult HandleGuiToggle(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         s_hoveredWindowOverlayName = "";
         s_draggedWindowOverlayName = "";
         s_isWindowOverlayDragging = false;
+
+        extern std::string s_hoveredBrowserOverlayName;
+        extern std::string s_draggedBrowserOverlayName;
+        extern bool s_isBrowserOverlayDragging;
+        s_hoveredBrowserOverlayName = "";
+        s_draggedBrowserOverlayName = "";
+        s_isBrowserOverlayDragging = false;
     } else if (!isEscape) {
         g_showGui = true;
         InvalidateImGuiCache();
         const bool wasCursorVisible = IsCursorVisible();
         g_wasCursorVisible = wasCursorVisible;
         g_guiNeedsRecenter = true;
-        ClipCursor(NULL);
+        if (!ApplyConfineCursorToGameWindow()) {
+            ClipCursor(NULL);
+        }
         if (!wasCursorVisible && g_gameVersion >= GameVersion(1, 13, 0)) {
             s_forcedShowCursor = true;
             EnsureSystemCursorVisible();
@@ -689,6 +807,9 @@ InputHandlerResult HandleBorderlessToggle(HWND hWnd, UINT uMsg, WPARAM wParam, L
         return { false, 0 };
     }
     PROFILE_SCOPE("HandleBorderlessToggle");
+
+    const bool isAutoRepeatKeyDown =
+        (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) && ((lParam & (static_cast<LPARAM>(1) << 30)) != 0);
 
     if (g_showGui.load(std::memory_order_acquire)) { return { false, 0 }; }
 
@@ -724,6 +845,10 @@ InputHandlerResult HandleBorderlessToggle(HWND hWnd, UINT uMsg, WPARAM wParam, L
 
     if (!CheckHotkeyMatch(g_config.borderlessHotkey, vkCode, {}, false, s_bestMatchKeyCount)) { return { false, 0 }; }
 
+    if (ShouldMaskWindowsKeyForHotkey(g_config.borderlessHotkey, true, isAutoRepeatKeyDown)) {
+        (void)SendMenuMaskKeyTap();
+    }
+
     static std::atomic<int64_t> s_lastToggleMs{ 0 };
     auto now = std::chrono::steady_clock::now();
     int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
@@ -748,6 +873,9 @@ InputHandlerResult HandleImageOverlaysToggle(HWND hWnd, UINT uMsg, WPARAM wParam
         return { false, 0 };
     }
     PROFILE_SCOPE("HandleImageOverlaysToggle");
+
+    const bool isAutoRepeatKeyDown =
+        (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) && ((lParam & (static_cast<LPARAM>(1) << 30)) != 0);
 
     if (g_config.imageOverlaysHotkey.empty()) { return { false, 0 }; }
 
@@ -781,6 +909,10 @@ InputHandlerResult HandleImageOverlaysToggle(HWND hWnd, UINT uMsg, WPARAM wParam
 
     if (!CheckHotkeyMatch(g_config.imageOverlaysHotkey, vkCode, {}, false, s_bestMatchKeyCount)) { return { false, 0 }; }
 
+    if (ShouldMaskWindowsKeyForHotkey(g_config.imageOverlaysHotkey, true, isAutoRepeatKeyDown)) {
+        (void)SendMenuMaskKeyTap();
+    }
+
     static std::atomic<int64_t> s_lastToggleMs{ 0 };
     auto now = std::chrono::steady_clock::now();
     int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
@@ -807,6 +939,9 @@ InputHandlerResult HandleWindowOverlaysToggle(HWND hWnd, UINT uMsg, WPARAM wPara
         return { false, 0 };
     }
     PROFILE_SCOPE("HandleWindowOverlaysToggle");
+
+    const bool isAutoRepeatKeyDown =
+        (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) && ((lParam & (static_cast<LPARAM>(1) << 30)) != 0);
 
     if (g_config.windowOverlaysHotkey.empty()) { return { false, 0 }; }
 
@@ -840,6 +975,10 @@ InputHandlerResult HandleWindowOverlaysToggle(HWND hWnd, UINT uMsg, WPARAM wPara
 
     if (!CheckHotkeyMatch(g_config.windowOverlaysHotkey, vkCode, {}, false, s_bestMatchKeyCount)) { return { false, 0 }; }
 
+    if (ShouldMaskWindowsKeyForHotkey(g_config.windowOverlaysHotkey, true, isAutoRepeatKeyDown)) {
+        (void)SendMenuMaskKeyTap();
+    }
+
     static std::atomic<int64_t> s_lastToggleMs{ 0 };
     auto now = std::chrono::steady_clock::now();
     int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
@@ -870,6 +1009,9 @@ InputHandlerResult HandleKeyRebindsToggle(HWND hWnd, UINT uMsg, WPARAM wParam, L
         return { false, 0 };
     }
     PROFILE_SCOPE("HandleKeyRebindsToggle");
+
+    const bool isAutoRepeatKeyDown =
+        (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) && ((lParam & (static_cast<LPARAM>(1) << 30)) != 0);
 
     if (g_config.keyRebinds.toggleHotkey.empty()) { return { false, 0 }; }
 
@@ -902,6 +1044,10 @@ InputHandlerResult HandleKeyRebindsToggle(HWND hWnd, UINT uMsg, WPARAM wParam, L
     }
 
     if (!CheckHotkeyMatch(g_config.keyRebinds.toggleHotkey, vkCode, {}, false, s_bestMatchKeyCount)) { return { false, 0 }; }
+
+    if (ShouldMaskWindowsKeyForHotkey(g_config.keyRebinds.toggleHotkey, true, isAutoRepeatKeyDown)) {
+        (void)SendMenuMaskKeyTap();
+    }
 
     static std::atomic<int64_t> s_lastToggleMs{ 0 };
     auto now = std::chrono::steady_clock::now();
@@ -1049,15 +1195,48 @@ void RestoreKeyRepeatSettings();
 void ApplyKeyRepeatSettings();
 
 InputHandlerResult HandleActivate(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    if (uMsg != WM_ACTIVATE) { return { false, 0 }; }
-    PROFILE_SCOPE("HandleActivate");
+    bool becameInactive = false;
+    bool becameActive = false;
+    const char* focusSource = nullptr;
 
-    if (wParam == WA_INACTIVE) {
+    switch (uMsg) {
+    case WM_ACTIVATE:
+        becameInactive = (LOWORD(wParam) == WA_INACTIVE);
+        becameActive = !becameInactive;
+        focusSource = becameActive ? "input_hook:focus_regain_activate" : "input_hook:focus_loss_activate";
+        break;
+
+    case WM_ACTIVATEAPP:
+        becameActive = (wParam != FALSE);
+        becameInactive = !becameActive;
+        focusSource = becameActive ? "input_hook:focus_regain_activateapp" : "input_hook:focus_loss_activateapp";
+        break;
+
+    case WM_SETFOCUS:
+        becameActive = true;
+        focusSource = "input_hook:focus_regain_setfocus";
+        break;
+
+    case WM_KILLFOCUS:
+        becameInactive = true;
+        focusSource = "input_hook:focus_loss_killfocus";
+        break;
+
+    default:
+        return { false, 0 };
+    }
+
+    PROFILE_SCOPE("HandleActivate");
+    (void)lParam;
+
+    if (becameInactive) {
         ImGuiInputQueue_EnqueueFocus(false);
 
         ReleaseActiveLowLevelRebindKeys(hWnd);
 
-        if (auto cs = GetConfigSnapshot(); cs && cs->debug.showHotkeyDebug) Log("[WINDOW] Window became inactive.");
+        if (auto cs = GetConfigSnapshot(); cs && cs->debug.showHotkeyDebug) {
+            Log(std::string("[WINDOW] Window became inactive via ") + focusSource + ".");
+        }
         extern std::atomic<bool> g_isGameFocused;
         g_isGameFocused.store(false);
         g_gameWindowActive.store(false);
@@ -1067,7 +1246,9 @@ InputHandlerResult HandleActivate(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
     } else {
         ImGuiInputQueue_EnqueueFocus(true);
 
-        if (auto cs = GetConfigSnapshot(); cs && cs->debug.showHotkeyDebug) Log("[WINDOW] Window became active.");
+        if (auto cs = GetConfigSnapshot(); cs && cs->debug.showHotkeyDebug) {
+            Log(std::string("[WINDOW] Window became active via ") + focusSource + ".");
+        }
         extern std::atomic<bool> g_isGameFocused;
         g_isGameFocused.store(true);
         g_gameWindowActive.store(true);
@@ -1084,6 +1265,7 @@ InputHandlerResult HandleActivate(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
         RequestScreenMetricsRecalculation();
         InvalidateImGuiCache();
         g_guiNeedsRecenter = true;
+        s_deferredFocusRegainWmSizePending.store(true, std::memory_order_relaxed);
     }
     return { false, 0 };
 }
@@ -1102,37 +1284,17 @@ InputHandlerResult HandleWmSizeModeDimensions(HWND hWnd, UINT uMsg, WPARAM wPara
     const ModeConfig* mode = cfgSnap ? GetModeFromSnapshot(*cfgSnap, currentModeId) : nullptr;
     if (!mode || mode->width <= 0 || mode->height <= 0) { return { false, 0 }; }
 
+    if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
+        // Fullscreen custom sizing is an internal render size with a live stretch
+        // rect over the current client area. Let WM_SIZE keep the real client size.
+        return { false, 0 };
+    }
+
     // IMPORTANT: use already-recalculated mode dimensions as authoritative target.
     // Re-applying relative/expression math against WM_SIZE repeatedly causes compounding
     // shrink (e.g. 98.4% of 900 -> 885, then 98.4% of 885 -> 870).
     int targetW = mode->width;
     int targetH = mode->height;
-
-    // Fullscreen can receive native WM_SIZE before logic-thread recalculation lands.
-    // Recompute only fullscreen dynamic dimensions from current WM_SIZE input so we still
-    // enforce OUR mode (including custom fixed fullscreen), while avoiding stale old values.
-    if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
-        const bool widthIsRelative = mode->widthExpr.empty() && mode->relativeWidth >= 0.0f && mode->relativeWidth <= 1.0f;
-        const bool heightIsRelative = mode->heightExpr.empty() && mode->relativeHeight >= 0.0f && mode->relativeHeight <= 1.0f;
-
-        if (widthIsRelative) {
-            targetW = static_cast<int>(std::lround(mode->relativeWidth * static_cast<float>(msgW)));
-            if (targetW < 1) targetW = 1;
-        }
-        if (heightIsRelative) {
-            targetH = static_cast<int>(std::lround(mode->relativeHeight * static_cast<float>(msgH)));
-            if (targetH < 1) targetH = 1;
-        }
-
-        if (!mode->widthExpr.empty()) {
-            const int evaluatedW = EvaluateExpression(mode->widthExpr, msgW, msgH, targetW);
-            if (evaluatedW > 0) { targetW = evaluatedW; }
-        }
-        if (!mode->heightExpr.empty()) {
-            const int evaluatedH = EvaluateExpression(mode->heightExpr, msgW, msgH, targetH);
-            if (evaluatedH > 0) { targetH = evaluatedH; }
-        }
-    }
 
     if (targetW <= 0 || targetH <= 0 || (msgW == targetW && msgH == targetH)) { return { false, 0 }; }
 
@@ -1335,6 +1497,10 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 bool blockKey = hotkey.blockKeyFromGame || matchedViaRebind;
                 std::string hotkeyId = GetKeyComboString(alt.keys);
 
+                if (ShouldMaskWindowsKeyForHotkey(alt.keys, isKeyDown, isAutoRepeatKeyDown)) {
+                    (void)SendMenuMaskKeyTap();
+                }
+
                 if (hotkey.triggerOnHold) { return handleHoldMode(alt.mode, hotkeyId, blockKey); }
 
                 // Handle trigger-on-release invalidation tracking
@@ -1407,6 +1573,10 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             if (matched || matchedViaRebind) {
                 bool blockKey = hotkey.blockKeyFromGame || matchedViaRebind;
                 std::string hotkeyId = GetKeyComboString(hotkey.keys);
+
+                if (ShouldMaskWindowsKeyForHotkey(hotkey.keys, isKeyDown, isAutoRepeatKeyDown)) {
+                    (void)SendMenuMaskKeyTap();
+                }
 
                 if (hotkey.triggerOnHold) {
                     if (currentSecMode.empty()) { currentSecMode = GetHotkeySecondaryMode(hotkeyIdx); }
@@ -1516,6 +1686,10 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 bool blockKey = matchedViaRebind;
                 std::string hotkeyId = "sens_" + GetKeyComboString(sensHotkey.keys);
 
+                if (ShouldMaskWindowsKeyForHotkey(sensHotkey.keys, isKeyDown, isAutoRepeatKeyDown)) {
+                    (void)SendMenuMaskKeyTap();
+                }
+
                 auto now = std::chrono::steady_clock::now();
                 bool debounced = false;
                 {
@@ -1544,9 +1718,6 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                         g_tempSensitivityOverride.sensitivityX = 1.0f;
                         g_tempSensitivityOverride.sensitivityY = 1.0f;
                         g_tempSensitivityOverride.activeSensHotkeyIndex = -1;
-                        g_tempSensitivityXAtomic.store(1.0f, std::memory_order_release);
-                        g_tempSensitivityYAtomic.store(1.0f, std::memory_order_release);
-                        g_tempSensitivityActiveAtomic.store(false, std::memory_order_release);
 
                         if (s_enableHotkeyDebug) { Log("[Hotkey] ✓✓✓ SENSITIVITY HOTKEY TOGGLED OFF: " + hotkeyId); }
 
@@ -1563,9 +1734,6 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                         g_tempSensitivityOverride.sensitivityY = sensHotkey.sensitivity;
                     }
                     g_tempSensitivityOverride.activeSensHotkeyIndex = static_cast<int>(sensIdx);
-                    g_tempSensitivityXAtomic.store(g_tempSensitivityOverride.sensitivityX, std::memory_order_release);
-                    g_tempSensitivityYAtomic.store(g_tempSensitivityOverride.sensitivityY, std::memory_order_release);
-                    g_tempSensitivityActiveAtomic.store(true, std::memory_order_release);
 
                     if (s_enableHotkeyDebug) {
                         Log("[Hotkey] ✓✓✓ SENSITIVITY HOTKEY TOGGLED ON: " + hotkeyId + " -> sens=" + std::to_string(sensHotkey.sensitivity));
@@ -1584,9 +1752,6 @@ InputHandlerResult HandleHotkeys(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                             g_tempSensitivityOverride.sensitivityY = sensHotkey.sensitivity;
                         }
                         g_tempSensitivityOverride.activeSensHotkeyIndex = -1;
-                        g_tempSensitivityXAtomic.store(g_tempSensitivityOverride.sensitivityX, std::memory_order_release);
-                        g_tempSensitivityYAtomic.store(g_tempSensitivityOverride.sensitivityY, std::memory_order_release);
-                        g_tempSensitivityActiveAtomic.store(true, std::memory_order_release);
                     }
 
                     if (s_enableHotkeyDebug) {
@@ -1764,6 +1929,37 @@ static bool IsMouseButtonVk(DWORD vk) {
     return vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2;
 }
 
+static bool IsNonCharKeyVk(DWORD vk) {
+    if (IsModifierVk(vk)) return true;
+    if (IsMouseButtonVk(vk)) return true;
+    if (vk == VK_LWIN || vk == VK_RWIN) return true;
+    if (vk >= VK_F1 && vk <= VK_F24) return true;
+
+    switch (vk) {
+    case VK_INSERT:
+    case VK_DELETE:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_CLEAR:
+    case VK_ESCAPE:
+    case VK_PAUSE:
+    case VK_SNAPSHOT:
+    case VK_CAPITAL:
+    case VK_NUMLOCK:
+    case VK_SCROLL:
+    case VK_APPS:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool RebindCannotType(const KeyRebind& rebind) {
     DWORD triggerVk = rebind.toKey;
     if (triggerVk == 0) triggerVk = rebind.fromKey;
@@ -1854,6 +2050,11 @@ static bool ResolvePreferredOutputShiftState(const KeyRebind& rebind, bool shift
 
 static void ApplyPreferredOutputShiftState(const KeyRebind& rebind, bool shiftLayerActive, BYTE keyboardState[256]) {
     if (!keyboardState) return;
+
+    if (ShouldIgnoreCapsLockForRebindText(rebind)) {
+        keyboardState[VK_CAPITAL] = 0;
+    }
+
     bool shouldOverrideShiftState = false;
     BYTE shiftState = 0;
     if (shiftLayerActive && HasShiftLayerOutputVk(rebind)) {
@@ -1922,6 +2123,14 @@ static bool SendMenuMaskKeyTap() {
     return downSent && upSent;
 }
 
+static bool HotkeyUsesWindowsKey(const std::vector<DWORD>& keys) {
+    return std::find(keys.begin(), keys.end(), VK_LWIN) != keys.end() || std::find(keys.begin(), keys.end(), VK_RWIN) != keys.end();
+}
+
+static bool ShouldMaskWindowsKeyForHotkey(const std::vector<DWORD>& keys, bool isKeyDown, bool isAutoRepeatKeyDown) {
+    return isKeyDown && !isAutoRepeatKeyDown && HotkeyUsesWindowsKey(keys);
+}
+
 static bool IsMenuActivationModifierVk(DWORD vk) {
     return vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN;
 }
@@ -1968,6 +2177,10 @@ static UINT BuildScanCodeWithFlagsFromLowLevelEvent(const KBDLLHOOKSTRUCT& info)
     return scanCodeWithFlags;
 }
 
+static InputHandlerResult ExecuteMatchedKeyRebind(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, DWORD rawVkCode, DWORD vkCode,
+                                                  bool isMouseButton, bool isKeyDown, bool isAutoRepeatKeyDown,
+                                                  const KeyRebind& rebind);
+
 static bool ShouldSuppressLowLevelMenuModifierKey(DWORD rawVk) {
     if (!IsDeepSuppressionEligibleSourceVk(rawVk)) return false;
     if (g_isShuttingDown.load(std::memory_order_acquire)) return false;
@@ -1981,6 +2194,7 @@ static bool ShouldSuppressLowLevelMenuModifierKey(DWORD rawVk) {
         if (!rebind.enabled || rebind.fromKey == 0 || rebind.toKey == 0) continue;
         if (!IsDeepSuppressionEligibleSourceVk(rebind.fromKey)) continue;
         if (!MatchesRebindSourceKey(rawVk, rawVk, rebind.fromKey)) continue;
+        if ((cfg->keyRebinds.allowSystemAltTab || cfg->keyRebinds.allowSystemAltF4) && IsAltVk(rawVk) && IsAltVk(rebind.fromKey)) continue;
 
         const DWORD triggerVk = NormalizeModifierVkFromConfig(rebind.toKey, (rebind.useCustomOutput ? rebind.customOutputScanCode : 0));
         if (ShouldMaskMenuModifierForRebind(rebind, rawVk, rawVk, true, false, triggerVk)) {
@@ -2084,6 +2298,8 @@ static void EnsureLowLevelKeyboardHookInstalled() {
 }
 
 void ReleaseActiveLowLevelRebindKeys(HWND hWnd) {
+    s_systemAltTabPassthroughActive = false;
+
     if (!hWnd) return;
 
     std::vector<LowLevelSuppressedKeyState> activeKeys;
@@ -2138,6 +2354,263 @@ InputHandlerResult HandleInjectedMenuMaskKey(HWND hWnd, UINT uMsg, WPARAM wParam
     if (GetMessageExtraInfo() != kToolscreenMenuMaskExtraInfo) { return { false, 0 }; }
     if (static_cast<WORD>(wParam) != kToolscreenMenuMaskVk) { return { false, 0 }; }
     return { true, 0 };
+}
+
+static InputHandlerResult ExecuteMatchedKeyRebind(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, DWORD rawVkCode, DWORD vkCode,
+                                                  bool isMouseButton, bool isKeyDown, bool isAutoRepeatKeyDown,
+                                                  const KeyRebind& rebind) {
+    const bool shiftLayerActive = IsShiftLayerActiveForRebind(rebind, vkCode, rawVkCode, isKeyDown);
+    const DWORD defaultTextVK = NormalizeModifierVkFromConfig(rebind.fromKey);
+    const DWORD effectiveCustomOutputVk = ResolveEffectiveCustomOutputVk(rebind, shiftLayerActive);
+    const DWORD normalizedCustomOutputVk =
+        (effectiveCustomOutputVk != 0)
+            ? NormalizeModifierVkFromConfig(effectiveCustomOutputVk, (rebind.useCustomOutput ? rebind.customOutputScanCode : 0))
+            : 0;
+    const DWORD textVK = NormalizeModifierVkFromConfig((effectiveCustomOutputVk != 0) ? effectiveCustomOutputVk : defaultTextVK);
+    const bool preferShiftedText =
+        ResolvePreferredOutputShiftState(rebind, shiftLayerActive, IsShiftDownForIncomingEvent(vkCode, rawVkCode, isKeyDown));
+
+    DWORD triggerVK = NormalizeModifierVkFromConfig(rebind.toKey, (rebind.useCustomOutput ? rebind.customOutputScanCode : 0));
+    if (isMouseButton && normalizedCustomOutputVk != 0 && IsNonCharKeyVk(normalizedCustomOutputVk)) {
+        triggerVK = normalizedCustomOutputVk;
+    }
+
+    if (ShouldMaskMenuModifierForRebind(rebind, vkCode, rawVkCode, isKeyDown, isAutoRepeatKeyDown, triggerVK)) {
+        (void)SendMenuMaskKeyTap();
+    }
+
+    UINT outputScanCode = GetScanCodeWithExtendedFlag(triggerVK);
+    if (rebind.useCustomOutput && rebind.customOutputScanCode != 0) {
+        outputScanCode = ResolveOutputScanCode(triggerVK, rebind.customOutputScanCode);
+    }
+    const bool outputScanIsModifier = IsModifierScanCode(outputScanCode);
+
+    if (triggerVK == VK_LBUTTON || triggerVK == VK_RBUTTON || triggerVK == VK_MBUTTON || triggerVK == VK_XBUTTON1 || triggerVK == VK_XBUTTON2) {
+        UINT newMsg = 0;
+        auto buildMouseKeyState = [&](DWORD buttonVk, bool buttonDown) -> WORD {
+            WORD mk = 0;
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) mk |= MK_CONTROL;
+            if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) mk |= MK_SHIFT;
+
+            auto setBtn = [&](int vk, WORD mask, bool isThisButton) {
+                bool down = (GetKeyState(vk) & 0x8000) != 0;
+                if (isThisButton) down = buttonDown;
+                if (down) mk |= mask;
+            };
+
+            setBtn(VK_LBUTTON, MK_LBUTTON, buttonVk == VK_LBUTTON);
+            setBtn(VK_RBUTTON, MK_RBUTTON, buttonVk == VK_RBUTTON);
+            setBtn(VK_MBUTTON, MK_MBUTTON, buttonVk == VK_MBUTTON);
+            setBtn(VK_XBUTTON1, MK_XBUTTON1, buttonVk == VK_XBUTTON1);
+            setBtn(VK_XBUTTON2, MK_XBUTTON2, buttonVk == VK_XBUTTON2);
+            return mk;
+        };
+
+        LPARAM mouseLParam = lParam;
+        if (!isMouseButton) {
+            POINT pt{};
+            if (GetCursorPos(&pt) && ScreenToClient(hWnd, &pt)) {
+                mouseLParam = MAKELPARAM(pt.x, pt.y);
+            } else {
+                RECT clientRect{};
+                if (GetClientRect(hWnd, &clientRect)) {
+                    mouseLParam = MAKELPARAM((clientRect.right - clientRect.left) / 2, (clientRect.bottom - clientRect.top) / 2);
+                }
+            }
+        }
+
+        WORD mkState = buildMouseKeyState(triggerVK, isKeyDown);
+        WPARAM newWParam = mkState;
+
+        if (triggerVK == VK_LBUTTON) {
+            newMsg = isKeyDown ? WM_LBUTTONDOWN : WM_LBUTTONUP;
+        } else if (triggerVK == VK_RBUTTON) {
+            newMsg = isKeyDown ? WM_RBUTTONDOWN : WM_RBUTTONUP;
+        } else if (triggerVK == VK_MBUTTON) {
+            newMsg = isKeyDown ? WM_MBUTTONDOWN : WM_MBUTTONUP;
+        } else if (triggerVK == VK_XBUTTON1) {
+            newMsg = isKeyDown ? WM_XBUTTONDOWN : WM_XBUTTONUP;
+            newWParam = MAKEWPARAM(mkState, XBUTTON1);
+        } else if (triggerVK == VK_XBUTTON2) {
+            newMsg = isKeyDown ? WM_XBUTTONDOWN : WM_XBUTTONUP;
+            newWParam = MAKEWPARAM(mkState, XBUTTON2);
+        }
+
+        LRESULT mouseResult = CallWindowProc(g_originalWndProc, hWnd, newMsg, newWParam, mouseLParam);
+
+        const bool fromKeyIsNonCharMouse = isMouseButton || IsNonCharKeyVk(rebind.fromKey);
+
+        if (isKeyDown && fromKeyIsNonCharMouse) {
+            const uint32_t configuredUnicodeText =
+                (shiftLayerActive && HasShiftLayerOutputUnicode(rebind))
+                    ? (uint32_t)rebind.shiftLayerOutputUnicode
+                    : ((!shiftLayerActive && rebind.useCustomOutput && rebind.customOutputUnicode != 0)
+                           ? (uint32_t)rebind.customOutputUnicode
+                           : 0u);
+
+            const UINT textScanCode = GetScanCodeWithExtendedFlag(textVK);
+            LPARAM charLParam = BuildKeyboardMessageLParam(textScanCode, true, false, 1, false, false);
+
+            if (configuredUnicodeText != 0) {
+                SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, (WPARAM)(WCHAR)configuredUnicodeText, charLParam);
+            } else {
+                WCHAR outChar = 0;
+                if (textVK == VK_RETURN) {
+                    outChar = L'\r';
+                } else if (textVK == VK_TAB) {
+                    outChar = L'\t';
+                } else if (textVK == VK_BACK) {
+                    outChar = L'\b';
+                } else {
+                    BYTE ks[256] = {};
+                    if (GetKeyboardState(ks)) {
+                        if (rebind.fromKey == VK_SHIFT || rebind.fromKey == VK_LSHIFT || rebind.fromKey == VK_RSHIFT) {
+                            ks[VK_SHIFT] = 0;
+                            ks[VK_LSHIFT] = 0;
+                            ks[VK_RSHIFT] = 0;
+                        } else if (rebind.fromKey == VK_CONTROL || rebind.fromKey == VK_LCONTROL || rebind.fromKey == VK_RCONTROL) {
+                            ks[VK_CONTROL] = 0;
+                            ks[VK_LCONTROL] = 0;
+                            ks[VK_RCONTROL] = 0;
+                        } else if (rebind.fromKey == VK_MENU || rebind.fromKey == VK_LMENU || rebind.fromKey == VK_RMENU) {
+                            ks[VK_MENU] = 0;
+                            ks[VK_LMENU] = 0;
+                            ks[VK_RMENU] = 0;
+                        }
+
+                        ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
+
+                        (void)TryTranslateVkToCharWithKeyboardState(textVK, ks, outChar);
+                    }
+
+                    if (outChar == 0) {
+                        (void)TryTranslateVkToCharPreferShiftState(textVK, preferShiftedText, outChar);
+                    }
+                }
+
+                if (outChar != 0) {
+                    SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, static_cast<WPARAM>(outChar), charLParam);
+                }
+            }
+        }
+
+        return { true, mouseResult };
+    }
+
+    const bool isSystemKeyMsg = (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP);
+    const bool sourceIsAlt = IsAltVk(vkCode) || IsAltVk(rawVkCode);
+    const bool altContextActive = isSystemKeyMsg && !sourceIsAlt;
+    const bool outputIsAlt = IsAltVk(triggerVK);
+    const bool outputUsesSystemMessage = outputIsAlt;
+    const bool outputHasAltContext = altContextActive || outputIsAlt;
+    UINT outputMsg = isKeyDown ? (outputUsesSystemMessage ? WM_SYSKEYDOWN : WM_KEYDOWN)
+                               : (outputUsesSystemMessage ? WM_SYSKEYUP : WM_KEYUP);
+
+    const bool fromKeyIsNonChar = isMouseButton || IsNonCharKeyVk(rebind.fromKey);
+
+    UINT repeatCount = 1;
+    bool previousState = !isKeyDown;
+    bool transitionState = !isKeyDown;
+    if (!isMouseButton) {
+        repeatCount = static_cast<UINT>(lParam & 0xFFFF);
+        if (repeatCount == 0) repeatCount = 1;
+
+        previousState = ((lParam & (1LL << 30)) != 0);
+        transitionState = ((lParam & (1LL << 31)) != 0);
+    }
+
+    auto emitTypedChar = [&](LPARAM charLParam) {
+        const uint32_t configuredUnicodeText =
+            (shiftLayerActive && HasShiftLayerOutputUnicode(rebind))
+                ? (uint32_t)rebind.shiftLayerOutputUnicode
+                : ((!shiftLayerActive && rebind.useCustomOutput && rebind.customOutputUnicode != 0)
+                       ? (uint32_t)rebind.customOutputUnicode
+                       : 0u);
+
+        if (configuredUnicodeText != 0) {
+            if (configuredUnicodeText <= 0xFFFFu) {
+                SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, (WPARAM)(WCHAR)configuredUnicodeText, charLParam);
+            } else {
+                SendUnicodeScalarAsCharMessage(hWnd, WM_CHAR, configuredUnicodeText, charLParam);
+            }
+            return;
+        }
+
+        WCHAR outChar = 0;
+
+        if (textVK == VK_RETURN) {
+            outChar = L'\r';
+        } else if (textVK == VK_TAB) {
+            outChar = L'\t';
+        } else if (textVK == VK_BACK) {
+            outChar = L'\b';
+        } else {
+            BYTE ks[256] = {};
+            if (GetKeyboardState(ks)) {
+                if (rebind.fromKey == VK_SHIFT || rebind.fromKey == VK_LSHIFT || rebind.fromKey == VK_RSHIFT) {
+                    ks[VK_SHIFT] = 0;
+                    ks[VK_LSHIFT] = 0;
+                    ks[VK_RSHIFT] = 0;
+                } else if (rebind.fromKey == VK_CONTROL || rebind.fromKey == VK_LCONTROL || rebind.fromKey == VK_RCONTROL) {
+                    ks[VK_CONTROL] = 0;
+                    ks[VK_LCONTROL] = 0;
+                    ks[VK_RCONTROL] = 0;
+                } else if (rebind.fromKey == VK_MENU || rebind.fromKey == VK_LMENU || rebind.fromKey == VK_RMENU) {
+                    ks[VK_MENU] = 0;
+                    ks[VK_LMENU] = 0;
+                    ks[VK_RMENU] = 0;
+                }
+
+                ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
+
+                (void)TryTranslateVkToCharWithKeyboardState(textVK, ks, outChar);
+            }
+
+            if (outChar == 0) {
+                (void)TryTranslateVkToCharPreferShiftState(textVK, preferShiftedText, outChar);
+            }
+        }
+
+        if (outChar != 0) {
+            SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, static_cast<WPARAM>(outChar), charLParam);
+        }
+    };
+
+    if (IsModifierVk(triggerVK) || outputScanIsModifier) {
+        const bool sourceIsModifier = IsModifierVk(rebind.fromKey) || IsModifierVk(vkCode) || IsModifierVk(rawVkCode);
+        if (isAutoRepeatKeyDown && !sourceIsModifier) {
+            return { true, 0 };
+        }
+
+        (void)SendSynthKeyByScanCode(outputScanCode, isKeyDown);
+
+        if (isKeyDown && fromKeyIsNonChar && !outputScanIsModifier) {
+            const UINT textScanCode = GetScanCodeWithExtendedFlag(textVK);
+            LPARAM charLParam =
+                BuildKeyboardMessageLParam(textScanCode, true, outputHasAltContext, repeatCount, previousState, transitionState);
+            emitTypedChar(charLParam);
+        }
+
+        return { true, 0 };
+    }
+
+    const DWORD msgVk = [&]() -> DWORD {
+        if (triggerVK == VK_LSHIFT || triggerVK == VK_RSHIFT) return VK_SHIFT;
+        if (triggerVK == VK_LCONTROL || triggerVK == VK_RCONTROL) return VK_CONTROL;
+        if (triggerVK == VK_LMENU || triggerVK == VK_RMENU) return VK_MENU;
+        return triggerVK;
+    }();
+
+    LPARAM newLParam =
+        BuildKeyboardMessageLParam(outputScanCode, isKeyDown, outputHasAltContext, repeatCount, previousState, transitionState);
+
+    LRESULT keyResult = CallWindowProc(g_originalWndProc, hWnd, outputMsg, msgVk, newLParam);
+
+    if (isKeyDown && fromKeyIsNonChar) {
+        emitTypedChar(newLParam);
+    }
+
+    return { true, keyResult };
 }
 
 InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -2229,297 +2702,34 @@ InputHandlerResult HandleKeyRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
     auto rebindCfg = GetConfigSnapshot();
     if (!rebindCfg || !rebindCfg->keyRebinds.enabled) { return { false, 0 }; }
 
+    const bool allowSystemAltTab = !isMouseButton && rebindCfg->keyRebinds.allowSystemAltTab;
+    const bool currentIsAlt = !isMouseButton && (IsAltVk(vkCode) || IsAltVk(rawVkCode));
+    const bool currentIsTab = !isMouseButton && (IsTabVk(vkCode) || IsTabVk(rawVkCode));
+
+    if (allowSystemAltTab && currentIsTab && isKeyDown && IsAltCurrentlyDown()) {
+        s_systemAltTabPassthroughActive = true;
+    }
+
+    if (allowSystemAltTab && currentIsTab && s_systemAltTabPassthroughActive) {
+        if (!isKeyDown) {
+            UpdateSystemAltTabPassthroughState();
+        }
+        return { false, 0 };
+    }
+
     for (size_t i = 0; i < rebindCfg->keyRebinds.rebinds.size(); ++i) {
         const auto& rebind = rebindCfg->keyRebinds.rebinds[i];
 
         if (rebind.enabled && rebind.fromKey != 0 && rebind.toKey != 0 && MatchesRebindSourceKey(vkCode, rawVkCode, rebind.fromKey)) {
-            const bool shiftLayerActive = IsShiftLayerActiveForRebind(rebind, vkCode, rawVkCode, isKeyDown);
-            auto isNonCharSourceVk = [&](DWORD vk) {
-                if (IsModifierVk(vk)) return true;
-                if (vk == VK_LWIN || vk == VK_RWIN) return true;
-                if (vk >= VK_F1 && vk <= VK_F24) return true;
-
-                switch (vk) {
-                case VK_INSERT:
-                case VK_DELETE:
-                case VK_HOME:
-                case VK_END:
-                case VK_PRIOR:
-                case VK_NEXT:
-                case VK_LEFT:
-                case VK_RIGHT:
-                case VK_UP:
-                case VK_DOWN:
-                case VK_CLEAR:
-                case VK_ESCAPE:
-                case VK_PAUSE:
-                case VK_SNAPSHOT:
-                case VK_CAPITAL:
-                case VK_NUMLOCK:
-                case VK_SCROLL:
-                case VK_APPS:
-                    return true;
-                default:
-                    return false;
-                }
-            };
-
-            const DWORD triggerVK =
-                NormalizeModifierVkFromConfig(rebind.toKey, (rebind.useCustomOutput ? rebind.customOutputScanCode : 0));
-
-            if (ShouldMaskMenuModifierForRebind(rebind, vkCode, rawVkCode, isKeyDown, isAutoRepeatKeyDown, triggerVK)) {
-                (void)SendMenuMaskKeyTap();
-            }
-
-            const DWORD defaultTextVK = NormalizeModifierVkFromConfig(rebind.fromKey);
-            const DWORD effectiveCustomOutputVk = ResolveEffectiveCustomOutputVk(rebind, shiftLayerActive);
-            const DWORD textVK = NormalizeModifierVkFromConfig(
-                (effectiveCustomOutputVk != 0) ? effectiveCustomOutputVk : defaultTextVK);
-            const bool preferShiftedText = ResolvePreferredOutputShiftState(
-                rebind, shiftLayerActive, IsShiftDownForIncomingEvent(vkCode, rawVkCode, isKeyDown));
-
-            UINT outputScanCode = GetScanCodeWithExtendedFlag(triggerVK);
-            if (rebind.useCustomOutput && rebind.customOutputScanCode != 0) {
-                outputScanCode = ResolveOutputScanCode(triggerVK, rebind.customOutputScanCode);
-            }
-            const bool outputScanIsModifier = IsModifierScanCode(outputScanCode);
-
-            if (triggerVK == VK_LBUTTON || triggerVK == VK_RBUTTON || triggerVK == VK_MBUTTON || triggerVK == VK_XBUTTON1 ||
-                triggerVK == VK_XBUTTON2) {
-                UINT newMsg = 0;
-                auto buildMouseKeyState = [&](DWORD buttonVk, bool buttonDown) -> WORD {
-                    WORD mk = 0;
-                    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) mk |= MK_CONTROL;
-                    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) mk |= MK_SHIFT;
-
-                    auto setBtn = [&](int vk, WORD mask, bool isThisButton) {
-                        bool down = (GetKeyState(vk) & 0x8000) != 0;
-                        if (isThisButton) down = buttonDown;
-                        if (down) mk |= mask;
-                    };
-
-                    setBtn(VK_LBUTTON, MK_LBUTTON, buttonVk == VK_LBUTTON);
-                    setBtn(VK_RBUTTON, MK_RBUTTON, buttonVk == VK_RBUTTON);
-                    setBtn(VK_MBUTTON, MK_MBUTTON, buttonVk == VK_MBUTTON);
-                    setBtn(VK_XBUTTON1, MK_XBUTTON1, buttonVk == VK_XBUTTON1);
-                    setBtn(VK_XBUTTON2, MK_XBUTTON2, buttonVk == VK_XBUTTON2);
-                    return mk;
-                };
-
-                LPARAM mouseLParam = lParam;
-                if (!isMouseButton) {
-                    POINT pt{};
-                    if (GetCursorPos(&pt) && ScreenToClient(hWnd, &pt)) {
-                        mouseLParam = MAKELPARAM(pt.x, pt.y);
-                    } else {
-                        RECT clientRect{};
-                        if (GetClientRect(hWnd, &clientRect)) {
-                            mouseLParam = MAKELPARAM((clientRect.right - clientRect.left) / 2, (clientRect.bottom - clientRect.top) / 2);
-                        }
-                    }
-                }
-
-                WORD mkState = buildMouseKeyState(triggerVK, isKeyDown);
-                WPARAM newWParam = mkState;
-
-                if (triggerVK == VK_LBUTTON) {
-                    newMsg = isKeyDown ? WM_LBUTTONDOWN : WM_LBUTTONUP;
-                } else if (triggerVK == VK_RBUTTON) {
-                    newMsg = isKeyDown ? WM_RBUTTONDOWN : WM_RBUTTONUP;
-                } else if (triggerVK == VK_MBUTTON) {
-                    newMsg = isKeyDown ? WM_MBUTTONDOWN : WM_MBUTTONUP;
-                } else if (triggerVK == VK_XBUTTON1) {
-                    newMsg = isKeyDown ? WM_XBUTTONDOWN : WM_XBUTTONUP;
-                    newWParam = MAKEWPARAM(mkState, XBUTTON1);
-                } else if (triggerVK == VK_XBUTTON2) {
-                    newMsg = isKeyDown ? WM_XBUTTONDOWN : WM_XBUTTONUP;
-                    newWParam = MAKEWPARAM(mkState, XBUTTON2);
-                }
-
-                LRESULT mouseResult = CallWindowProc(g_originalWndProc, hWnd, newMsg, newWParam, mouseLParam);
-
-                const bool fromKeyIsNonCharMouse =
-                    isMouseButton ||
-                    isNonCharSourceVk(rebind.fromKey);
-
-                if (isKeyDown && fromKeyIsNonCharMouse) {
-                    const uint32_t configuredUnicodeText =
-                        (shiftLayerActive && HasShiftLayerOutputUnicode(rebind))
-                            ? (uint32_t)rebind.shiftLayerOutputUnicode
-                            : ((!shiftLayerActive && rebind.useCustomOutput && rebind.customOutputUnicode != 0)
-                                   ? (uint32_t)rebind.customOutputUnicode
-                                   : 0u);
-
-                    const UINT textScanCode = GetScanCodeWithExtendedFlag(textVK);
-                    LPARAM charLParam = BuildKeyboardMessageLParam(textScanCode, true, false, 1, false, false);
-
-                    if (configuredUnicodeText != 0) {
-                        SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, (WPARAM)(WCHAR)configuredUnicodeText, charLParam);
-                    } else {
-                        WCHAR outChar = 0;
-                        if (textVK == VK_RETURN) {
-                            outChar = L'\r';
-                        } else if (textVK == VK_TAB) {
-                            outChar = L'\t';
-                        } else if (textVK == VK_BACK) {
-                            outChar = L'\b';
-                        } else {
-                            BYTE ks[256] = {};
-                            if (GetKeyboardState(ks)) {
-                                if (rebind.fromKey == VK_SHIFT || rebind.fromKey == VK_LSHIFT || rebind.fromKey == VK_RSHIFT) {
-                                    ks[VK_SHIFT] = 0;
-                                    ks[VK_LSHIFT] = 0;
-                                    ks[VK_RSHIFT] = 0;
-                                } else if (rebind.fromKey == VK_CONTROL || rebind.fromKey == VK_LCONTROL || rebind.fromKey == VK_RCONTROL) {
-                                    ks[VK_CONTROL] = 0;
-                                    ks[VK_LCONTROL] = 0;
-                                    ks[VK_RCONTROL] = 0;
-                                } else if (rebind.fromKey == VK_MENU || rebind.fromKey == VK_LMENU || rebind.fromKey == VK_RMENU) {
-                                    ks[VK_MENU] = 0;
-                                    ks[VK_LMENU] = 0;
-                                    ks[VK_RMENU] = 0;
-                                }
-
-                                ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
-
-                                (void)TryTranslateVkToCharWithKeyboardState(textVK, ks, outChar);
-                            }
-
-                            if (outChar == 0) {
-                                (void)TryTranslateVkToCharPreferShiftState(textVK, preferShiftedText, outChar);
-                            }
-                        }
-
-                        if (outChar != 0) {
-                            SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, static_cast<WPARAM>(outChar), charLParam);
-                        }
-                    }
-                }
-
-                return { true, mouseResult };
-            }
-
-            const bool isSystemKeyMsg = (uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP);
-            const bool sourceIsAlt = IsAltVk(vkCode) || IsAltVk(rawVkCode);
-            const bool altContextActive = isSystemKeyMsg && !sourceIsAlt;
-            const bool outputIsAlt = IsAltVk(triggerVK);
-            const bool outputUsesSystemMessage = outputIsAlt;
-            const bool outputHasAltContext = altContextActive || outputIsAlt;
-            UINT outputMsg =
-                isKeyDown ? (outputUsesSystemMessage ? WM_SYSKEYDOWN : WM_KEYDOWN) : (outputUsesSystemMessage ? WM_SYSKEYUP : WM_KEYUP);
-
-            const bool fromKeyIsNonChar =
-                isMouseButton ||
-                isNonCharSourceVk(rebind.fromKey);
-
-            UINT repeatCount = 1;
-            bool previousState = !isKeyDown;
-            bool transitionState = !isKeyDown;
-            if (!isMouseButton) {
-                repeatCount = static_cast<UINT>(lParam & 0xFFFF);
-                if (repeatCount == 0) repeatCount = 1;
-
-                previousState = ((lParam & (1LL << 30)) != 0);
-                transitionState = ((lParam & (1LL << 31)) != 0);
-            }
-
-            auto emitTypedChar = [&](LPARAM charLParam) {
-                const uint32_t configuredUnicodeText =
-                    (shiftLayerActive && HasShiftLayerOutputUnicode(rebind))
-                        ? (uint32_t)rebind.shiftLayerOutputUnicode
-                        : ((!shiftLayerActive && rebind.useCustomOutput && rebind.customOutputUnicode != 0)
-                               ? (uint32_t)rebind.customOutputUnicode
-                               : 0u);
-
-                if (configuredUnicodeText != 0) {
-                    if (configuredUnicodeText <= 0xFFFFu) {
-                        SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, (WPARAM)(WCHAR)configuredUnicodeText, charLParam);
-                    } else {
-                        SendUnicodeScalarAsCharMessage(hWnd, WM_CHAR, configuredUnicodeText, charLParam);
-                    }
-                    return;
-                }
-
-                WCHAR outChar = 0;
-
-                if (textVK == VK_RETURN) {
-                    outChar = L'\r';
-                } else if (textVK == VK_TAB) {
-                    outChar = L'\t';
-                } else if (textVK == VK_BACK) {
-                    outChar = L'\b';
-                } else {
-                    BYTE ks[256] = {};
-                    if (GetKeyboardState(ks)) {
-                        if (rebind.fromKey == VK_SHIFT || rebind.fromKey == VK_LSHIFT || rebind.fromKey == VK_RSHIFT) {
-                            ks[VK_SHIFT] = 0;
-                            ks[VK_LSHIFT] = 0;
-                            ks[VK_RSHIFT] = 0;
-                        } else if (rebind.fromKey == VK_CONTROL || rebind.fromKey == VK_LCONTROL || rebind.fromKey == VK_RCONTROL) {
-                            ks[VK_CONTROL] = 0;
-                            ks[VK_LCONTROL] = 0;
-                            ks[VK_RCONTROL] = 0;
-                        } else if (rebind.fromKey == VK_MENU || rebind.fromKey == VK_LMENU || rebind.fromKey == VK_RMENU) {
-                            ks[VK_MENU] = 0;
-                            ks[VK_LMENU] = 0;
-                            ks[VK_RMENU] = 0;
-                        }
-
-                        ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
-
-                        (void)TryTranslateVkToCharWithKeyboardState(textVK, ks, outChar);
-                    }
-
-                    if (outChar == 0) {
-                        (void)TryTranslateVkToCharPreferShiftState(textVK, preferShiftedText, outChar);
-                    }
-                }
-
-                if (outChar != 0) {
-                    SendMessage(hWnd, WM_TOOLSCREEN_CHAR_NO_REBIND, static_cast<WPARAM>(outChar), charLParam);
-                }
-            };
-
-            // If the output is a modifier key, we must synthesize it via SendInput so the OS/game keyboard state
-            if (IsModifierVk(triggerVK) || outputScanIsModifier) {
-                const bool sourceIsModifier = IsModifierVk(rebind.fromKey) || IsModifierVk(vkCode) || IsModifierVk(rawVkCode);
-                if (isAutoRepeatKeyDown && !sourceIsModifier) {
-                    return { true, 0 };
-                }
-
-                (void)SendSynthKeyByScanCode(outputScanCode, isKeyDown);
-
-                if (isKeyDown && fromKeyIsNonChar && !outputScanIsModifier) {
-                    const UINT textScanCode = GetScanCodeWithExtendedFlag(textVK);
-                    LPARAM charLParam =
-                        BuildKeyboardMessageLParam(textScanCode, true, outputHasAltContext, repeatCount, previousState, transitionState);
-                    emitTypedChar(charLParam);
-                }
-
-                return { true, 0 };
-            }
-
-            // Windows typically sends generic modifier VKs in wParam (VK_SHIFT/VK_CONTROL/VK_MENU)
-            const DWORD msgVk = [&]() -> DWORD {
-                if (triggerVK == VK_LSHIFT || triggerVK == VK_RSHIFT) return VK_SHIFT;
-                if (triggerVK == VK_LCONTROL || triggerVK == VK_RCONTROL) return VK_CONTROL;
-                if (triggerVK == VK_LMENU || triggerVK == VK_RMENU) return VK_MENU;
-                return triggerVK;
-            }();
-
-            LPARAM newLParam =
-                BuildKeyboardMessageLParam(outputScanCode, isKeyDown, outputHasAltContext, repeatCount, previousState, transitionState);
-
-            // Do NOT PostMessage keyboard outputs when the source event is a mouse button.
-            LRESULT keyResult = CallWindowProc(g_originalWndProc, hWnd, outputMsg, msgVk, newLParam);
-
-            if (isKeyDown && fromKeyIsNonChar) {
-                emitTypedChar(newLParam);
-            }
-
-            return { true, keyResult };
+            return ExecuteMatchedKeyRebind(hWnd, uMsg, wParam, lParam, rawVkCode, vkCode, isMouseButton, isKeyDown,
+                                           isAutoRepeatKeyDown, rebind);
         }
     }
+
+    if (allowSystemAltTab && !isKeyDown && (currentIsAlt || currentIsTab)) {
+        UpdateSystemAltTabPassthroughState();
+    }
+
     return { false, 0 };
 }
 
@@ -2542,7 +2752,7 @@ InputHandlerResult HandleCustomCharNoRebind(HWND hWnd, UINT uMsg, WPARAM wParam,
     if (uMsg != WM_TOOLSCREEN_CHAR_NO_REBIND) { return { false, 0 }; }
     PROFILE_SCOPE("HandleCustomCharNoRebind");
 
-    HandleCharLogging(WM_CHAR, wParam, lParam);
+    //HandleCharLogging(WM_CHAR, wParam, lParam);
 
     if (g_showGui.load()) {
         ImGuiInputQueue_EnqueueWin32Message(hWnd, WM_CHAR, wParam, lParam);
@@ -2571,19 +2781,17 @@ InputHandlerResult HandleCharRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         bool hasFromShifted = TryTranslateVkToChar(rebind.fromKey, true, fromShifted);
 
         bool matched = false;
-        bool matchedShifted = false;
 
         if (hasFromUnshifted && inputChar == fromUnshifted) {
             matched = true;
-            matchedShifted = false;
         } else if (hasFromShifted && inputChar == fromShifted) {
             matched = true;
-            matchedShifted = true;
         }
 
         if (matched) {
-            const bool shiftLayerActive = HasShiftLayerOutputOverride(rebind) && matchedShifted;
-            const bool preferShiftedText = ResolvePreferredOutputShiftState(rebind, shiftLayerActive, matchedShifted);
+            const bool shiftDown = IsShiftCurrentlyDown();
+            const bool shiftLayerActive = IsShiftLayerActive(rebind, shiftDown, IsCapsLockCurrentlyOn());
+            const bool preferShiftedText = ResolvePreferredOutputShiftState(rebind, shiftLayerActive, shiftDown);
 
             if (shiftLayerActive && HasShiftLayerOutputUnicode(rebind)) {
                 LRESULT r = SendUnicodeScalarAsCharMessage(hWnd, uMsg, (uint32_t)rebind.shiftLayerOutputUnicode, lParam);
@@ -2616,7 +2824,15 @@ InputHandlerResult HandleCharRebinding(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             } else if (outputVK == VK_BACK) {
                 outputChar = L'\b';
             } else {
-                (void)TryTranslateVkToCharPreferShiftState(outputVK, preferShiftedText, outputChar);
+                BYTE ks[256] = {};
+                if (GetKeyboardState(ks)) {
+                    ApplyPreferredOutputShiftState(rebind, shiftLayerActive, ks);
+                    (void)TryTranslateVkToCharWithKeyboardState(outputVK, ks, outputChar);
+                }
+
+                if (outputChar == 0) {
+                    (void)TryTranslateVkToCharPreferShiftState(outputVK, preferShiftedText, outputChar);
+                }
             }
 
             if (outputChar == 0) {
@@ -2741,6 +2957,16 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         return DefWindowProc(hWnd, uMsg, wParam, lParam);
     }
 
+    if (g_showGui.load() && s_forcedShowCursor && g_gameVersion >= GameVersion(1, 13, 0)) {
+        EnsureSystemCursorVisible();
+        static HCURSOR s_arrowCursor = LoadCursorW(NULL, IDC_ARROW);
+        SetCursor(s_arrowCursor);
+    }
+    if (!g_showGui.load() && s_forcedShowCursor) {
+        EnsureSystemCursorHidden();
+        s_forcedShowCursor = false;
+    }
+
     EnsureLowLevelKeyboardHookInstalled();
 
     RegisterBindingInputEvent(uMsg, wParam, lParam);
@@ -2758,6 +2984,12 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
     result = HandleToolscreenQueryMessages(hWnd, uMsg, wParam, lParam);
     if (result.consumed) return result.result;
+
+    if (uMsg == WM_TOOLSCREEN_APPLY_FOCUS_REGAIN_SIZE) {
+        s_deferredFocusRegainWmSizePending.store(false, std::memory_order_relaxed);
+        ResendCurrentModeWmSize(hWnd, "input_hook:focus_regain_deferred");
+        return 0;
+    }
 
     result = HandleInjectedMenuMaskKey(hWnd, uMsg, wParam, lParam);
     if (result.consumed) return result.result;
@@ -2792,7 +3024,7 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     result = HandleKeyRebindsToggle(hWnd, uMsg, wParam, lParam);
     if (result.consumed) return result.result;
 
-    HandleCharLogging(uMsg, wParam, lParam);
+    //HandleCharLogging(uMsg, wParam, lParam);
 
     result = HandleAltF4(hWnd, uMsg, wParam, lParam);
     if (result.consumed) return result.result;
@@ -2873,7 +3105,11 @@ LRESULT CALLBACK SubclassedWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     result = HandleCharRebinding(hWnd, uMsg, wParam, lParam);
     if (result.consumed) return result.result;
 
-    return CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, lParam);
+    const LRESULT forwarded = CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, lParam);
+    if (IsFocusGainMessage(uMsg) && s_deferredFocusRegainWmSizePending.exchange(false, std::memory_order_relaxed)) {
+        QueueDeferredFocusRegainWmSize(hWnd);
+    }
+    return forwarded;
 }
 
 

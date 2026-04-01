@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "common/video_media.h"
 #include "config/config_defaults.h"
 #include "imgui.h"
 #include "version.h"
@@ -33,6 +34,7 @@ struct DecodedImageData {
     unsigned char* data = nullptr;
 
     bool isAnimated = false;
+    bool isVideo = false;
     int frameCount = 0;
     int frameHeight = 0;
     std::vector<int> frameDelays;
@@ -63,6 +65,47 @@ void RequestDynamicGuiFontRefresh(bool forceRefresh = false);
 void ApplyDynamicGuiFontRefresh();
 void RequestKeyboardLayoutFontRefresh(const ImVec2& windowSize, float keyHeight, float keyboardScale, bool forceRefresh = false);
 void ApplyPendingKeyboardLayoutFontRefresh();
+
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+struct GuiTestInteractionRect {
+    float minX = 0.0f;
+    float minY = 0.0f;
+    float maxX = 0.0f;
+    float maxY = 0.0f;
+};
+
+enum class GuiTestKeyboardLayoutBindTarget {
+    None,
+    FullOutputVk,
+    TypesVk,
+    TypesVkShift,
+    TriggersVk,
+};
+
+enum class GuiTestKeyboardLayoutScanFilterGroup {
+    All = -1,
+    Alpha = 0,
+    Digit,
+    Function,
+    Nav,
+    Numpad,
+    Modifier,
+    Other,
+};
+
+void ResetGuiTestInteractionRects();
+bool GetGuiTestInteractionRect(const char* id, GuiTestInteractionRect& outRect);
+void RequestGuiTestOpenKeyboardLayout();
+void RequestGuiTestOpenKeyboardLayoutContext(DWORD vk);
+void RequestGuiTestKeyboardLayoutSetSplitMode(bool splitMode);
+void RequestGuiTestKeyboardLayoutBeginBind(GuiTestKeyboardLayoutBindTarget target);
+void RequestGuiTestKeyboardLayoutSetShiftLayerUppercase(bool enabled);
+void RequestGuiTestKeyboardLayoutSetShiftLayerUsesCapsLock(bool enabled);
+void RequestGuiTestKeyboardLayoutOpenScanPicker();
+void RequestGuiTestKeyboardLayoutSetScanFilter(GuiTestKeyboardLayoutScanFilterGroup group);
+void RequestGuiTestKeyboardLayoutSelectScan(DWORD scan);
+void RequestGuiTestKeyboardLayoutResetScanToDefault();
+#endif
 
 extern ImFont* g_keyboardLayoutPrimaryFont;
 extern ImFont* g_keyboardLayoutSecondaryFont;
@@ -142,11 +185,6 @@ enum class MirrorBorderShape {
     Circle
 };
 
-enum class HookChainingNextTarget {
-    LatestHook = 0,
-    OriginalFunction = 1,
-};
-
 struct MirrorBorderConfig {
     MirrorBorderType type = MirrorBorderType::Dynamic;
 
@@ -200,11 +238,6 @@ struct ImageBackgroundConfig {
 struct StretchConfig {
     bool enabled = false;
     int width = 0, height = 0, x = 0, y = 0;
-
-    std::string widthExpr;
-    std::string heightExpr;
-    std::string xExpr;
-    std::string yExpr;
 };
 struct BorderConfig {
     bool enabled = false;
@@ -221,8 +254,13 @@ struct ImageConfig {
     std::string path;
     int x = 0, y = 0;
     float scale = 1.0f;
+    bool relativeSizing = true;
+    int width = 0;
+    int height = 0;
     std::string relativeTo = "topLeftScreen";
     int crop_top = 0, crop_bottom = 0, crop_left = 0, crop_right = 0;
+    bool cropToWidth = false;
+    bool cropToHeight = false;
     bool enableColorKey = false;
     std::vector<ColorKeyConfig> colorKeys;
     Color colorKey;
@@ -243,6 +281,8 @@ struct WindowOverlayConfig {
     float scale = 1.0f;
     std::string relativeTo = "topLeftScreen";
     int crop_top = 0, crop_bottom = 0, crop_left = 0, crop_right = 0;
+    bool cropToWidth = false;
+    bool cropToHeight = false;
     bool enableColorKey = false;
     std::vector<ColorKeyConfig> colorKeys;
     Color colorKey;
@@ -258,6 +298,45 @@ struct WindowOverlayConfig {
     bool enableInteraction = false;
     BorderConfig border;
 };
+struct BrowserOverlayConfig {
+    std::string name;
+    std::string url = "https://example.com";
+    std::string customCss;
+    int browserWidth = 1280;
+    int browserHeight = 720;
+    int x = 0, y = 0;
+    float scale = 1.0f;
+    std::string relativeTo = "topLeftScreen";
+    int crop_top = 0, crop_bottom = 0, crop_left = 0, crop_right = 0;
+    bool cropToWidth = false;
+    bool cropToHeight = false;
+    bool enableColorKey = false;
+    std::vector<ColorKeyConfig> colorKeys;
+    float opacity = 1.0f;
+    ImageBackgroundConfig background;
+    bool pixelatedScaling = false;
+    bool onlyOnMyScreen = false;
+    int fps = 15;
+    bool transparentBackground = false;
+    bool muteAudio = true;
+    bool hardwareAcceleration = true;
+    bool allowSystemMediaKeys = true;
+    bool reloadOnUpdate = false;
+    int reloadInterval = 0;
+    BorderConfig border;
+};
+
+struct ResolvedCrop {
+    int top, bottom, left, right;
+};
+
+inline ResolvedCrop ResolveCrop(int crop_top, int crop_bottom, int crop_left, int crop_right,
+                                bool cropToWidth, bool cropToHeight, int sourceW, int sourceH) {
+    int rt = crop_top, rb = crop_bottom, rl = crop_left, rr = crop_right;
+    if (cropToHeight && sourceH > 0) rb = (std::max)(0, sourceH - crop_top - crop_bottom);
+    if (cropToWidth && sourceW > 0) rr = (std::max)(0, sourceW - crop_left - crop_right);
+    return { rt, rb, rl, rr };
+}
 
 enum class GameTransitionType {
     Cut,
@@ -286,7 +365,6 @@ struct ModeConfig {
     bool useRelativeSize = false;
     float relativeWidth = 0.5f;
     float relativeHeight = 0.5f;
-
     std::string widthExpr;
     std::string heightExpr;
 
@@ -295,6 +373,7 @@ struct ModeConfig {
     std::vector<std::string> mirrorGroupIds;
     std::vector<std::string> imageIds;
     std::vector<std::string> windowOverlayIds;
+    std::vector<std::string> browserOverlayIds;
     StretchConfig stretch;
 
     GameTransitionType gameTransition = GameTransitionType::Bounce;
@@ -365,6 +444,7 @@ struct DebugGlobalConfig {
     bool showTextureGrid = false;
     bool delayRenderingUntilFinished = false;
     bool virtualCameraEnabled = false;        // Output to OBS Virtual Camera driver
+    int videoCacheBudgetMiB = ConfigDefaults::DEBUG_GLOBAL_VIDEO_CACHE_BUDGET_MIB;
 
     bool logModeSwitch = false;
     bool logAnimation = false;
@@ -391,12 +471,19 @@ struct CursorsConfig {
 };
 enum class EyeZoomOverlayDisplayMode { Manual, Fit, Stretch };
 
+enum class EyeZoomFontSizeMode {
+    Auto,
+    PerSquareAuto,
+    Manual
+};
+
 struct EyeZoomOverlayConfig {
     std::string name;
     std::string path;
     EyeZoomOverlayDisplayMode displayMode = EyeZoomOverlayDisplayMode::Fit;
     int manualWidth = 100;
     int manualHeight = 100;
+    bool clipToZoomArea = false;
     float opacity = 1.0f;
 };
 
@@ -412,7 +499,7 @@ struct EyeZoomConfig {
     bool useCustomSizePosition = false;
     int positionX = 0;
     int positionY = 0;
-    bool autoFontSize = true;
+    EyeZoomFontSizeMode fontSizeMode = static_cast<EyeZoomFontSizeMode>(ConfigDefaults::EYEZOOM_FONT_SIZE_MODE);
     int textFontSize = 24;
     std::string textFontPath;
     int rectHeight = 24;
@@ -446,6 +533,7 @@ struct KeyRebind {
     DWORD customOutputScanCode = 0;
     bool baseOutputShifted = false;
     bool shiftLayerEnabled = false;
+    bool shiftLayerUsesCapsLock = false;
     DWORD shiftLayerOutputVK = 0;
     DWORD shiftLayerOutputUnicode = 0;
     bool shiftLayerOutputShifted = false;
@@ -453,6 +541,12 @@ struct KeyRebind {
 struct KeyRebindsConfig {
     bool enabled = false;
     bool resolveRebindTargetsForHotkeys = ConfigDefaults::KEY_REBINDS_RESOLVE_REBIND_TARGETS_FOR_HOTKEYS;
+    bool allowSystemAltTab = ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_TAB;
+    int indicatorMode = ConfigDefaults::KEY_REBINDS_INDICATOR_MODE;
+    int indicatorPosition = ConfigDefaults::KEY_REBINDS_INDICATOR_POSITION;
+    std::string indicatorImageEnabled;
+    std::string indicatorImageDisabled;
+    bool allowSystemAltF4 = ConfigDefaults::KEY_REBINDS_ALLOW_SYSTEM_ALT_F4;
     std::vector<DWORD> toggleHotkey = {};
     std::vector<KeyRebind> rebinds;
 };
@@ -502,11 +596,12 @@ struct NinjabrainOverlayConfig {
     };
 };
 struct Config {
-    int configVersion = 2;
+    int configVersion = GetConfigVersion();
     std::vector<MirrorConfig> mirrors;
     std::vector<MirrorGroupConfig> mirrorGroups;
     std::vector<ImageConfig> images;
     std::vector<WindowOverlayConfig> windowOverlays;
+    std::vector<BrowserOverlayConfig> browserOverlays;
     std::vector<ModeConfig> modes;
     std::vector<HotkeyConfig> hotkeys;
     std::vector<SensitivityHotkeyConfig> sensitivityHotkeys;
@@ -526,8 +621,8 @@ struct Config {
     MirrorGammaMode mirrorGammaMode = MirrorGammaMode::Auto;
     // Useful if a specific overlay/driver hook layer is unstable when chained.
     bool disableHookChaining = false;
-    HookChainingNextTarget hookChainingNextTarget = HookChainingNextTarget::OriginalFunction;
     bool allowCursorEscape = false;
+    bool confineCursor = false;
     float mouseSensitivity = 1.0f;
     int windowsMouseSpeed = 0;                              // Windows mouse speed override (0 = disabled, 1-20 = override)
     bool hideAnimationsInGame = false;
@@ -535,13 +630,47 @@ struct Config {
     int obsFramerate = ConfigDefaults::CONFIG_OBS_FRAMERATE;
     KeyRebindsConfig keyRebinds;
     AppearanceConfig appearance;
-    int keyRepeatStartDelay = 0;
-    int keyRepeatDelay = 0;
+    int keyRepeatStartDelay = ConfigDefaults::CONFIG_KEY_REPEAT_START_DELAY;
+    int keyRepeatDelay = ConfigDefaults::CONFIG_KEY_REPEAT_DELAY;
     bool basicModeEnabled = false;
+    bool restoreWindowedModeOnFullscreenExit = ConfigDefaults::CONFIG_RESTORE_WINDOWED_MODE_ON_FULLSCREEN_EXIT;
     bool disableFullscreenPrompt = false;
     bool disableConfigurePrompt = false;
     NinjabrainOverlayConfig ninjabrainOverlay;
 };
+
+inline constexpr const char* kDefaultProfileName = "Default";
+inline constexpr float kDefaultProfileColor[3] = { 0.4f, 0.8f, 0.4f };
+
+struct ProfileMetadata {
+    std::string name;
+    float color[3] = { kDefaultProfileColor[0], kDefaultProfileColor[1], kDefaultProfileColor[2] };
+};
+
+struct ProfilesConfig {
+    std::string activeProfile = kDefaultProfileName;
+    std::vector<ProfileMetadata> profiles;
+};
+
+extern ProfilesConfig g_profilesConfig;
+
+bool IsValidProfileName(const std::string& name);
+void SaveProfile(const std::string& name);
+bool LoadProfile(const std::string& name);
+void SwitchProfile(const std::string& newProfileName);
+void ApplyProfileFields(const Config& src, Config& dst);
+bool LoadProfilesConfig();
+void SaveProfilesConfig();
+bool EnsureProfilesConfigReady();
+bool CreateNewProfile(const std::string& name);
+bool DuplicateProfile(const std::string& srcName, const std::string& dstName);
+void DeleteProfile(const std::string& name);
+bool RenameProfile(const std::string& oldName, const std::string& newName);
+bool UpdateProfileMetadata(const std::string& currentName, const std::string& newName, const float color[3]);
+bool SaveProfileSnapshot(const std::string& name, const Config& configSnapshot);
+bool SaveProfileSnapshotIfTracked(const std::string& name, const Config& configSnapshot);
+bool MigrateToProfiles();
+
 struct GameViewportGeometry {
     int gameW = 0, gameH = 0;
     int finalX = 0, finalY = 0, finalW = 0, finalH = 0;
@@ -634,6 +763,7 @@ extern std::atomic<bool> g_showGui;
 extern std::atomic<bool> g_wasCursorVisible;
 extern std::atomic<bool> g_imageOverlaysVisible;
 extern std::atomic<bool> g_windowOverlaysVisible;
+extern std::atomic<bool> g_browserOverlaysVisible;
 extern std::string g_currentlyEditingMirror;
 extern std::atomic<HWND> g_minecraftHwnd;
 extern std::wstring g_toolscreenPath;
@@ -746,6 +876,7 @@ extern std::string g_draggedImageName;
 extern std::mutex g_imageDragMutex;
 
 extern std::atomic<bool> g_windowOverlayDragMode;
+extern std::atomic<bool> g_browserOverlayDragMode;
 
 extern std::string g_gameStateBuffers[2];
 extern std::atomic<int> g_currentGameStateIndex;
@@ -758,20 +889,28 @@ void RenderSettingsGUI();
 void RenderConfigErrorGUI();
 void RenderPerformanceOverlay(bool showPerformanceOverlay);
 void RenderProfilerOverlay(bool showProfiler, bool showPerformanceOverlay);
+void SetGuiTabSelectionOverride(const char* topLevelTabLabel, const char* inputsSubTabLabel = nullptr);
+void ClearGuiTabSelectionOverride();
 
 extern std::atomic<bool> g_welcomeToastVisible;
 extern std::atomic<bool> g_configurePromptDismissedThisSession;
 void RenderWelcomeToast(bool isFullscreen);
+
+void RenderRebindIndicator();
+bool IsRebindIndicatorVisible();
+void InvalidateRebindIndicatorTexture();
 
 void HandleConfigLoadFailed(HDC hDc, BOOL (*oWglSwapBuffers)(HDC));
 void RenderImGuiWithStateProtection(bool useFullProtection);
 void SyncImGuiDisplayMetrics(HWND hwnd);
 void SaveConfig();
 void SaveConfigImmediate();
+bool WaitForConfigSaveIdle(int timeoutMs = 3000);
 void ApplyAppearanceConfig();
 void SaveTheme();
 void LoadTheme();
 void LoadConfig();
+bool RemoveInvalidHotkeyModeReferences(Config& config);
 void CopyToClipboard(HWND hwnd, const std::string& text);
 
 std::string GameTransitionTypeToString(GameTransitionType type);

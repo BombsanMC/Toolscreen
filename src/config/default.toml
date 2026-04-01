@@ -1,9 +1,8 @@
 lang='en'
 disableHookChaining = false
-hookChainingNextTarget = 'Original'
 allowCursorEscape = true
 basicModeEnabled = true
-configVersion = 2
+configVersion = 4
 defaultMode = 'Fullscreen'
 fontPath = 'C:\Windows\Fonts\Arial.ttf'
 fpsLimit = 0
@@ -12,11 +11,12 @@ mirrorMatchColorspace = 'Auto'
 guiHotkey = [162, 73]
 borderlessHotkey = [ ]
 hideAnimationsInGame = true
-limitCaptureFramerate = true
+limitCaptureFramerate = false
+restoreWindowedModeOnFullscreenExit = true
 disableFullscreenPrompt = false
 disableConfigurePrompt = false
-keyRepeatDelay = 0
-keyRepeatStartDelay = 0
+keyRepeatDelay = -1
+keyRepeatStartDelay = -1
 mouseSensitivity = 1.0
 windowOverlay = []
 windowsMouseSpeed = 0
@@ -76,7 +76,7 @@ stretchWidth = 810
 textColor = [ 0, 0, 0 ]
 textColorOpacity = 1.0
 textFontPath = ''
-autoFontSize = true
+fontSizeMode = 'auto'
 textFontSize = 42
 windowHeight = 16384
 windowWidth = 384
@@ -84,6 +84,9 @@ windowWidth = 384
 [keyRebinds]
 enabled = false
 resolveRebindTargetsForHotkeys = true
+allowSystemAltTab = false
+allowSystemAltF4 = false
+indicatorMode = 0
 toggleHotkey = [ ]
 rebinds = []
 
@@ -141,6 +144,7 @@ opacity = 0.75
 path = ''
 pixelatedScaling = false
 relativeTo = 'topLeftScreen'
+relativeSizing = true
 scale = 1.2
 x = 0
 y = 0
@@ -301,7 +305,7 @@ output = { relativeTo = 'centerViewport', relativeX = 0.0, relativeY = 0.0, scal
 
 [[mode]]
 border = { color = [ 255, 255, 255 ], enabled = false, radius = 0, width = 4 }
-height = 1440
+height = 'screenHeight'
 id = 'Fullscreen'
 imageIds = [ 'Ninjabrain Bot' ]
 mirrorGroupIds = []
@@ -312,7 +316,8 @@ modeSensitivityY = 1.0
 sensitivityOverrideEnabled = false
 separateXYSensitivity = false
 stretch = { enabled = true, height = 1440, width = 2560, x = 0, y = 0 }
-width = 2560
+width = 'screenWidth'
+browserOverlayIds = []
 windowOverlayIds = []
 
     [mode.transition]
@@ -354,6 +359,7 @@ sensitivityOverrideEnabled = false
 separateXYSensitivity = false
 stretch = { enabled = false, height = 0, width = 0, x = 0, y = 0 }
 width = 384
+browserOverlayIds = []
 windowOverlayIds = []
 
     [mode.transition]
@@ -395,6 +401,7 @@ sensitivityOverrideEnabled = false
 separateXYSensitivity = false
 stretch = { enabled = false, height = 0, width = 0, x = 0, y = 0 }
 width = 384
+browserOverlayIds = []
 windowOverlayIds = []
 
     [mode.transition]
@@ -436,6 +443,7 @@ sensitivityOverrideEnabled = false
 separateXYSensitivity = false
 stretch = { enabled = false, height = 0, width = 0, x = 0, y = 0 }
 width = 'max(330, roundEven(screenWidth / 8))'
+browserOverlayIds = []
 windowOverlayIds = []
 
     [mode.transition]
@@ -477,6 +485,7 @@ sensitivityOverrideEnabled = false
 separateXYSensitivity = false
 stretch = { enabled = false, height = 0, width = 0, x = 0, y = 0 }
 width = "roundEven(screenWidth * 0.98)"
+browserOverlayIds = []
 windowOverlayIds = []
 
     [mode.transition]

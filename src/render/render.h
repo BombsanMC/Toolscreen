@@ -104,6 +104,9 @@ struct GLState {
     GLint t;
     GLint t0;
     GLint t1;
+    GLint smp;
+    GLint smp0;
+    GLint smp1;
     GLint ab;
     GLint va;
     GLint fb;
@@ -117,8 +120,11 @@ struct GLState {
     GLboolean ste;
     GLboolean srgb_enabled;
     GLboolean depth_mask;
+    GLboolean rasterizer_discard;
+    GLboolean color_logic_op;
 
     GLint blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
+    GLint blend_eq_rgb, blend_eq_alpha;
     GLint draw_buffer;
     GLint read_buffer;
 
@@ -126,6 +132,7 @@ struct GLState {
     GLint sb[4];
 
     GLfloat cc[4];
+    GLfloat blend_color[4];
     GLfloat lw;
     GLboolean color_mask[4];
 };
@@ -171,10 +178,19 @@ extern std::unordered_map<std::string, MirrorInstance> g_mirrorInstances;
 
 struct BackgroundTextureInstance {
     GLuint textureId = 0;
+    int width = 0;
+    int height = 0;
+    int textureStorageHeight = 0;
+    int frameCount = 1;
+    int framesPerTexture = 1;
 
     bool isAnimated = false;
+    bool isVideo = false;
     std::vector<GLuint> frameTextures;
+    std::vector<int> frameTextureHeights;
     std::vector<int> frameDelays;
+    std::vector<uint64_t> frameEndTimesMs;
+    uint64_t totalAnimationDurationMs = 0;
     size_t currentFrame = 0;
     std::chrono::steady_clock::time_point lastFrameTime;
 };
@@ -191,7 +207,9 @@ extern int g_sceneW;
 extern int g_sceneH;
 
 // --- Mutex Protection for GPU Resource Maps ---
-// These maps are accessed from multiple threads (render + GUI)
+// These maps are accessed from multiple threads (render + GUI).
+// Lock ordering (when nesting): g_mirrorInstancesMutex > g_backgroundTexturesMutex
+//   > g_userImagesMutex > g_texturesToDeleteMutex
 extern std::shared_mutex g_mirrorInstancesMutex;
 extern std::mutex g_userImagesMutex;
 extern std::mutex g_backgroundTexturesMutex;
@@ -213,6 +231,9 @@ enum class ResizeCorner;
 extern std::string s_hoveredWindowOverlayName;
 extern std::string s_draggedWindowOverlayName;
 extern bool s_isWindowOverlayDragging;
+extern std::string s_hoveredBrowserOverlayName;
+extern std::string s_draggedBrowserOverlayName;
+extern bool s_isBrowserOverlayDragging;
 extern bool s_isWindowOverlayResizing;
 
 void InitializeShaders();
@@ -224,6 +245,7 @@ void DrawOverlayBorder(float nx1, float ny1, float nx2, float ny2, float borderW
 void RenderGameBorder(int x, int y, int w, int h, int borderWidth, int radius, const Color& color, int fullW, int fullH);
 
 void DiscardAllGPUImages();
+void DiscardUnusedUserImageCaches();
 void CleanupGPUResources();
 void ProcessPendingDecodedImages();
 void UploadDecodedImageToGPU(const DecodedImageData& imgData);
@@ -239,13 +261,20 @@ void RenderMirrors(const std::vector<MirrorConfig>& activeMirrors, const GameVie
                    float modeOpacity = 1.0f, bool excludeOnlyOnMyScreen = false);
 void RenderImages(const std::vector<ImageConfig>& activeImages, int fullW, int fullH, float modeOpacity = 1.0f,
                   bool excludeOnlyOnMyScreen = false);
-void CollectActiveElementsForMode(const Config& config, const std::string& modeId, bool onlyOnMyScreenPass, uint64_t configVersion,
+void CollectActiveElementsForMode(const Config& config, const std::string& modeId, bool onlyOnMyScreenPass,
                                   std::vector<MirrorConfig>& outMirrors, std::vector<ImageConfig>& outImages,
-                                  std::vector<const WindowOverlayConfig*>& outWindowOverlays);
+                                  std::vector<WindowOverlayConfig>& outWindowOverlays,
+                                  std::vector<BrowserOverlayConfig>& outBrowserOverlays);
+bool RenderModeOverlaysForIntegrationTest(const Config& config, const ModeConfig& modeToRender, const GLState& s, int fullW,
+                                          int fullH, int gameX, int gameY, int gameW, int gameH,
+                                          bool excludeOnlyOnMyScreen = false, GLuint gameTextureId = 0,
+                                          bool renderGui = false);
 void RenderMode(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH, bool skipAnimation = false,
                 bool excludeOnlyOnMyScreen = false);
 bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH,
-                              bool skipAnimation = false, bool captureVirtualCameraFrame = false);
+                              bool skipAnimation = false);
+void CaptureSameThreadVirtualCameraBackbufferFrame(int sourceW, int sourceH, bool captureVirtualCameraFrame);
+void ResetSameThreadVirtualCameraCaptureState();
 void RenderModeWithOpacity(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH, float opacity,
                            bool skipBackgroundClear = false);
 void RenderDebugBordersForMirror(const MirrorConfig* conf, Color captureColor, Color outputColor, GLint originalVAO);

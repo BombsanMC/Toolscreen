@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "common/video_media.h"
 #include "gui/gui.h"
 #include "runtime/logic_thread.h"
 #include "render/mirror_thread.h"
@@ -21,6 +22,7 @@ extern std::atomic<GLuint> g_cachedGameTextureId;
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <shared_mutex>
 #include <sstream>
 #include <thread>
@@ -34,6 +36,43 @@ extern std::atomic<GLuint> g_cachedGameTextureId;
 static std::atomic<bool> g_symbolsInitialized{ false };
 static std::atomic<bool> g_symbolInitAttempted{ false };
 static std::mutex g_symbolMutex;
+
+namespace {
+constexpr size_t kMaxGifLoadBytes = 256ull * 1024ull * 1024ull;
+constexpr size_t kMaxDecodedImageBytes = 512ull * 1024ull * 1024ull;
+constexpr size_t kMaxScreenshotBytes = 512ull * 1024ull * 1024ull;
+
+bool TryMultiplySize(size_t left, size_t right, size_t& out) {
+    if (left == 0 || right == 0) {
+        out = 0;
+        return true;
+    }
+    if (left > (std::numeric_limits<size_t>::max)() / right) { return false; }
+    out = left * right;
+    return true;
+}
+
+bool TryComputeImageByteCount(int width, int height, int channels, size_t& outBytes) {
+    if (width <= 0 || height <= 0 || channels <= 0) { return false; }
+
+    size_t pixelCount = 0;
+    if (!TryMultiplySize(static_cast<size_t>(width), static_cast<size_t>(height), pixelCount)) { return false; }
+    return TryMultiplySize(pixelCount, static_cast<size_t>(channels), outBytes);
+}
+
+std::string FormatByteCount(size_t bytes) {
+    const size_t mib = 1024ull * 1024ull;
+    return std::to_string(bytes) + " bytes (" + std::to_string(bytes / mib) + " MiB)";
+}
+
+size_t GetConfiguredVideoCacheBudgetBytes(int budgetMiB) {
+    if (budgetMiB <= 0) {
+        return 0;
+    }
+
+    return static_cast<size_t>(budgetMiB) * 1024ull * 1024ull;
+}
+} // namespace
 
 void EnsureSymbolsInitialized();
 
@@ -493,6 +532,478 @@ bool CompressFileToGzip(const std::wstring& srcPath, const std::wstring& dstPath
     return true;
 }
 
+namespace {
+constexpr wchar_t kLogOwnerSuffix[] = L".owner";
+constexpr size_t kLogOwnerSuffixLength = (sizeof(kLogOwnerSuffix) / sizeof(kLogOwnerSuffix[0])) - 1;
+constexpr uint64_t kTransientOwnerGraceMs = 5000;
+
+uint64_t FileTimeToUint64(const FILETIME& fileTime) {
+    ULARGE_INTEGER value{};
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    return value.QuadPart;
+}
+
+bool GetFileLastWriteTime(const std::wstring& path, FILETIME& outLastWriteTime) {
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) {
+        return false;
+    }
+
+    outLastWriteTime = attributes.ftLastWriteTime;
+    return true;
+}
+
+bool PathExists(const std::wstring& path) {
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+std::wstring BuildLatestLogFilename(size_t slotIndex) {
+    if (slotIndex == 0) {
+        return L"latest.log";
+    }
+
+    return L"latest-" + std::to_wstring(slotIndex) + L".log";
+}
+
+bool ParseLatestLogFilename(const std::wstring& fileName, size_t& outSlotIndex) {
+    if (fileName == L"latest.log") {
+        outSlotIndex = 0;
+        return true;
+    }
+
+    if (!fileName.starts_with(L"latest-") || !fileName.ends_with(L".log")) {
+        return false;
+    }
+
+    const std::wstring slotText = fileName.substr(7, fileName.size() - 11);
+    if (slotText.empty()) {
+        return false;
+    }
+
+    size_t slotIndex = 0;
+    for (wchar_t ch : slotText) {
+        if (ch < L'0' || ch > L'9') {
+            return false;
+        }
+
+        slotIndex = (slotIndex * 10) + static_cast<size_t>(ch - L'0');
+    }
+
+    if (slotIndex == 0) {
+        return false;
+    }
+
+    outSlotIndex = slotIndex;
+    return true;
+}
+
+bool ParseOwnerFileName(const std::wstring& fileName, size_t& outSlotIndex) {
+    if (!fileName.ends_with(kLogOwnerSuffix)) {
+        return false;
+    }
+
+    return ParseLatestLogFilename(fileName.substr(0, fileName.size() - kLogOwnerSuffixLength), outSlotIndex);
+}
+
+std::wstring BuildOwnerFilePath(const std::wstring& logFilePath) {
+    return logFilePath + kLogOwnerSuffix;
+}
+
+bool GetProcessStartFileTime(DWORD processId, uint64_t& outProcessStartFileTime) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process) {
+        return false;
+    }
+
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    const BOOL success = GetProcessTimes(process, &creationTime, &exitTime, &kernelTime, &userTime);
+    CloseHandle(process);
+
+    if (!success) {
+        return false;
+    }
+
+    outProcessStartFileTime = FileTimeToUint64(creationTime);
+    return true;
+}
+
+bool TryParseUint64(const std::string& text, uint64_t& outValue) {
+    if (text.empty()) {
+        return false;
+    }
+
+    uint64_t value = 0;
+    for (char ch : text) {
+        if (ch < '0' || ch > '9') {
+            return false;
+        }
+
+        value = (value * 10u) + static_cast<uint64_t>(ch - '0');
+    }
+
+    outValue = value;
+    return true;
+}
+
+bool TryParseOwnerFile(const std::wstring& ownerFilePath, LogInstanceInfo& outInfo) {
+    std::ifstream in(std::filesystem::path(ownerFilePath), std::ios::binary);
+    if (!in.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    std::string logPathUtf8;
+    bool foundPid = false;
+    bool foundStartTime = false;
+    while (std::getline(in, line)) {
+        const size_t equalsPos = line.find('=');
+        if (equalsPos == std::string::npos) {
+            continue;
+        }
+
+        const std::string key = line.substr(0, equalsPos);
+        const std::string value = line.substr(equalsPos + 1);
+        if (key == "pid") {
+            uint64_t parsedPid = 0;
+            if (!TryParseUint64(value, parsedPid) || parsedPid > static_cast<uint64_t>(std::numeric_limits<DWORD>::max())) {
+                return false;
+            }
+
+            outInfo.processId = static_cast<DWORD>(parsedPid);
+            foundPid = true;
+        } else if (key == "processStartFileTime") {
+            if (!TryParseUint64(value, outInfo.processStartFileTime)) {
+                return false;
+            }
+
+            foundStartTime = true;
+        } else if (key == "logFile") {
+            logPathUtf8 = value;
+        }
+    }
+
+    if (!foundPid || !foundStartTime || logPathUtf8.empty()) {
+        return false;
+    }
+
+    outInfo.logFilePath = Utf8ToWide(logPathUtf8);
+    return !outInfo.logFilePath.empty();
+}
+
+bool IsLiveLogInstance(const LogInstanceInfo& info) {
+    if (info.processId == 0 || info.processStartFileTime == 0 || info.logFilePath.empty()) {
+        return false;
+    }
+
+    uint64_t currentProcessStartFileTime = 0;
+    return GetProcessStartFileTime(info.processId, currentProcessStartFileTime) &&
+           currentProcessStartFileTime == info.processStartFileTime;
+}
+
+struct OwnerFileState {
+    bool exists = false;
+    bool live = false;
+    bool stale = false;
+    LogInstanceInfo instance;
+};
+
+OwnerFileState InspectOwnerFile(const std::wstring& ownerFilePath) {
+    OwnerFileState state;
+    state.exists = PathExists(ownerFilePath);
+    if (!state.exists) {
+        return state;
+    }
+
+    if (TryParseOwnerFile(ownerFilePath, state.instance)) {
+        if (IsLiveLogInstance(state.instance)) {
+            state.live = true;
+            return state;
+        }
+
+        state.stale = true;
+        return state;
+    }
+
+    FILETIME lastWriteTime{};
+    if (!GetFileLastWriteTime(ownerFilePath, lastWriteTime)) {
+        state.live = true;
+        return state;
+    }
+
+    FILETIME nowFileTime{};
+    GetSystemTimeAsFileTime(&nowFileTime);
+    const uint64_t now = FileTimeToUint64(nowFileTime);
+    const uint64_t lastWrite = FileTimeToUint64(lastWriteTime);
+    const uint64_t ageMs = now > lastWrite ? (now - lastWrite) / 10000u : 0;
+    if (ageMs > kTransientOwnerGraceMs) {
+        state.stale = true;
+    } else {
+        state.live = true;
+    }
+
+    return state;
+}
+
+std::vector<size_t> GatherKnownLatestLogSlots(const std::wstring& logsDirectory) {
+    std::vector<size_t> slots;
+    std::error_code error;
+    if (!std::filesystem::exists(std::filesystem::path(logsDirectory), error)) {
+        return slots;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(logsDirectory), error)) {
+        if (error) {
+            break;
+        }
+
+        const std::wstring fileName = entry.path().filename().wstring();
+        size_t slotIndex = 0;
+        if (ParseLatestLogFilename(fileName, slotIndex) || ParseOwnerFileName(fileName, slotIndex)) {
+            slots.push_back(slotIndex);
+        }
+    }
+
+    std::sort(slots.begin(), slots.end());
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+    return slots;
+}
+
+std::wstring GetArchiveTimestampString(const std::wstring& logFilePath) {
+    FILETIME lastWriteTime{};
+    if (!GetFileLastWriteTime(logFilePath, lastWriteTime)) {
+        GetSystemTimeAsFileTime(&lastWriteTime);
+    }
+
+    FILETIME localFileTime{};
+    if (!FileTimeToLocalFileTime(&lastWriteTime, &localFileTime)) {
+        localFileTime = lastWriteTime;
+    }
+
+    SYSTEMTIME localSystemTime{};
+    if (!FileTimeToSystemTime(&localFileTime, &localSystemTime)) {
+        GetLocalTime(&localSystemTime);
+    }
+
+    wchar_t timestamp[32]{};
+    swprintf_s(timestamp,
+               L"%04d%02d%02d_%02d%02d%02d",
+               localSystemTime.wYear,
+               localSystemTime.wMonth,
+               localSystemTime.wDay,
+               localSystemTime.wHour,
+               localSystemTime.wMinute,
+               localSystemTime.wSecond);
+    return timestamp;
+}
+
+std::wstring MakeUniqueArchivedLogPath(const std::wstring& logsDirectory, const std::wstring& timestamp) {
+    for (int counter = 0; counter < 1000; ++counter) {
+        const std::wstring suffix = counter == 0 ? L"" : (L"_" + std::to_wstring(counter));
+        const std::wstring archivedLogPath = logsDirectory + L"\\" + timestamp + suffix + L".log";
+        if (!PathExists(archivedLogPath) && !PathExists(archivedLogPath + L".gz")) {
+            return archivedLogPath;
+        }
+    }
+
+    return logsDirectory + L"\\" + timestamp + L"_" + std::to_wstring(GetTickCount64()) + L".log";
+}
+
+std::wstring ArchiveLatestLogFile(const std::wstring& logsDirectory, const std::wstring& logFilePath) {
+    if (!PathExists(logFilePath)) {
+        return std::wstring();
+    }
+
+    const std::wstring archivedLogPath = MakeUniqueArchivedLogPath(logsDirectory, GetArchiveTimestampString(logFilePath));
+    if (!MoveFileW(logFilePath.c_str(), archivedLogPath.c_str())) {
+        return std::wstring();
+    }
+
+    return archivedLogPath;
+}
+
+void CleanupStaleLatestLogs(const std::wstring& logsDirectory) {
+    for (const size_t slotIndex : GatherKnownLatestLogSlots(logsDirectory)) {
+        const std::wstring logFilePath = logsDirectory + L"\\" + BuildLatestLogFilename(slotIndex);
+        const std::wstring ownerFilePath = BuildOwnerFilePath(logFilePath);
+        const OwnerFileState ownerState = InspectOwnerFile(ownerFilePath);
+        if (ownerState.live) {
+            continue;
+        }
+
+        if (ownerState.exists) {
+            DeleteFileW(ownerFilePath.c_str());
+        }
+
+        const std::wstring archivedLogPath = ArchiveLatestLogFile(logsDirectory, logFilePath);
+        if (!archivedLogPath.empty()) {
+            QueueArchivedLogCompression(archivedLogPath);
+        }
+    }
+}
+
+std::vector<LogInstanceInfo> EnumerateLiveLogInstances(const std::wstring& logsDirectory) {
+    std::vector<LogInstanceInfo> instances;
+    for (const size_t slotIndex : GatherKnownLatestLogSlots(logsDirectory)) {
+        const std::wstring logFilePath = logsDirectory + L"\\" + BuildLatestLogFilename(slotIndex);
+        const OwnerFileState ownerState = InspectOwnerFile(BuildOwnerFilePath(logFilePath));
+        if (!ownerState.live) {
+            continue;
+        }
+
+        LogInstanceInfo info = ownerState.instance;
+        if (info.logFilePath.empty()) {
+            info.logFilePath = logFilePath;
+        }
+        instances.push_back(std::move(info));
+    }
+
+    std::sort(instances.begin(), instances.end(), [](const LogInstanceInfo& left, const LogInstanceInfo& right) {
+        return left.logFilePath < right.logFilePath;
+    });
+    return instances;
+}
+
+bool WriteOwnerFile(HANDLE ownerHandle, const LogSession& session) {
+    const std::string contents = "pid=" + std::to_string(session.processId) + "\n" +
+                                 "processStartFileTime=" + std::to_string(session.processStartFileTime) + "\n" +
+                                 "logFile=" + WideToUtf8(session.logFilePath) + "\n";
+
+    DWORD bytesWritten = 0;
+    if (!WriteFile(ownerHandle, contents.data(), static_cast<DWORD>(contents.size()), &bytesWritten, nullptr)) {
+        return false;
+    }
+
+    if (bytesWritten != contents.size()) {
+        return false;
+    }
+
+    return FlushFileBuffers(ownerHandle) == TRUE;
+}
+
+std::string FormatLocalDateTimeForHeader() {
+    const auto now = std::chrono::system_clock::now();
+    const auto timeValue = std::chrono::system_clock::to_time_t(now);
+
+    std::tm localTime{};
+    localtime_s(&localTime, &timeValue);
+
+    std::ostringstream stream;
+    stream << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S");
+    return stream.str();
+}
+} // namespace
+
+bool AcquireLatestLogSession(const std::wstring& logsDirectory, LogSession& outSession) {
+    outSession = LogSession{};
+    if (logsDirectory.empty()) {
+        return false;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(std::filesystem::path(logsDirectory), error);
+    if (error) {
+        return false;
+    }
+
+    LogSession session;
+    session.logsDirectory = logsDirectory;
+    session.processId = GetCurrentProcessId();
+    GetProcessStartFileTime(session.processId, session.processStartFileTime);
+
+    CleanupStaleLatestLogs(logsDirectory);
+
+    for (size_t slotIndex = 0; slotIndex < 1024; ++slotIndex) {
+        session.slotIndex = slotIndex;
+        session.logFilePath = logsDirectory + L"\\" + BuildLatestLogFilename(slotIndex);
+        session.ownerFilePath = BuildOwnerFilePath(session.logFilePath);
+
+        const OwnerFileState ownerState = InspectOwnerFile(session.ownerFilePath);
+        if (ownerState.live) {
+            continue;
+        }
+
+        if (ownerState.exists) {
+            DeleteFileW(session.ownerFilePath.c_str());
+
+            const std::wstring archivedLogPath = ArchiveLatestLogFile(logsDirectory, session.logFilePath);
+            if (!archivedLogPath.empty()) {
+                QueueArchivedLogCompression(archivedLogPath);
+            }
+        } else if (PathExists(session.logFilePath)) {
+            const std::wstring archivedLogPath = ArchiveLatestLogFile(logsDirectory, session.logFilePath);
+            if (!archivedLogPath.empty()) {
+                QueueArchivedLogCompression(archivedLogPath);
+            }
+        }
+
+        HANDLE ownerHandle =
+            CreateFileW(session.ownerFilePath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (ownerHandle == INVALID_HANDLE_VALUE) {
+            const DWORD lastError = GetLastError();
+            if (lastError == ERROR_FILE_EXISTS || lastError == ERROR_ALREADY_EXISTS) {
+                continue;
+            }
+
+            continue;
+        }
+
+        const bool wroteOwnerFile = WriteOwnerFile(ownerHandle, session);
+        CloseHandle(ownerHandle);
+        if (!wroteOwnerFile) {
+            DeleteFileW(session.ownerFilePath.c_str());
+            continue;
+        }
+
+        session.otherOpenInstances.clear();
+        for (const LogInstanceInfo& instance : EnumerateLiveLogInstances(logsDirectory)) {
+            if (instance.processId == session.processId && instance.processStartFileTime == session.processStartFileTime &&
+                instance.logFilePath == session.logFilePath) {
+                continue;
+            }
+
+            session.otherOpenInstances.push_back(instance);
+        }
+
+        outSession = std::move(session);
+        return true;
+    }
+
+    return false;
+}
+
+void ReleaseLatestLogSession(LogSession& session) {
+    if (!session.ownerFilePath.empty()) {
+        DeleteFileW(session.ownerFilePath.c_str());
+    }
+
+    session = LogSession{};
+}
+
+std::string BuildLogSessionHeader(const LogSession& session) {
+    std::ostringstream stream;
+    stream << "========================================\n";
+    stream << "Toolscreen log session\n";
+    stream << "Started local time: " << FormatLocalDateTimeForHeader() << "\n";
+    stream << "Process ID: " << session.processId << "\n";
+    stream << "Process start FILETIME: " << session.processStartFileTime << "\n";
+    stream << "Log file: " << WideToUtf8(session.logFilePath) << "\n";
+    stream << "Other open instances at startup: " << session.otherOpenInstances.size() << "\n";
+    if (session.otherOpenInstances.empty()) {
+        stream << "  (none)\n";
+    } else {
+        for (const LogInstanceInfo& instance : session.otherOpenInstances) {
+            stream << "  - pid=" << instance.processId << ", start=" << instance.processStartFileTime
+                   << ", log=" << WideToUtf8(instance.logFilePath) << "\n";
+        }
+    }
+    stream << "========================================\n\n";
+    return stream.str();
+}
+
 // Uses a lock-free ring buffer for zero-contention log submission.
 // A background thread writes to disk every 500ms.
 
@@ -506,6 +1017,8 @@ static constexpr size_t LOG_BUFFER_SIZE = 8192;
 static LogEntry g_logBuffer[LOG_BUFFER_SIZE];
 static std::atomic<size_t> g_logClaimIndex{ 0 };
 static std::atomic<size_t> g_logReadIndex{ 0 };
+static std::mutex g_logArchiveQueueMutex;
+static std::vector<std::wstring> g_pendingLogArchives;
 
 // Background writer thread
 static std::thread g_logThread;
@@ -514,6 +1027,31 @@ static std::atomic<bool> g_logThreadRunning{ false };
 static void LogThreadMain();
 static void WriteLogsToFile();
 
+static void ProcessPendingLogArchives() {
+    std::vector<std::wstring> pendingArchives;
+    {
+        std::lock_guard<std::mutex> lock(g_logArchiveQueueMutex);
+        if (g_pendingLogArchives.empty()) return;
+        pendingArchives.swap(g_pendingLogArchives);
+    }
+
+    for (const std::wstring& archiveSrc : pendingArchives) {
+        const std::wstring gzPath = archiveSrc + L".gz";
+        if (CompressFileToGzip(archiveSrc, gzPath)) {
+            DeleteFileW(archiveSrc.c_str());
+        }
+    }
+}
+
+void QueueArchivedLogCompression(const std::wstring& archivedLogPath) {
+    if (archivedLogPath.empty()) return;
+
+    std::lock_guard<std::mutex> lock(g_logArchiveQueueMutex);
+    g_pendingLogArchives.push_back(archivedLogPath);
+}
+
+void ProcessQueuedArchivedLogCompressions() { ProcessPendingLogArchives(); }
+
 void StartLogThread() {
     if (g_logThreadRunning.load()) return;
     g_logThreadRunning.store(true);
@@ -521,18 +1059,23 @@ void StartLogThread() {
 }
 
 void StopLogThread() {
-    if (!g_logThreadRunning.load()) return;
-    g_logThreadRunning.store(false);
-    if (g_logThread.joinable()) { g_logThread.join(); }
-    // Final flush after thread stops
+    if (g_logThreadRunning.load()) {
+        g_logThreadRunning.store(false);
+        if (g_logThread.joinable()) { g_logThread.join(); }
+    }
+
     FlushLogs();
+    ProcessQueuedArchivedLogCompressions();
 }
 
 static void LogThreadMain() {
     while (g_logThreadRunning.load()) {
         WriteLogsToFile();
+        ProcessPendingLogArchives();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+
+    ProcessPendingLogArchives();
 }
 
 // Internal: Write all pending log entries to file (called by background thread or FlushLogs)
@@ -945,28 +1488,16 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
     std::string currentMode;
 
     LogCategory("mode_switch", "[MODE_SWITCH] Acquiring g_modeIdMutex...");
-    // Get current mode - keep lock minimal, no I/O inside
-    {
-        std::lock_guard<std::mutex> lock(g_modeIdMutex);
-        LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex acquired");
-        currentMode = g_currentModeId;
+    // Keep the mode ID publication serialized with StartModeTransition so render readers
+    // never observe the new mode before the transition snapshot is ready.
+    std::unique_lock<std::mutex> modeLock(g_modeIdMutex);
+    LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex acquired");
+    currentMode = g_currentModeId;
 
-        if (EqualsIgnoreCase(currentMode, newModeId)) {
-            Log("Mode switch to '" + newModeId + "' requested, but already in that mode.");
-            return false;
-        }
-
-        g_currentModeId = newModeId;
-        // Update lock-free double-buffer for input handlers
-        int nextIndex = 1 - g_currentModeIdIndex.load(std::memory_order_relaxed);
-        g_modeIdBuffers[nextIndex] = newModeId;
-        g_currentModeIdIndex.store(nextIndex, std::memory_order_release);
-        LogCategory("mode_switch", "[MODE_SWITCH] g_currentModeId updated to: " + newModeId);
+    if (EqualsIgnoreCase(currentMode, newModeId)) {
+        Log("Mode switch to '" + newModeId + "' requested, but already in that mode.");
+        return false;
     }
-    LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex released");
-
-    // Async file write OUTSIDE the mutex - never blocks
-    WriteCurrentModeToFile(newModeId);
 
     std::string logMessage = "[MODE] Switching from '" + currentMode + "' to '" + newModeId + "'";
     if (!source.empty()) { logMessage += " (source: " + source + ")"; }
@@ -1058,10 +1589,17 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
         if (!useAnimatedPosition) {
             if (fromMode) {
                 if (fromMode->stretch.enabled) {
-                    fromWidth = fromMode->stretch.width;
-                    fromHeight = fromMode->stretch.height;
-                    fromX = fromMode->stretch.x;
-                    fromY = fromMode->stretch.y;
+                    if (EqualsIgnoreCase(fromMode->id, "Fullscreen")) {
+                        fromWidth = fullW;
+                        fromHeight = fullH;
+                        fromX = 0;
+                        fromY = 0;
+                    } else {
+                        fromWidth = fromMode->stretch.width;
+                        fromHeight = fromMode->stretch.height;
+                        fromX = fromMode->stretch.x;
+                        fromY = fromMode->stretch.y;
+                    }
                 } else {
                     fromWidth = fromMode->width;
                     fromHeight = fromMode->height;
@@ -1078,10 +1616,17 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
 
         if (toMode) {
             if (toMode->stretch.enabled) {
-                toWidth = toMode->stretch.width;
-                toHeight = toMode->stretch.height;
-                toX = toMode->stretch.x;
-                toY = toMode->stretch.y;
+                if (EqualsIgnoreCase(toMode->id, "Fullscreen")) {
+                    toWidth = fullW;
+                    toHeight = fullH;
+                    toX = 0;
+                    toY = 0;
+                } else {
+                    toWidth = toMode->stretch.width;
+                    toHeight = toMode->stretch.height;
+                    toX = toMode->stretch.x;
+                    toY = toMode->stretch.y;
+                }
             } else {
                 toWidth = toMode->width;
                 toHeight = toMode->height;
@@ -1154,6 +1699,18 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
                     ", Bg:" + BackgroundTransitionTypeToString(toModeCopy.backgroundTransition));
     StartModeTransition(currentMode, newModeId, fromWidth, fromHeight, fromX, fromY, toWidth, toHeight, toX, toY, toModeCopy);
     LogCategory("mode_switch", "[MODE_SWITCH] StartModeTransition completed");
+
+    g_currentModeId = newModeId;
+    int nextIndex = 1 - g_currentModeIdIndex.load(std::memory_order_relaxed);
+    g_modeIdBuffers[nextIndex] = newModeId;
+    g_currentModeIdIndex.store(nextIndex, std::memory_order_release);
+    LogCategory("mode_switch", "[MODE_SWITCH] Published new active mode after transition setup: " + newModeId);
+
+    modeLock.unlock();
+    LogCategory("mode_switch", "[MODE_SWITCH] g_modeIdMutex released");
+
+    // Async file write OUTSIDE the mutex - never blocks
+    WriteCurrentModeToFile(newModeId);
 
     return true;
 }
@@ -1297,10 +1854,17 @@ ModeViewportInfo GetCurrentModeViewport_Internal() {
 
     info.stretchEnabled = mode->stretch.enabled;
     if (mode->stretch.enabled) {
-        info.stretchX = mode->stretch.x;
-        info.stretchY = mode->stretch.y;
-        info.stretchWidth = mode->stretch.width;
-        info.stretchHeight = mode->stretch.height;
+        if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
+            info.stretchX = 0;
+            info.stretchY = 0;
+            info.stretchWidth = screenW;
+            info.stretchHeight = screenH;
+        } else {
+            info.stretchX = mode->stretch.x;
+            info.stretchY = mode->stretch.y;
+            info.stretchWidth = mode->stretch.width;
+            info.stretchHeight = mode->stretch.height;
+        }
     } else {
         info.stretchX = screenW / 2 - mode->width / 2;
         info.stretchY = screenH / 2 - mode->height / 2;
@@ -1362,11 +1926,14 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
         return;
     }
 
-    std::thread([type, id, path, toolscreenPath]() {
+    const int videoCacheBudgetMiB = g_config.debug.videoCacheBudgetMiB;
+    const size_t videoCacheBudgetBytes = GetConfiguredVideoCacheBudgetBytes(videoCacheBudgetMiB);
+
+    std::thread([type, id, path, toolscreenPath, videoCacheBudgetMiB, videoCacheBudgetBytes]() {
         _set_se_translator(SEHTranslator);
 
         try {
-            Log("Started thread for loading image '" + id + "' from path '" + path + "'");
+            LogCategory("image_monitor", "Started thread for loading image '" + id + "' from path '" + path + "'");
             try {
                 if (g_isShuttingDown.load()) { return; }
 
@@ -1379,19 +1946,54 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
                 }
                 std::string path_utf8 = WideToUtf8(final_path);
 
-                bool isGif = false;
-                if (path.size() >= 4) {
-                    std::string ext = path.substr(path.size() - 4);
-                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                    isGif = (ext == ".gif");
+                const VisualMediaKind mediaKind = DetectVisualMediaKindFromPath(path);
+                const bool isGif = mediaKind == VisualMediaKind::AnimatedGif;
+                const bool isVideo = mediaKind == VisualMediaKind::VideoMpeg1;
+                if (mediaKind == VisualMediaKind::Unsupported) {
+                    LogCategory("image_monitor",
+                                "Skipping unsupported visual media for '" + id + "' from '" + path + "'. " +
+                                    DescribeSupportedVisualMediaFormats());
+                    return;
                 }
 
                 int w, h, c;
                 unsigned char* data = nullptr;
                 int frameCount = 0;
                 int* delays = nullptr;
+                std::vector<int> decodedFrameDelays;
 
-                if (isGif) {
+                if (isVideo) {
+                    CachedMpegVideoResult cachedVideo;
+                    if (videoCacheBudgetBytes == 0) {
+                        LogCategory("image_monitor",
+                                    "Skipping MPEG-1 video '" + id + "' from '" + path +
+                                        "' because debug.videoCacheBudgetMiB is set to 0 and live streaming playback is disabled.");
+                        return;
+                    }
+
+                    if (DecodeCachedMpegVideoFile(path_utf8, videoCacheBudgetBytes, cachedVideo)) {
+                        w = cachedVideo.width;
+                        h = cachedVideo.height;
+                        c = 4;
+                        frameCount = cachedVideo.frameCount;
+                        decodedFrameDelays = std::move(cachedVideo.frameDelaysMs);
+
+                        if (!cachedVideo.rgbaFrames.empty()) {
+                            const size_t byteCount = cachedVideo.rgbaFrames.size();
+                            data = static_cast<unsigned char*>(malloc(byteCount));
+                            if (data) {
+                                memcpy(data, cachedVideo.rgbaFrames.data(), byteCount);
+                            }
+                        }
+                    } else {
+                        LogCategory("image_monitor",
+                                    "Skipping MPEG-1 video '" + id + "' from '" + path + "' because it could not be cached within the configured budget of " +
+                                        std::to_string(videoCacheBudgetMiB) + " MiB: " + cachedVideo.error);
+                        return;
+                    }
+                }
+
+                if (!isVideo && isGif) {
                     FILE* f = nullptr;
                     errno_t err = fopen_s(&f, path_utf8.c_str(), "rb");
                     if (err == 0 && f) {
@@ -1399,26 +2001,47 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
                         long fileSize = ftell(f);
                         fseek(f, 0, SEEK_SET);
 
-                        std::vector<unsigned char> fileData(fileSize);
-                        size_t bytesRead = fread(fileData.data(), 1, fileSize, f);
-                        fclose(f);
+                        if (fileSize <= 0) {
+                            LogCategory("image_monitor", "Skipping GIF load for '" + id + "' from '" + path + "' due to invalid file size " +
+                                                           std::to_string(fileSize) + ".");
+                        } else if (static_cast<unsigned long long>(fileSize) > kMaxGifLoadBytes) {
+                            LogCategory("image_monitor",
+                                        "Skipping GIF load for '" + id + "' from '" + path + "' because file size " +
+                                            FormatByteCount(static_cast<size_t>(fileSize)) + " exceeds guard limit of " +
+                                            FormatByteCount(kMaxGifLoadBytes) + ".");
+                        } else if (fileSize > (std::numeric_limits<int>::max)()) {
+                            LogCategory("image_monitor",
+                                        "Skipping GIF load for '" + id + "' from '" + path + "' because file size " +
+                                            FormatByteCount(static_cast<size_t>(fileSize)) + " exceeds stb_image int input range.");
+                        } else {
+                            std::vector<unsigned char> fileData(static_cast<size_t>(fileSize));
+                            size_t bytesRead = fread(fileData.data(), 1, static_cast<size_t>(fileSize), f);
+                            fclose(f);
+                            f = nullptr;
 
-                        if (bytesRead == static_cast<size_t>(fileSize)) {
-                            data = stbi_load_gif_from_memory(fileData.data(), (int)fileSize, &delays, &w, &h, &frameCount, &c, 4);
+                            if (bytesRead == static_cast<size_t>(fileSize)) {
+                                data = stbi_load_gif_from_memory(fileData.data(), static_cast<int>(fileSize), &delays, &w, &h, &frameCount, &c, 4);
 
-                            if (data && frameCount <= 1) {
-                                frameCount = 1;
-                                stbi_image_free(delays);
-                                delays = nullptr;
+                                if (data && frameCount <= 1) {
+                                    frameCount = 1;
+                                    stbi_image_free(delays);
+                                    delays = nullptr;
+                                }
+                            } else {
+                                LogCategory("image_monitor",
+                                            "Failed to read full GIF file for '" + id + "' from '" + path + "'. Expected " +
+                                                std::to_string(fileSize) + " bytes, read " + std::to_string(bytesRead) + ".");
                             }
                         }
+
+                        if (f) { fclose(f); }
                     }
 
                     if (!data) {
                         frameCount = 0;
                         data = stbi_load(path_utf8.c_str(), &w, &h, &c, 4);
                     }
-                } else {
+                } else if (!isVideo) {
                     data = stbi_load(path_utf8.c_str(), &w, &h, &c, 4);
                 }
 
@@ -1429,24 +2052,69 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
                 }
 
                 if (data && w > 0 && h > 0) {
+                    int decodedHeight = h;
+                    if (frameCount > 1) {
+                        long long totalHeight = static_cast<long long>(h) * static_cast<long long>(frameCount);
+                        if (frameCount <= 0 || totalHeight <= 0 || totalHeight > (std::numeric_limits<int>::max)()) {
+                            LogCategory("image_monitor",
+                                        "Skipping decoded animated image '" + id + "' from '" + path +
+                                            "' because frame dimensions are invalid: frameCount=" + std::to_string(frameCount) +
+                                            ", frameHeight=" + std::to_string(h) + ".");
+                            stbi_image_free(data);
+                            if (delays) stbi_image_free(delays);
+                            return;
+                        }
+                        decodedHeight = static_cast<int>(totalHeight);
+                    }
+
+                    size_t decodedBytes = 0;
+                    if (!TryComputeImageByteCount(w, decodedHeight, 4, decodedBytes)) {
+                        LogCategory("image_monitor",
+                                    "Skipping decoded image '" + id + "' from '" + path +
+                                        "' because dimensions overflow byte-count calculation: " + std::to_string(w) + "x" +
+                                        std::to_string(decodedHeight) + "x4.");
+                        stbi_image_free(data);
+                        if (delays) stbi_image_free(delays);
+                        return;
+                    }
+                    if (!isVideo && decodedBytes > kMaxDecodedImageBytes) {
+                        LogCategory("image_monitor",
+                                    "Skipping decoded image '" + id + "' from '" + path + "' because estimated pixel storage " +
+                                        FormatByteCount(decodedBytes) + " exceeds guard limit of " +
+                                        FormatByteCount(kMaxDecodedImageBytes) + ".");
+                        stbi_image_free(data);
+                        if (delays) stbi_image_free(delays);
+                        return;
+                    }
+
                     DecodedImageData decoded;
                     decoded.type = type;
                     decoded.id = id;
                     decoded.width = w;
                     decoded.channels = 4;
                     decoded.data = data;
+                    decoded.isVideo = isVideo;
 
                     if (frameCount > 1) {
                         decoded.isAnimated = true;
                         decoded.frameCount = frameCount;
-                        decoded.height = h * frameCount;
+                        decoded.height = decodedHeight;
                         decoded.frameHeight = h;
-                        for (int i = 0; i < frameCount; i++) {
-                            int delayMs = (delays && delays[i] > 0) ? delays[i] : 100;
-                            decoded.frameDelays.push_back(delayMs);
+                        if (!decodedFrameDelays.empty()) {
+                            decoded.frameDelays = decodedFrameDelays;
+                        } else {
+                            for (int i = 0; i < frameCount; i++) {
+                                int delayMs = (delays && delays[i] > 0) ? delays[i] : 100;
+                                decoded.frameDelays.push_back(delayMs);
+                            }
                         }
-                        Log("Loaded animated GIF '" + id + "' with " + std::to_string(frameCount) +
-                            " frames, frame size: " + std::to_string(w) + "x" + std::to_string(h));
+                        if (isVideo) {
+                            Log("Loaded cached MPEG-1 video '" + id + "' with " + std::to_string(frameCount) +
+                                " frames, frame size: " + std::to_string(w) + "x" + std::to_string(h));
+                        } else {
+                            Log("Loaded animated GIF '" + id + "' with " + std::to_string(frameCount) +
+                                " frames, frame size: " + std::to_string(w) + "x" + std::to_string(h));
+                        }
                     } else {
                         decoded.isAnimated = false;
                         decoded.frameCount = 1;
@@ -1458,10 +2126,20 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
 
                     std::lock_guard<std::mutex> lock(g_decodedImagesMutex);
                     g_decodedImagesQueue.push_back(decoded);
-                    Log("Successfully decoded image for '" + id + "' from '" + path + "' on background thread.");
+                    LogCategory("image_monitor", "Successfully decoded visual media for '" + id + "' from '" + path +
+                                                   "' on background thread: " + std::to_string(decoded.width) + "x" +
+                                                   std::to_string(decoded.height) + ", frameCount=" +
+                                                   std::to_string(decoded.frameCount) + ", queueSize=" +
+                                                   std::to_string(g_decodedImagesQueue.size()) + ", bytes=" +
+                                                   FormatByteCount(decodedBytes) + ".");
                 } else {
-                    Log("ERROR: Failed to decode image '" + path + "' for ID '" + id +
-                        "'. Reason: " + (stbi_failure_reason() ? stbi_failure_reason() : "unknown error"));
+                    std::string reason = "unknown error";
+                    if (isVideo) {
+                        reason = "MPEG-1 video could not be decoded into the configured cache budget";
+                    } else if (stbi_failure_reason()) {
+                        reason = stbi_failure_reason();
+                    }
+                    Log("ERROR: Failed to decode visual media '" + path + "' for ID '" + id + "'. Reason: " + reason);
                     if (data) stbi_image_free(data);
                     if (delays) stbi_image_free(delays);
                 }
@@ -1473,7 +2151,7 @@ void LoadImageAsync(DecodedImageData::Type type, std::string id, std::string pat
         } catch (const std::exception& e) { LogException("ImageLoadThread for '" + id + "'", e); } catch (...) {
             Log("EXCEPTION in ImageLoadThread for '" + id + "': Unknown exception");
         }
-        Log("Image load thread for '" + id + "' has completed.");
+        LogCategory("image_monitor", "Image load thread for '" + id + "' has completed.");
     }).detach();
 }
 
@@ -2041,6 +2719,9 @@ void GetRelativeCoordsForImageWithViewport(const std::string& type, int relX, in
 
 void CalculateFinalScreenPos(const MirrorConfig* conf, const MirrorInstance& inst, int gameW, int gameH, int finalX, int finalY, int finalW,
                              int finalH, int fullW, int fullH, int& outScreenX, int& outScreenY) {
+    (void)gameW;
+    (void)gameH;
+
     float scaleX = conf->output.separateScale ? conf->output.scaleX : conf->output.scale;
     float scaleY = conf->output.separateScale ? conf->output.scaleY : conf->output.scale;
     int outW = static_cast<int>(inst.fbo_w * scaleX);
@@ -2061,47 +2742,33 @@ void CalculateFinalScreenPos(const MirrorConfig* conf, const MirrorInstance& ins
 
     if (anchor.length() > 8 && anchor.substr(anchor.length() - 8) == "Viewport") { anchor = anchor.substr(0, anchor.length() - 8); }
 
-    float xScale = (gameW > 0) ? static_cast<float>(finalW) / gameW : 1.0f;
-    float yScale = (gameH > 0) ? static_cast<float>(finalH) / gameH : 1.0f;
-
-    int outW_game = static_cast<int>(outW / xScale);
-    int outH_game = static_cast<int>(outH / yScale);
-
-    int gamePosX, gamePosY;
-    char firstChar = anchor.empty() ? '\0' : anchor[0];
-
-    if (firstChar == 't') {
-        gamePosY = offsetY;
-        if (anchor == "topLeft") {
-            gamePosX = offsetX;
-        } else {
-            gamePosX = gameW - offsetX - outW_game;
-        }
-    } else if (firstChar == 'c') {
-        gamePosX = (gameW - outW_game) / 2 + offsetX;
-        gamePosY = (gameH - outH_game) / 2 + offsetY;
-    } else if (firstChar == 'p') {
-        const int PIE_Y_TOP = 220, PIE_X_LEFT = 92, PIE_X_RIGHT = 36;
-        int pieXOffset = (anchor == "pieLeft") ? PIE_X_LEFT : PIE_X_RIGHT;
-        gamePosX = gameW - pieXOffset + offsetX - outW_game;
-        gamePosY = gameH - PIE_Y_TOP + offsetY - outH_game;
-    } else {
-        gamePosY = gameH - offsetY - outH_game;
-        if (anchor == "bottomRight") {
-            gamePosX = gameW - offsetX - outW_game;
-        } else {
-            gamePosX = offsetX;
-        }
-    }
-
-    outScreenX = finalX + static_cast<int>(gamePosX * xScale);
-    outScreenY = finalY + static_cast<int>(gamePosY * yScale);
+    int relative_x = 0;
+    int relative_y = 0;
+    GetRelativeCoords(anchor, offsetX, offsetY, outW, outH, finalW, finalH, relative_x, relative_y);
+    outScreenX = finalX + relative_x;
+    outScreenY = finalY + relative_y;
 }
 
 void ScreenshotToClipboard(int width, int height) {
     PROFILE_SCOPE_CAT("Screenshot to Clipboard", "System");
-    Log("Taking screenshot...");
-    size_t bufferSize = static_cast<size_t>(width) * height * 4;
+    if (width <= 0 || height <= 0) {
+        Log("ERROR: Screenshot request rejected due to invalid dimensions " + std::to_string(width) + "x" + std::to_string(height) + ".");
+        return;
+    }
+
+    size_t bufferSize = 0;
+    if (!TryComputeImageByteCount(width, height, 4, bufferSize)) {
+        Log("ERROR: Screenshot request rejected because byte-count overflowed for dimensions " + std::to_string(width) + "x" +
+            std::to_string(height) + ".");
+        return;
+    }
+    if (bufferSize > kMaxScreenshotBytes) {
+        Log("ERROR: Screenshot request rejected because buffer size " + FormatByteCount(bufferSize) + " exceeds guard limit of " +
+            FormatByteCount(kMaxScreenshotBytes) + " for dimensions " + std::to_string(width) + "x" + std::to_string(height) + ".");
+        return;
+    }
+
+    Log("Taking screenshot at " + std::to_string(width) + "x" + std::to_string(height) + " (" + FormatByteCount(bufferSize) + ").");
     std::vector<BYTE> pixels(bufferSize);
 
     glReadBuffer(GL_BACK);
@@ -2117,6 +2784,13 @@ void ScreenshotToClipboard(int width, int height) {
     }
     if (!EmptyClipboard()) {
         Log("ERROR: Could not empty clipboard.");
+        CloseClipboard();
+        return;
+    }
+
+    if (pixels.size() > (std::numeric_limits<SIZE_T>::max)() - sizeof(BITMAPINFOHEADER)) {
+        Log("ERROR: Screenshot clipboard payload size overflowed for dimensions " + std::to_string(width) + "x" +
+            std::to_string(height) + ".");
         CloseClipboard();
         return;
     }
@@ -2227,6 +2901,73 @@ UINT GetToolscreenBorderlessToggleMessageId() {
     return s_msg;
 }
 
+static std::atomic<int> s_lastRequestedClientW{ 0 };
+static std::atomic<int> s_lastRequestedClientH{ 0 };
+static std::atomic<int> s_prevRequestedClientW{ 0 };
+static std::atomic<int> s_prevRequestedClientH{ 0 };
+
+bool GetRecentRequestedWindowClientResizes(int& outCurrentW, int& outCurrentH, int& outPreviousW, int& outPreviousH) {
+    outCurrentW = s_lastRequestedClientW.load(std::memory_order_relaxed);
+    outCurrentH = s_lastRequestedClientH.load(std::memory_order_relaxed);
+    outPreviousW = s_prevRequestedClientW.load(std::memory_order_relaxed);
+    outPreviousH = s_prevRequestedClientH.load(std::memory_order_relaxed);
+    return outCurrentW > 0 && outCurrentH > 0;
+}
+
+static bool GetCenteredWindowedRestoreRect(HWND hwnd, RECT& outRect) {
+    RECT monitorRect{};
+    if (!GetMonitorRectForWindow(hwnd, monitorRect)) {
+        if (!GetWindowRect(hwnd, &monitorRect)) { return false; }
+    }
+
+    const int monitorW = monitorRect.right - monitorRect.left;
+    const int monitorH = monitorRect.bottom - monitorRect.top;
+    if (monitorW <= 0 || monitorH <= 0) { return false; }
+
+    const int windowedW = (std::max)(1, monitorW / 2);
+    const int windowedH = (std::max)(1, monitorH / 2);
+
+    outRect.left = monitorRect.left + (monitorW - windowedW) / 2;
+    outRect.top = monitorRect.top + (monitorH - windowedH) / 2;
+    outRect.right = outRect.left + windowedW;
+    outRect.bottom = outRect.top + windowedH;
+    return true;
+}
+
+static bool ApplyCenteredWindowedRestore(HWND hwnd, UINT extraFlags, const char* source, RECT* appliedRect = nullptr) {
+    if (!hwnd || !IsWindow(hwnd)) { return false; }
+
+    if (IsIconic(hwnd) || IsZoomed(hwnd)) {
+        ShowWindow(hwnd, SW_RESTORE);
+    }
+
+    RECT targetRect{};
+    if (!GetCenteredWindowedRestoreRect(hwnd, targetRect)) { return false; }
+
+    const int targetW = targetRect.right - targetRect.left;
+    const int targetH = targetRect.bottom - targetRect.top;
+    if (!SetWindowPos(hwnd, HWND_NOTOPMOST, targetRect.left, targetRect.top, targetW, targetH, SWP_NOOWNERZORDER | extraFlags)) {
+        std::string src = source ? source : "unknown";
+        Log("[WINDOW] SetWindowPos failed while centering windowed restore (" + src + "). Error=" + std::to_string(GetLastError()));
+        return false;
+    }
+
+    if (appliedRect) { *appliedRect = targetRect; }
+    return true;
+}
+
+bool CenterWindowedRestoreOnCurrentMonitor(HWND hwnd, const char* source) {
+    RECT targetRect{};
+    if (!ApplyCenteredWindowedRestore(hwnd, 0, source, &targetRect)) { return false; }
+
+    const int targetW = targetRect.right - targetRect.left;
+    const int targetH = targetRect.bottom - targetRect.top;
+    std::string src = source ? source : "unknown";
+    Log("[WINDOW] Centered windowed restore (" + src + ") -> " + std::to_string(targetW) + "x" + std::to_string(targetH) +
+        " at " + std::to_string(targetRect.left) + "," + std::to_string(targetRect.top));
+    return true;
+}
+
 bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* source) {
     if (!hwnd || !IsWindow(hwnd) || width <= 0 || height <= 0) { return false; }
 
@@ -2239,6 +2980,15 @@ bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* sou
     const ULONGLONG nowMs = GetTickCount64();
 
     std::lock_guard<std::mutex> lock(s_resizeRequestMutex);
+
+    const int lastRequestedW = s_lastRequestedClientW.load(std::memory_order_relaxed);
+    const int lastRequestedH = s_lastRequestedClientH.load(std::memory_order_relaxed);
+    if (lastRequestedW != width || lastRequestedH != height) {
+        s_prevRequestedClientW.store(lastRequestedW, std::memory_order_relaxed);
+        s_prevRequestedClientH.store(lastRequestedH, std::memory_order_relaxed);
+        s_lastRequestedClientW.store(width, std::memory_order_relaxed);
+        s_lastRequestedClientH.store(height, std::memory_order_relaxed);
+    }
 
     if (s_lastHwnd == hwnd && s_lastWidth == width && s_lastHeight == height && (nowMs - s_lastPostedMs) <= 50) { return true; }
 
@@ -2257,6 +3007,26 @@ bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* sou
 
     InvalidateTrackedGameTextureId(false);
     return true;
+}
+
+static void RequestCurrentModeClientResizeSync(HWND hwnd, const char* source) {
+    if (!hwnd || !IsWindow(hwnd)) { return; }
+
+    auto cfgSnap = GetConfigSnapshot();
+    if (!cfgSnap) { return; }
+
+    const std::string currentModeId = g_modeIdBuffers[g_currentModeIdIndex.load(std::memory_order_acquire)];
+    const ModeConfig* mode = GetModeFromSnapshot(*cfgSnap, currentModeId);
+    if (!mode || mode->width <= 0 || mode->height <= 0) { return; }
+
+    if (EqualsIgnoreCase(mode->id, "Fullscreen") && mode->useRelativeSize) {
+        // Real window-size changes will trigger a logic-thread recalculation that reposts
+        // WM_SIZE with the freshly recomputed internal size. Avoid sending the stale
+        // pre-recalc fullscreen-relative dimensions here.
+        return;
+    }
+
+    RequestWindowClientResize(hwnd, mode->width, mode->height, source);
 }
 
 void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
@@ -2292,11 +3062,6 @@ void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
 
     const int targetW = (targetRect.right - targetRect.left);
     const int targetH = (targetRect.bottom - targetRect.top);
-
-    const int windowedW = (std::max)(1, targetW / 2);
-    const int windowedH = (std::max)(1, targetH / 2);
-    const int windowedX = targetRect.left + (targetW - windowedW) / 2;
-    const int windowedY = targetRect.top + (targetH - windowedH) / 2;
 
     RECT beforeRect{};
     if (!GetWindowRect(hwnd, &beforeRect)) { return; }
@@ -2365,6 +3130,7 @@ void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
 
         InvalidateTrackedGameTextureId(false);
         state.active = true;
+        RequestCurrentModeClientResizeSync(hwnd, "window:borderless_on");
         Log("[WINDOW] Toggled borderless ON (" + std::to_string(targetW) + "x" + std::to_string(targetH) + ")");
     } else {
         if (IsIconic(hwnd) || IsZoomed(hwnd)) {
@@ -2387,10 +3153,9 @@ void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
             ok = setWindowLongChecked(GWL_EXSTYLE, targetExStyle);
         }
 
+        RECT centeredRect{};
         if (ok) {
-            ok = SetWindowPos(hwnd, HWND_NOTOPMOST, windowedX, windowedY, windowedW, windowedH, SWP_NOOWNERZORDER | SWP_FRAMECHANGED) !=
-                 FALSE;
-            if (!ok) { Log("[WINDOW] SetWindowPos failed while disabling borderless. Error=" + std::to_string(GetLastError())); }
+            ok = ApplyCenteredWindowedRestore(hwnd, SWP_FRAMECHANGED, "window:borderless_off", &centeredRect);
         }
 
         if (!ok) {
@@ -2400,6 +3165,9 @@ void ToggleBorderlessWindowedFullscreen(HWND hwnd) {
 
         InvalidateTrackedGameTextureId(false);
         state.active = false;
-        Log("[WINDOW] Toggled borderless OFF -> windowed centered (" + std::to_string(windowedW) + "x" + std::to_string(windowedH) + ")");
+        RequestCurrentModeClientResizeSync(hwnd, "window:borderless_off");
+        const int centeredW = centeredRect.right - centeredRect.left;
+        const int centeredH = centeredRect.bottom - centeredRect.top;
+        Log("[WINDOW] Toggled borderless OFF -> windowed centered (" + std::to_string(centeredW) + "x" + std::to_string(centeredH) + ")");
     }
 }

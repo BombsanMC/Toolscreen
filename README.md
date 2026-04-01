@@ -61,12 +61,38 @@ Hover over the `(?)` icons for tooltips explaining each setting.
 
 Double-click the Toolscreen installer (`.jar` or `.exe`) and select **Uninstall**.
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+The Windows release binaries built in this repository, including `Toolscreen.dll`, `liblogger_x64.dll`, and the packaged installers, are signed through the GitHub Actions + SignPath trusted-build flow.
+
+- Repository owner: [jojoe77777](https://github.com/jojoe77777)
+- Authors: [jojoe77777](https://github.com/jojoe77777)
+- Committers: [jojoe77777](https://github.com/jojoe77777)
+- Reviewers: [jojoe77777](https://github.com/jojoe77777)
+- Approvers: [jojoe77777](https://github.com/jojoe77777)
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+When you use the optional downloader or release-update functionality, Toolscreen connects to GitHub release endpoints for this repository. That traffic is governed by the [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+
 ## Community
 
 Need help or want to share your setup? Join the [Discord server](https://discord.gg/A2v6bCJg6K).
 
 ## Building
 
-Run `build.bat` to build Toolscreen; output files are in `out/build/bin/Release/`.
-Run `build.bat --test` to execute the regular CTest suite used by normal local and GitHub builds.
+Run the manual `Build Liblogger` GitHub Actions workflow once to publish the reusable logger assets. That workflow builds Linux `x64`/`x86`/`arm64`/`arm32`, Windows `x64`/`x86`/`arm64`, and a macOS universal `liblogger.dylib` containing both `x64` and `arm64`. Only the Windows `liblogger_x64.dll` is code-signed.
+
+After that, run `build.bat` to build Toolscreen. The script downloads the latest signed `liblogger_x64.dll` and `liblogger_x64.pdb` from that workflow release, then stages them into `out/build/bin/Release/` alongside the Toolscreen artifacts.
+
+Run `build.bat --test` to execute the regular local and GitHub test flow.
 Run `build.bat --manual-ninjabrain-tests` to build and run the opt-in Ninjabrain integration suite in its separate manual test tree.
+
+If you intentionally need to rebuild liblogger locally instead of consuming the published signed artifact, configure CMake with `-DTOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE=ON`.
+
+For standalone logger artifacts on non-Windows hosts:
+
+- `liblogger/build.sh` builds the Linux `.so` outputs into `liblogger/dist/linux/`
+- `liblogger/build-macos.sh` builds the macOS `.dylib` output into `liblogger/dist/macos/`

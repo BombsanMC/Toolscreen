@@ -412,15 +412,8 @@ bool CaptureWindowContent(WindowOverlayCacheEntry& entry, const WindowOverlayCon
 
     if (windowWidth <= 0 || windowHeight <= 0) { return false; }
 
-    int cropLeft = config.crop_left;
-    int cropRight = config.crop_right;
-    int cropTop = config.crop_top;
-    int cropBottom = config.crop_bottom;
-
-    int captureWidth = windowWidth - cropLeft - cropRight;
-    int captureHeight = windowHeight - cropTop - cropBottom;
-
-    if (captureWidth <= 0 || captureHeight <= 0) { return false; }
+    int captureWidth = windowWidth;
+    int captureHeight = windowHeight;
 
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
@@ -462,39 +455,16 @@ bool CaptureWindowContent(WindowOverlayCacheEntry& entry, const WindowOverlayCon
     if (config.captureMethod == "BitBlt") {
         // Note: BitBlt requires GetDC which CAN cause flicker on some windows
         hdcWindow = GetDC(targetHwnd);
-        if (hdcWindow) { result = BitBlt(hdcMem, 0, 0, captureWidth, captureHeight, hdcWindow, cropLeft, cropTop, SRCCOPY); }
+        if (hdcWindow) { result = BitBlt(hdcMem, 0, 0, captureWidth, captureHeight, hdcWindow, 0, 0, SRCCOPY); }
     } else {
         // Windows 10+ method (default): Uses PrintWindow with PW_RENDERFULLCONTENT
         if (!shouldAvoidPrintWindow) {
-            bool needsCropping = (cropLeft > 0 || cropTop > 0 || cropRight > 0 || cropBottom > 0);
-
-            if (needsCropping) {
-                HBITMAP hFullBitmap = CreateCompatibleBitmap(hdcScreen, windowWidth, windowHeight);
-                if (hFullBitmap) {
-                    HDC hdcFullMem = CreateCompatibleDC(hdcScreen);
-                    if (hdcFullMem) {
-                        HBITMAP hOldFullBitmap = (HBITMAP)SelectObject(hdcFullMem, hFullBitmap);
-
-                        result = PrintWindow(targetHwnd, hdcFullMem, PW_RENDERFULLCONTENT);
-
-                        if (result) {
-                            result = BitBlt(hdcMem, 0, 0, captureWidth, captureHeight, hdcFullMem, cropLeft, cropTop, SRCCOPY);
-                            usedPrintWindow = true;
-                        }
-
-                        SelectObject(hdcFullMem, hOldFullBitmap);
-                        DeleteDC(hdcFullMem);
-                    }
-                    DeleteObject(hFullBitmap);
-                }
-            } else {
-                result = PrintWindow(targetHwnd, hdcMem, PW_RENDERFULLCONTENT);
-                usedPrintWindow = true;
-            }
+            result = PrintWindow(targetHwnd, hdcMem, PW_RENDERFULLCONTENT);
+            usedPrintWindow = true;
         }
         if (!result) {
             hdcWindow = GetDC(targetHwnd);
-            if (hdcWindow) { result = BitBlt(hdcMem, 0, 0, captureWidth, captureHeight, hdcWindow, cropLeft, cropTop, SRCCOPY); }
+            if (hdcWindow) { result = BitBlt(hdcMem, 0, 0, captureWidth, captureHeight, hdcWindow, 0, 0, SRCCOPY); }
         }
     }
 
@@ -692,6 +662,39 @@ void RemoveWindowOverlayFromCache(const std::string& overlayId) {
     }
 }
 
+bool StageWindowOverlayTestFrame(const WindowOverlayConfig& config, const std::vector<unsigned char>& rgbaPixels, int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    const size_t expectedByteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+    if (rgbaPixels.size() != expectedByteCount) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> cacheLock(g_windowOverlayCacheMutex);
+    auto& entrySlot = g_windowOverlayCache[config.name];
+    if (!entrySlot) {
+        entrySlot = std::make_unique<WindowOverlayCacheEntry>();
+    }
+
+    WindowOverlayCacheEntry& entry = *entrySlot;
+    entry.windowTitle = config.windowTitle;
+    entry.windowClass = config.windowClass;
+    entry.executableName = config.executableName;
+    entry.windowMatchPriority = config.windowMatchPriority;
+
+    std::lock_guard<std::mutex> swapLock(entry.swapMutex);
+    entry.readyBuffer = std::make_unique<WindowOverlayRenderData>();
+    entry.readyBuffer->pixelData = new unsigned char[expectedByteCount];
+    std::copy(rgbaPixels.begin(), rgbaPixels.end(), entry.readyBuffer->pixelData);
+    entry.readyBuffer->width = width;
+    entry.readyBuffer->height = height;
+    entry.lastUploadedRenderData = nullptr;
+    entry.hasNewFrame.store(true, std::memory_order_release);
+    return true;
+}
+
 void CleanupWindowOverlayCacheEntry(const std::string& overlayId) {
     // Don't actually erase the entry - this would cause crashes when capture thread is using it
 
@@ -755,10 +758,12 @@ static void CalculateWindowOverlayDimensions(const WindowOverlayConfig& config, 
         int texWidth = it->second->glTextureWidth;
         int texHeight = it->second->glTextureHeight;
         if (texWidth > 0 && texHeight > 0) {
-            int croppedWidth = texWidth - config.crop_left - config.crop_right;
-            int croppedHeight = texHeight - config.crop_top - config.crop_bottom;
-            displayW = static_cast<int>(croppedWidth * config.scale);
-            displayH = static_cast<int>(croppedHeight * config.scale);
+            auto cc = ResolveCrop(config.crop_top, config.crop_bottom, config.crop_left, config.crop_right,
+                                  config.cropToWidth, config.cropToHeight, texWidth, texHeight);
+            int croppedW = (std::max)(1, texWidth - cc.left - cc.right);
+            int croppedH = (std::max)(1, texHeight - cc.top - cc.bottom);
+            displayW = static_cast<int>(croppedW * config.scale);
+            displayH = static_cast<int>(croppedH * config.scale);
             return;
         }
     }
@@ -846,8 +851,10 @@ bool TranslateToWindowOverlayCoords(const std::string& overlayName, int screenX,
 
     if (texWidth <= 0 || texHeight <= 0) return false;
 
-    int croppedWidth = texWidth - config.crop_left - config.crop_right;
-    int croppedHeight = texHeight - config.crop_top - config.crop_bottom;
+    auto cc = ResolveCrop(config.crop_top, config.crop_bottom, config.crop_left, config.crop_right,
+                          config.cropToWidth, config.cropToHeight, texWidth, texHeight);
+    int croppedWidth = (std::max)(1, texWidth - cc.left - cc.right);
+    int croppedHeight = (std::max)(1, texHeight - cc.top - cc.bottom);
     int displayW = static_cast<int>(croppedWidth * config.scale);
     int displayH = static_cast<int>(croppedHeight * config.scale);
 

@@ -6,6 +6,9 @@
 !README.md
 !ToolscreenVersion.cmake
 !build.bat
+!scripts/
+!scripts/verify_pe_metadata.ps1
+!scripts/**
 !docs
 !docs/images/
 !docs/images/screenshot.png
@@ -13,6 +16,8 @@
 !lang/langs.json
 !lang/en.json
 !lang/zh_CN.json
+!tests/
+!tests/**
 !.github
 !.github/ISSUE_TEMPLATE/
 !.github/ISSUE_TEMPLATE/*.yml
@@ -20,6 +25,8 @@
 !.github/workflows/*
 !src/
 !src/**
+!liblogger
+!liblogger/**
 
 src/json.hpp
 src/packages.config

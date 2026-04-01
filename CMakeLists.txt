@@ -15,6 +15,14 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/ToolscreenVersion.cmake")
 set(TOOLSCREEN_VERSION "${TOOLSCREEN_VERSION_MAJOR}.${TOOLSCREEN_VERSION_MINOR}.${TOOLSCREEN_VERSION_PATCH}")
 
+set(TOOLSCREEN_PROJECT_NAME "Toolscreen")
+set(TOOLSCREEN_COMPANY_NAME "jojoe77777")
+set(TOOLSCREEN_COPYRIGHT "Copyright (c) 2026 jojoe77777")
+set(TOOLSCREEN_DLL_FILE_DESCRIPTION "Toolscreen hook DLL")
+set(TOOLSCREEN_LIBLOGGER_FILE_DESCRIPTION "Toolscreen liblogger")
+set(TOOLSCREEN_INSTALLER_FILE_DESCRIPTION "Toolscreen installer")
+set(TOOLSCREEN_DOWNLOADER_FILE_DESCRIPTION "Toolscreen downloader")
+
 project(Toolscreen VERSION ${TOOLSCREEN_VERSION} LANGUAGES C CXX RC)
 
 include(CTest)
@@ -22,6 +30,7 @@ include(CTest)
 set(TOOLSCREEN_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(TOOLSCREEN_GENERATED_VERSION_HEADER "${TOOLSCREEN_GENERATED_DIR}/version.h")
 file(MAKE_DIRECTORY "${TOOLSCREEN_GENERATED_DIR}")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cmake")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.h.in"
     "${TOOLSCREEN_GENERATED_VERSION_HEADER}"
@@ -34,6 +43,11 @@ endif()
 
 option(TOOLSCREEN_ENABLE_JAR_PACKAGING "Enable the EasyInjectBundled jar packaging target." ON)
 option(TOOLSCREEN_ENABLE_NINJABRAIN_API_MANUAL_TESTS "Enable the manual-only Ninjabrain API integration test target." OFF)
+set(TOOLSCREEN_PACKAGING_DLL_PATH "" CACHE FILEPATH "Optional override DLL path used for jar and EXE packaging inputs")
+set(TOOLSCREEN_PACKAGING_LIBLOGGER_PATH "" CACHE FILEPATH "Optional override liblogger DLL path used for jar and EXE packaging inputs")
+set(TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH "" CACHE FILEPATH "Path to the signed prebuilt liblogger DLL to stage into build outputs")
+set(TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH "" CACHE FILEPATH "Path to the matching prebuilt liblogger PDB to stage into build outputs")
+option(TOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE "Build liblogger locally instead of using a prebuilt signed artifact" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -83,6 +97,21 @@ function(toolscreen_set_brand_version branding_file version_string)
     endif()
 
     file(WRITE "${branding_file}" "${toolscreen_branding_contents}")
+endfunction()
+
+function(toolscreen_write_text_file_if_different file_path content)
+    set(toolscreen_should_write TRUE)
+
+    if(EXISTS "${file_path}")
+        file(READ "${file_path}" toolscreen_existing_content)
+        if(toolscreen_existing_content STREQUAL content)
+            set(toolscreen_should_write FALSE)
+        endif()
+    endif()
+
+    if(toolscreen_should_write)
+        file(WRITE "${file_path}" "${content}")
+    endif()
 endfunction()
 
 if(MSVC)
@@ -155,6 +184,12 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
+FetchContent_Declare(
+    webview2_sdk
+    URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.3650.58
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+
 FetchContent_GetProperties(glew)
 if(NOT glew_POPULATED)
     FetchContent_Populate(glew)
@@ -191,6 +226,27 @@ if(NOT cpp_httplib_POPULATED)
     FetchContent_Populate(cpp_httplib)
 endif()
 
+FetchContent_GetProperties(webview2_sdk)
+if(NOT webview2_sdk_POPULATED)
+    FetchContent_Populate(webview2_sdk)
+endif()
+
+set(TOOLSCREEN_WEBVIEW2_NATIVE_DIR "${webview2_sdk_SOURCE_DIR}/build/native")
+set(TOOLSCREEN_WEBVIEW2_INCLUDE_DIR "${TOOLSCREEN_WEBVIEW2_NATIVE_DIR}/include")
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(TOOLSCREEN_WEBVIEW2_ARCH_DIR "x64")
+else()
+    set(TOOLSCREEN_WEBVIEW2_ARCH_DIR "x86")
+endif()
+set(TOOLSCREEN_WEBVIEW2_LOADER_STATIC_LIB "${TOOLSCREEN_WEBVIEW2_NATIVE_DIR}/${TOOLSCREEN_WEBVIEW2_ARCH_DIR}/WebView2LoaderStatic.lib")
+
+if(NOT EXISTS "${TOOLSCREEN_WEBVIEW2_INCLUDE_DIR}/WebView2.h")
+    message(FATAL_ERROR "WebView2 SDK headers were not found at ${TOOLSCREEN_WEBVIEW2_INCLUDE_DIR}")
+endif()
+
+if(NOT EXISTS "${TOOLSCREEN_WEBVIEW2_LOADER_STATIC_LIB}")
+    message(FATAL_ERROR "WebView2LoaderStatic.lib was not found at ${TOOLSCREEN_WEBVIEW2_LOADER_STATIC_LIB}")
+endif()
 
 set(TOOLSCREEN_IMGUI_DIR "${imgui_SOURCE_DIR}")
 
@@ -286,6 +342,7 @@ source_group("Generated Files" FILES ${TOOLSCREEN_GENERATED_VERSION_HEADER})
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${TOOLSCREEN_GENERATED_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${TOOLSCREEN_WEBVIEW2_INCLUDE_DIR}
     ${nlohmann_json_SOURCE_DIR}/single_include
     ${cpp_httplib_SOURCE_DIR}
 )
@@ -304,6 +361,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Toolscreen::glew
     toolscreen_imgui
     OpenGL::GL
+    "${TOOLSCREEN_WEBVIEW2_LOADER_STATIC_LIB}"
     comdlg32
     dbghelp
     dwmapi
@@ -332,15 +390,69 @@ endif()
 toolscreen_configure_target_outputs(${PROJECT_NAME})
 toolscreen_enable_release_symbols(${PROJECT_NAME})
 
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cmake")
+set(TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/liblogger_x64.dll")
+set(TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/liblogger_x64.pdb")
+set(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY "")
+
+if(NOT TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH)
+    set(TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/out/prebuilt-liblogger/liblogger_x64.dll")
+endif()
+
+if(NOT TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH)
+    set(TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/out/prebuilt-liblogger/liblogger_x64.pdb")
+endif()
+
+if(TOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/liblogger")
+    set(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY liblogger_windows)
+else()
+    get_filename_component(TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH "${TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    get_filename_component(TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH "${TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    get_filename_component(TOOLSCREEN_PREBUILT_LIBLOGGER_DIR "${TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH}" DIRECTORY)
+    get_filename_component(TOOLSCREEN_FETCH_LIBLOGGER_SCRIPT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fetch_signed_liblogger.ps1" ABSOLUTE)
+
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/stage_prebuilt_liblogger_$<CONFIG>.cmake"
+        CONTENT "set(SOURCE_DLL \"${TOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH}\")\nset(SOURCE_PDB \"${TOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH}\")\nset(SOURCE_DIR \"${TOOLSCREEN_PREBUILT_LIBLOGGER_DIR}\")\nset(FETCH_SCRIPT \"${TOOLSCREEN_FETCH_LIBLOGGER_SCRIPT_PATH}\")\nset(DEST_DLL \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}\")\nset(DEST_PDB \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH}\")\nget_filename_component(DEST_DIR \"\${DEST_DLL}\" DIRECTORY)\nfile(MAKE_DIRECTORY \"\${DEST_DIR}\")\nif((NOT EXISTS \"\${SOURCE_DLL}\") OR (NOT EXISTS \"\${SOURCE_PDB}\"))\n  if(NOT EXISTS \"\${FETCH_SCRIPT}\")\n    message(FATAL_ERROR \"Missing liblogger fetch script at '\${FETCH_SCRIPT}'\")\n  endif()\n  execute_process(COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File \"\${FETCH_SCRIPT}\" -DestinationDirectory \"\${SOURCE_DIR}\" RESULT_VARIABLE FETCH_RESULT)\n  if(NOT FETCH_RESULT EQUAL 0)\n    message(FATAL_ERROR \"Failed to download signed liblogger artifacts into '\${SOURCE_DIR}'\")\n  endif()\nendif()\nif(NOT EXISTS \"\${SOURCE_DLL}\")\n  message(FATAL_ERROR \"Expected prebuilt liblogger DLL at '\${SOURCE_DLL}'\")\nendif()\nif(NOT EXISTS \"\${SOURCE_PDB}\")\n  message(FATAL_ERROR \"Expected prebuilt liblogger PDB at '\${SOURCE_PDB}'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${SOURCE_DLL}\" \"\${DEST_DLL}\" RESULT_VARIABLE COPY_DLL_RESULT)\nif(NOT COPY_DLL_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to stage prebuilt liblogger DLL from '\${SOURCE_DLL}' to '\${DEST_DLL}'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${SOURCE_PDB}\" \"\${DEST_PDB}\" RESULT_VARIABLE COPY_PDB_RESULT)\nif(NOT COPY_PDB_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to stage prebuilt liblogger PDB from '\${SOURCE_PDB}' to '\${DEST_PDB}'\")\nendif()\n"
+    )
+
+    add_custom_target(toolscreen_stage_liblogger_artifacts
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/stage_prebuilt_liblogger_$<CONFIG>.cmake"
+        COMMENT "Staging prebuilt liblogger artifacts"
+        VERBATIM
+    )
+
+    set(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY toolscreen_stage_liblogger_artifacts)
+endif()
+
+if(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY)
+    add_dependencies(${PROJECT_NAME} ${TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY})
+endif()
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll"
+    COMMENT "Removing stale copied WebView2Loader.dll"
+)
+
+enable_testing()
 file(GENERATE
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_artifact_$<CONFIG>.cmake"
     CONTENT "if(NOT EXISTS \"$<TARGET_FILE:${PROJECT_NAME}>\")\n  message(FATAL_ERROR \"Expected built Toolscreen artifact at '$<TARGET_FILE:${PROJECT_NAME}>'\")\nendif()\nif(NOT EXISTS \"$<TARGET_PDB_FILE:${PROJECT_NAME}>\")\n  message(FATAL_ERROR \"Expected Toolscreen PDB at '$<TARGET_PDB_FILE:${PROJECT_NAME}>'\")\nendif()\n"
 )
 
+file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_liblogger_artifact_$<CONFIG>.cmake"
+    CONTENT "if(NOT EXISTS \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}\")\n  message(FATAL_ERROR \"Expected liblogger DLL at '${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}'\")\nendif()\nif(NOT EXISTS \"${TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH}\")\n  message(FATAL_ERROR \"Expected liblogger PDB at '${TOOLSCREEN_LIBLOGGER_ARTIFACT_PDB_PATH}'\")\nendif()\n"
+)
+
 add_test(
     NAME toolscreen_artifact_exists
     COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_artifact_$<CONFIG>.cmake"
+)
+
+add_test(
+    NAME liblogger_artifact_exists
+    COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_liblogger_artifact_$<CONFIG>.cmake"
 )
 
 if(BUILD_TESTING AND TOOLSCREEN_ENABLE_NINJABRAIN_API_MANUAL_TESTS)
@@ -465,7 +577,7 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     FetchContent_Declare(
         easyinjectbundled
         GIT_REPOSITORY https://github.com/jojoe77777/EasyInjectBundled.git
-        GIT_TAG a8800d1565cf84079c1327bbf62b9904ffd114ab
+        GIT_TAG be353d11613b362028901717fce9904b70951405
         GIT_SHALLOW TRUE
     )
 
@@ -473,6 +585,8 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     if(NOT easyinjectbundled_POPULATED)
         FetchContent_Populate(easyinjectbundled)
     endif()
+
+    file(REMOVE "${easyinjectbundled_SOURCE_DIR}/custom-dlls/WebView2Loader.dll")
 
     set(TOOLSCREEN_EASYINJECT_BRANDING_PROPERTIES "${easyinjectbundled_SOURCE_DIR}/branding.properties")
     toolscreen_set_brand_version("${TOOLSCREEN_EASYINJECT_BRANDING_PROPERTIES}" "${PROJECT_VERSION}")
@@ -489,8 +603,54 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
         FetchContent_Populate(easyinjectbundled_exe)
     endif()
 
+    file(REMOVE "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/WebView2Loader.dll")
+
     set(TOOLSCREEN_EASYINJECT_EXE_BRANDING_PROPERTIES "${easyinjectbundled_exe_SOURCE_DIR}/branding.properties")
     toolscreen_set_brand_version("${TOOLSCREEN_EASYINJECT_EXE_BRANDING_PROPERTIES}" "${PROJECT_VERSION}")
+    toolscreen_write_text_file_if_different(
+        "${easyinjectbundled_exe_SOURCE_DIR}/exe/src/embedded_resources.rc.in"
+        [=[#include <winres.h>
+
+1 ICON "@APP_ICON_FILE_RC@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @TOOLSCREEN_VERSION_MAJOR@,@TOOLSCREEN_VERSION_MINOR@,@TOOLSCREEN_VERSION_PATCH@,0
+ PRODUCTVERSION @TOOLSCREEN_VERSION_MAJOR@,@TOOLSCREEN_VERSION_MINOR@,@TOOLSCREEN_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "@TOOLSCREEN_COMPANY_NAME@\0"
+            VALUE "FileDescription", "@TOOLSCREEN_INSTALLER_FILE_DESCRIPTION@\0"
+            VALUE "FileVersion", "@TOOLSCREEN_VERSION@\0"
+            VALUE "InternalName", "Toolscreen\0"
+            VALUE "LegalCopyright", "@TOOLSCREEN_COPYRIGHT@\0"
+            VALUE "OriginalFilename", "Toolscreen-@BRAND_VERSION@-double-click-me.exe\0"
+            VALUE "ProductName", "@TOOLSCREEN_PROJECT_NAME@\0"
+            VALUE "ProductVersion", "@TOOLSCREEN_VERSION@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+@BRANDING_RESOURCE_ID@ RCDATA "@BRANDING_FILE_RC@"
+@DLL_INDEX_RESOURCE_ID@ RCDATA "@EMBED_DLL_INDEX_FILE_RC@"
+@EMBED_DLL_RESOURCE_LINES@
+]=]
+    )
 
     set(JAR_NAME "Toolscreen-${PROJECT_VERSION}-double-click-me.jar")
     set(JAR_OUTPUT "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/${JAR_NAME}")
@@ -501,6 +661,21 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     set(DOWNLOADER_EXE_NAME "toolscreen-downloader.exe")
     set(DOWNLOADER_EXE_OUTPUT "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>/${DOWNLOADER_EXE_NAME}")
 
+    set(TOOLSCREEN_PACKAGING_DLL_SOURCE "$<TARGET_FILE:${PROJECT_NAME}>")
+    if(TOOLSCREEN_PACKAGING_DLL_PATH)
+        set(TOOLSCREEN_PACKAGING_DLL_SOURCE "${TOOLSCREEN_PACKAGING_DLL_PATH}")
+    endif()
+
+    set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "${TOOLSCREEN_LIBLOGGER_ARTIFACT_DLL_PATH}")
+    if(TOOLSCREEN_PACKAGING_LIBLOGGER_PATH)
+        set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "${TOOLSCREEN_PACKAGING_LIBLOGGER_PATH}")
+    endif()
+
+    set(TOOLSCREEN_PACKAGING_DEPENDENCIES ${PROJECT_NAME})
+    if(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY)
+        list(APPEND TOOLSCREEN_PACKAGING_DEPENDENCIES ${TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY})
+    endif()
+
     file(GENERATE
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
         CONTENT "set(NEW_DOWNLOADER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\nset(TYPO_DOWNLOADER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\nset(LEGACY_INSTALLER_JAR \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\nset(DOWNLOADER_JAR_OUTPUT \"${DOWNLOADER_JAR_OUTPUT}\")\nif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}\")\nelseif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar\")\nelseif(EXISTS \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\n  set(DOWNLOADER_JAR_SOURCE \"${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar\")\nelse()\n  message(FATAL_ERROR \"Expected downloader jar at '${easyinjectbundled_SOURCE_DIR}/target/${DOWNLOADER_JAR_NAME}', typo downloader jar at '${easyinjectbundled_SOURCE_DIR}/target/tioolscrteen-downloader.jar', or legacy installer jar at '${easyinjectbundled_SOURCE_DIR}/target/toolscreen-installer.jar'\")\nendif()\nexecute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${DOWNLOADER_JAR_SOURCE}\" \"\${DOWNLOADER_JAR_OUTPUT}\" RESULT_VARIABLE COPY_RESULT)\nif(NOT COPY_RESULT EQUAL 0)\n  message(FATAL_ERROR \"Failed to copy downloader jar from '\${DOWNLOADER_JAR_SOURCE}' to '\${DOWNLOADER_JAR_OUTPUT}'\")\nendif()\n"
@@ -508,13 +683,16 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
 
     add_custom_target(jar ALL
         COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_SOURCE_DIR}/custom-dlls"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_SOURCE_DIR}/src/main/resources/dlls"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${TOOLSCREEN_ARTIFACT_ROOT}/$<CONFIG>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${PROJECT_NAME}>" "${easyinjectbundled_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_DLL_SOURCE}" "${easyinjectbundled_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_LOGGER_SOURCE}" "${easyinjectbundled_SOURCE_DIR}/src/main/resources/dlls/liblogger_x64.dll"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${easyinjectbundled_SOURCE_DIR}/custom-dlls/WebView2Loader.dll"
         COMMAND "${TOOLSCREEN_MAVEN_EXECUTABLE}" -f "${easyinjectbundled_SOURCE_DIR}/pom.xml" clean package -q
                 -Dbrand.name=Toolscreen
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${easyinjectbundled_SOURCE_DIR}/target/${JAR_NAME}" "${JAR_OUTPUT}"
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/copy_toolscreen_downloader_jar_$<CONFIG>.cmake"
-        DEPENDS ${PROJECT_NAME}
+        DEPENDS ${TOOLSCREEN_PACKAGING_DEPENDENCIES}
         COMMENT "Building ${JAR_NAME} and ${DOWNLOADER_JAR_NAME}"
         VERBATIM
     )
@@ -529,6 +707,47 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
     elseif(EXISTS "${easyinjectbundled_SOURCE_DIR}/tioolscrteen-downloader-exe/CMakeLists.txt")
         set(TOOLSCREEN_DOWNLOADER_SOURCE_DIR "${easyinjectbundled_SOURCE_DIR}/tioolscrteen-downloader-exe")
     endif()
+
+    toolscreen_write_text_file_if_different(
+        "${TOOLSCREEN_DOWNLOADER_SOURCE_DIR}/src/app.rc.in"
+        [=[#include <winres.h>
+
+1 ICON "@APP_ICON_FILE_RC@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @TOOLSCREEN_VERSION_MAJOR@,@TOOLSCREEN_VERSION_MINOR@,@TOOLSCREEN_VERSION_PATCH@,0
+ PRODUCTVERSION @TOOLSCREEN_VERSION_MAJOR@,@TOOLSCREEN_VERSION_MINOR@,@TOOLSCREEN_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "@TOOLSCREEN_COMPANY_NAME@\0"
+            VALUE "FileDescription", "@TOOLSCREEN_DOWNLOADER_FILE_DESCRIPTION@\0"
+            VALUE "FileVersion", "@TOOLSCREEN_VERSION@\0"
+            VALUE "InternalName", "toolscreen-downloader\0"
+            VALUE "LegalCopyright", "@TOOLSCREEN_COPYRIGHT@\0"
+            VALUE "OriginalFilename", "toolscreen-downloader.exe\0"
+            VALUE "ProductName", "@TOOLSCREEN_PROJECT_NAME@\0"
+            VALUE "ProductVersion", "@TOOLSCREEN_VERSION@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+]=]
+    )
 
     add_subdirectory("${TOOLSCREEN_DOWNLOADER_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/easyinjectbundled-toolscreen-downloader-exe")
 
@@ -547,8 +766,11 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
 
     add_custom_target(toolscreen_prepare_easyinject_exe_inputs
         COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${PROJECT_NAME}>" "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
-        DEPENDS ${PROJECT_NAME}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${easyinjectbundled_exe_SOURCE_DIR}/src/main/resources/dlls"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_DLL_SOURCE}" "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/Toolscreen.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TOOLSCREEN_PACKAGING_LOGGER_SOURCE}" "${easyinjectbundled_exe_SOURCE_DIR}/src/main/resources/dlls/liblogger_x64.dll"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${easyinjectbundled_exe_SOURCE_DIR}/custom-dlls/WebView2Loader.dll"
+        DEPENDS ${TOOLSCREEN_PACKAGING_DEPENDENCIES}
         COMMENT "Preparing EasyInject exe packaging inputs"
         VERBATIM
     )
@@ -615,4 +837,217 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING)
         COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/check_toolscreen_exe_embeds_dll_$<CONFIG>.cmake"
     )
 endif()
+
+set(TOOLSCREEN_GUI_INTEGRATION_SUITE_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gui_integration_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gui_integration/config_tests.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gui_integration/rebind_tests.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gui_integration/render_tests.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gui_integration/ui_and_log_tests.inl
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gui_integration/runner.inl
+)
+
+add_executable(toolscreen_gui_integration_tests
+    ${TOOLSCREEN_SOURCES}
+    ${TOOLSCREEN_GENERATED_VERSION_HEADER}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/resource.rc
+    ${TOOLSCREEN_GUI_INTEGRATION_SUITE_FILES}
+)
+
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/tests" PREFIX "Tests" FILES
+    ${TOOLSCREEN_GUI_INTEGRATION_SUITE_FILES}
+)
+
+target_include_directories(toolscreen_gui_integration_tests PRIVATE
+    ${TOOLSCREEN_GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${TOOLSCREEN_WEBVIEW2_INCLUDE_DIR}
+    ${nlohmann_json_SOURCE_DIR}/single_include
+)
+
+target_compile_definitions(toolscreen_gui_integration_tests PRIVATE
+    CMAKE_BUILD
+    GLEW_STATIC
+    NOMINMAX
+    TOOLSCREEN_GUI_INTEGRATION_TESTS
+    UNICODE
+    _UNICODE
+)
+
+target_link_libraries(toolscreen_gui_integration_tests PRIVATE
+    Toolscreen::minhook
+    Toolscreen::glew
+    toolscreen_imgui
+    OpenGL::GL
+    "${TOOLSCREEN_WEBVIEW2_LOADER_STATIC_LIB}"
+    comdlg32
+    dbghelp
+    dwmapi
+    gdi32
+    imm32
+    msimg32
+    ntdll
+    opengl32
+    psapi
+    shell32
+    shlwapi
+    user32
+    version
+    winhttp
+)
+
+if(MSVC)
+    target_compile_options(toolscreen_gui_integration_tests PRIVATE
+        /W3
+        /MP
+        /EHa
+        /bigobj
+    )
+endif()
+
+toolscreen_configure_target_outputs(toolscreen_gui_integration_tests)
+toolscreen_enable_release_symbols(toolscreen_gui_integration_tests)
+
+set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
+    log-multi-instance-latest-suffix
+    log-header-includes-peer-info
+    log-archive-collision-handling
+    log-released-slot-reuse
+    config-default-load
+    config-roundtrip
+    config-roundtrip-global-settings
+    config-roundtrip-modes
+    config-roundtrip-mirrors
+    config-roundtrip-mirror-groups
+    config-roundtrip-images
+    config-roundtrip-window-overlays
+    config-roundtrip-browser-overlays
+    config-roundtrip-hotkeys
+    config-roundtrip-sensitivity-hotkeys
+    config-roundtrip-cursors-eyezoom
+    config-roundtrip-key-rebinds-appearance
+    config-roundtrip-debug-settings
+    config-load-missing-required-modes
+    config-load-invalid-hotkey-mode-references
+    config-load-relative-mode-dimensions
+    config-load-expression-mode-dimensions
+    config-load-legacy-version-upgrade
+    config-load-clamp-global-values
+    config-load-mode-default-dimensions-restored
+    config-load-mode-source-lists-loaded
+    config-load-mode-percentage-dimensions-detected
+    config-load-mode-typed-sources-ignored
+    config-load-empty-main-hotkey-fallback
+    config-load-missing-gui-hotkey-defaulted
+    config-load-empty-gui-hotkey-defaulted
+    config-load-legacy-mirror-gamma-migrated
+    config-load-mirror-capture-dimensions-clamped
+    config-load-eyezoom-clone-width-normalized
+    config-load-eyezoom-overlay-width-defaulted
+    config-load-eyezoom-overlay-width-clamped
+    config-load-eyezoom-legacy-margins-migrated
+    config-load-eyezoom-legacy-custom-position-migrated
+    config-load-eyezoom-invalid-active-overlay-reset
+    config-load-window-overlay-crop-migrated
+    config-load-window-overlay-capture-method-migrated
+    config-load-key-rebind-unicode-string-parsed
+    config-load-key-rebind-escaped-unicode-string-parsed
+    config-load-key-rebind-hex-unicode-string-parsed
+    config-load-key-rebind-invalid-unicode-defaulted
+    config-load-key-rebind-legacy-show-indicator-migrated
+    config-load-key-rebind-shift-layer-caps-lock-parsed
+    config-load-key-rebind-shift-layer-caps-lock-defaulted
+    key-rebind-runtime-full-forwarding
+    key-rebind-runtime-split-vk-output
+    key-rebind-runtime-split-unicode-output
+    key-rebind-runtime-shift-layer-shift-activated
+    key-rebind-runtime-shift-layer-caps-lock-activated
+    key-rebind-runtime-full-caps-lock-honored
+    key-rebind-runtime-split-caps-lock-ignored
+    key-rebind-runtime-non-typable-trigger-consumes-char
+    key-rebind-runtime-mouse-source-emits-key-and-char
+    key-rebind-runtime-disabled-rebind-ignored
+    key-rebind-gui-keyboard-layout-full-bind-and-trigger
+    key-rebind-gui-keyboard-layout-split-bind-and-trigger
+    key-rebind-gui-keyboard-layout-mouse-source-bind-and-trigger
+    key-rebind-gui-keyboard-layout-full-bind-scan-picker-runtime
+    key-rebind-gui-keyboard-layout-scan-picker-filter
+    key-rebind-gui-keyboard-layout-scan-picker-reset-to-default
+    config-load-fullscreen-stretch-repaired
+    config-load-preemptive-sync-existing-mode
+    config-load-thin-min-width-enforced
+    config-load-browser-overlay-defaults
+    config-load-window-overlay-defaults
+    config-load-image-defaults
+    config-load-hotkey-default-flags
+    config-load-sensitivity-hotkey-default-flags
+    config-load-image-color-key-default-sensitivity
+    config-load-window-overlay-color-key-default-sensitivity
+    config-load-browser-overlay-color-key-default-sensitivity
+    mode-mirror-render-screen-anchors
+    mode-mirror-render-viewport-anchors
+    mode-mirror-render-screen-anchor-size-matrix
+    mode-mirror-render-viewport-anchor-size-matrix
+    mode-mirror-group-render
+    mode-window-overlay-render
+    mode-window-overlay-render-resets-blend-equation
+    mode-window-overlay-render-unbinds-sampler
+    mode-browser-overlay-render
+    mode-image-overlay-render-png
+    mode-image-overlay-render-mpeg
+    rebind-indicator-renders-below-settings-gui
+    config-error-gui
+    settings-gui-basic
+    settings-gui-advanced
+    settings-tab-general-default
+    settings-tab-other-default
+    settings-tab-supporters-default
+    settings-tab-modes-default
+    settings-tab-mirrors-default
+    settings-tab-images-default
+    settings-tab-window-overlays-default
+    settings-tab-browser-overlays-default
+    settings-tab-hotkeys-default
+    settings-tab-inputs-mouse-default
+    settings-tab-inputs-keyboard-default
+    settings-tab-settings-default
+    settings-tab-appearance-default
+    settings-tab-misc-default
+    settings-tab-general-populated
+    settings-tab-other-populated
+    settings-tab-modes-populated
+    settings-tab-mirrors-populated
+    settings-tab-images-populated
+    settings-tab-window-overlays-populated
+    settings-tab-browser-overlays-populated
+    settings-tab-hotkeys-populated
+    settings-tab-inputs-mouse-populated
+    settings-tab-inputs-keyboard-populated
+    settings-tab-settings-populated
+    settings-tab-appearance-populated
+    settings-tab-misc-populated
+    settings-tab-supporters-populated
+    profile-apply-fields-roundtrip
+    profile-profiles-config-roundtrip
+    profile-name-validation
+    profile-create-duplicate-delete
+    profile-migrate
+    profile-delete-guards
+    profile-rename
+    profile-case-insensitive-collisions
+    profile-recover-missing-metadata
+    profile-async-save-skip-deleted-profile
+    profile-switch-concurrent-readers
+    profile-switch-concurrent-lifecycle
+    profile-switch-concurrent-metadata-rebuild
+    profile-switch-concurrent-snapshot-writes
+)
+
+foreach(test_case IN LISTS TOOLSCREEN_GUI_INTEGRATION_TEST_CASES)
+    string(REPLACE "-" "_" test_name_suffix "${test_case}")
+    add_test(
+        NAME toolscreen_integration_${test_name_suffix}
+        COMMAND $<TARGET_FILE:toolscreen_gui_integration_tests> ${test_case}
+    )
+endforeach()
 

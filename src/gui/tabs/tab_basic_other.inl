@@ -1,4 +1,4 @@
-if (ImGui::BeginTabItem(trc("tabs.other"))) {
+if (BeginSelectableSettingsTopTabItem(trc("tabs.other"))) {
     g_currentlyEditingMirror = "";
     g_imageDragMode.store(false);
     g_windowOverlayDragMode.store(false);
@@ -85,21 +85,18 @@ if (ImGui::BeginTabItem(trc("tabs.other"))) {
     ImGui::PopID();
 
     ImGui::SeparatorText(trc("hotkeys.window_hotkeys"));
-    ImGui::PushID("basic_borderless_hotkey");
-    std::string borderlessKeyStr = GetKeyComboString(g_config.borderlessHotkey);
+    ImGui::PushID("basic_borderless_toggle");
+    HWND hwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
+    const bool canToggleBorderless = (hwnd != NULL && IsWindow(hwnd));
 
     ImGui::Text(trc("label.toggle_borderless"));
     ImGui::SameLine();
 
-    bool isBindingBorderless = (s_mainHotkeyToBind == -998);
-    const char* borderlessButtonLabel =
-        isBindingBorderless ? trc("hotkeys.press_keys") : (borderlessKeyStr.empty() ? trc("hotkeys.click_to_bind") : borderlessKeyStr.c_str());
-    if (ImGui::Button(borderlessButtonLabel, ImVec2(150, 0))) {
-        s_mainHotkeyToBind = -998;
-        s_altHotkeyToBind = { -1, -1 };
-        s_exclusionToBind = { -1, -1 };
-            MarkHotkeyBindingActive();
+    if (!canToggleBorderless) { ImGui::BeginDisabled(); }
+    if (ImGui::Button(trc("general.go_borderless"), ImVec2(150, 0))) {
+        ToggleBorderlessWindowedFullscreen(hwnd);
     }
+    if (!canToggleBorderless) { ImGui::EndDisabled(); }
     ImGui::SameLine();
     HelpMarker(trc("tooltip.toggle_borderless"));
     ImGui::PopID();
@@ -113,16 +110,6 @@ if (ImGui::BeginTabItem(trc("tabs.other"))) {
     }
 
     ImGui::SeparatorText(trc("label.display_settings"));
-
-    ImGui::Text(trc("label.fps_limit"));
-    ImGui::SetNextItemWidth(300);
-    int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
-    if (ImGui::SliderInt("##FpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
-        g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
-        g_configIsDirty = true;
-    }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.fps_limit.advanced"));
 
     if (ImGui::Checkbox(trc("label.hide_animations_in_game"), &g_config.hideAnimationsInGame)) { g_configIsDirty = true; }
     ImGui::SameLine();
