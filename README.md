@@ -87,6 +87,9 @@ Run the manual `Build Liblogger` GitHub Actions workflow once to publish the reu
 
 After that, run `build.bat` to build Toolscreen. The script downloads the latest signed `liblogger_x64.dll` and `liblogger_x64.pdb` from that workflow release, then stages them into `out/build/bin/Release/` alongside the Toolscreen artifacts.
 
+Run `build.bat --test` to execute the regular local and GitHub test flow.
+Run `build.bat --manual-ninjabrain-tests` to build and run the opt-in Ninjabrain integration suite in its separate manual test tree.
+
 If you intentionally need to rebuild liblogger locally instead of consuming the published signed artifact, configure CMake with `-DTOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE=ON`.
 
 For standalone logger artifacts on non-Windows hosts:

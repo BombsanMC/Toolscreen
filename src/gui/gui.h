@@ -550,6 +550,79 @@ struct KeyRebindsConfig {
     std::vector<DWORD> toggleHotkey = {};
     std::vector<KeyRebind> rebinds;
 };
+
+// NinjabrainBot overlay.
+struct NinjabrainColumn {
+    std::string id;
+    std::string header;
+    bool show = true;
+};
+
+struct NinjabrainOverlayConfig {
+    bool enabled = true;
+    int x = 4;
+    int y = -5;
+    std::string relativeTo = "bottomLeftScreen";
+    std::string customFontPath = ConfigDefaults::CONFIG_FONT_PATH;
+    std::string apiBaseUrl = ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL;
+    float fontSize = 36.0f;
+    bool bgEnabled = true;
+    float bgOpacity = 1.0f;
+    Color bgColor = { 0.2157f, 0.2353f, 0.2588f, 1.0f };
+    std::string layoutStyle = "compact";
+    std::string titleText = "Ninjabrain Bot";
+    bool showTitleBar = false;
+    bool showWindowControls = false;
+    bool showThrowDetails = true;
+    bool showSeparators = true;
+    bool showRowStripes = true;
+    int borderWidth = 0;
+    float cornerRadius = 0.0f;
+    Color headerFillColor = { 0.1765f, 0.1961f, 0.2196f, 1.0f };
+    std::string coordsDisplay = "chunk";
+    Color chromeColor = { 0.1804f, 0.2000f, 0.2392f, 1.0f };
+    Color borderColor = { 0.2784f, 0.2902f, 0.3098f, 1.0f };
+    Color dividerColor = { 0.1647f, 0.1804f, 0.1961f, 1.0f };
+    Color headerDividerColor = { 0.1294f, 0.1451f, 0.1608f, 1.0f };
+    Color accentColor = { 0.0f, 1.0f, 0.0f, 1.0f };
+    Color buttonColor = { 0.2314f, 0.2588f, 0.3020f, 1.0f };
+    int outlineWidth = 0;
+    Color textColor = { 0.8980f, 0.8980f, 0.8980f, 1.0f };
+    Color dataColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+    Color titleTextColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+    Color throwsTextColor = { 0.7529f, 0.7529f, 0.7529f, 1.0f };
+    Color divineTextColor = { 0.8980f, 0.8980f, 0.8980f, 1.0f };
+    Color versionTextColor = { 0.7608f, 0.7608f, 0.7608f, 1.0f };
+    Color throwsBackgroundColor = { 0.2000f, 0.2196f, 0.2392f, 1.0f };
+    Color negCoordColor = { 1.0f, 0.4510f, 0.4510f, 1.0f };
+    bool negCoordColorEnabled = false;
+    Color certaintyColor = { 0.0f, 0.8078f, 0.1608f, 1.0f };
+    Color certaintyMidColor = { 1.0f, 1.0f, 0.0f, 1.0f };
+    Color certaintyLowColor = { 1.0f, 0.0f, 0.0f, 1.0f };
+    Color subpixelPositiveColor = { 0.4588f, 0.8000f, 0.4235f, 1.0f };
+    Color subpixelNegativeColor = { 0.8000f, 0.4314f, 0.4471f, 1.0f };
+    std::vector<std::string> allowedModes;
+    float overlayOpacity = 1.0f;
+    float overlayScale = 0.56f;
+    bool onlyOnMyScreen = true;
+    bool onlyOnObs = false;
+    bool showEyeOverlay = true;
+    int shownPredictions = 5;
+    bool showAllPreds = false;
+    int angleDisplay = 1;
+    float rowSpacing = 4.0f;
+    float colSpacing = 36.0f;
+    float sidePadding = 20.0f;
+    bool alwaysShowBoat = false;
+    std::vector<NinjabrainColumn> columns = {
+        {"coords", "Chunk", true},
+        {"certainty", "%",        true},
+        {"distance", "Dist.", true},
+        {"nether", "Nether", true},
+        {"angle", "Angle", true},
+        {"boat", "Boat", false},
+    };
+};
 struct Config {
     int configVersion = GetConfigVersion();
     std::vector<MirrorConfig> mirrors;
@@ -569,7 +642,7 @@ struct Config {
     std::vector<DWORD> imageOverlaysHotkey = {};
     std::vector<DWORD> windowOverlaysHotkey = {};
     CursorsConfig cursors;
-    std::string fontPath = "c:\\Windows\\Fonts\\Arial.ttf";
+    std::string fontPath = ConfigDefaults::CONFIG_FONT_PATH;
     std::string lang = "en";
     int fpsLimit = 0;
     int fpsLimitSleepThreshold = 1000;
@@ -591,6 +664,7 @@ struct Config {
     bool restoreWindowedModeOnFullscreenExit = ConfigDefaults::CONFIG_RESTORE_WINDOWED_MODE_ON_FULLSCREEN_EXIT;
     bool disableFullscreenPrompt = false;
     bool disableConfigurePrompt = false;
+    NinjabrainOverlayConfig ninjabrainOverlay;
 };
 
 inline constexpr const char* kDefaultProfileName = "Default";

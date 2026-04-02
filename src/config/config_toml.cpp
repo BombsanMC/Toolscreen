@@ -2019,6 +2019,77 @@ void ConfigToToml(const Config& config, toml::table& out) {
     EyeZoomConfigToToml(config.eyezoom, eyezoomTbl);
     out.insert("eyezoom", eyezoomTbl);
 
+    // NinjabrainBot overlay config
+    {
+        toml::table nb;
+        auto& o = config.ninjabrainOverlay;
+        nb.insert("enabled",              o.enabled);
+        nb.insert("x",                    o.x);
+        nb.insert("y",                    o.y);
+        nb.insert("relativeTo",           o.relativeTo);
+        nb.insert("apiBaseUrl",           o.apiBaseUrl);
+        nb.insert("fontSize",             o.fontSize);
+        nb.insert("bgEnabled",            o.bgEnabled);
+        nb.insert("bgOpacity",            o.bgOpacity);
+        nb.insert("bgColor",              ColorToTomlArray(o.bgColor));
+        nb.insert("layoutStyle",          o.layoutStyle);
+        nb.insert("titleText",            o.titleText);
+        nb.insert("showTitleBar",         o.showTitleBar);
+        nb.insert("showWindowControls",   o.showWindowControls);
+        nb.insert("showThrowDetails",     o.showThrowDetails);
+        nb.insert("showSeparators",       o.showSeparators);
+        nb.insert("showRowStripes",       o.showRowStripes);
+        nb.insert("borderWidth",          o.borderWidth);
+        nb.insert("cornerRadius",         o.cornerRadius);
+        nb.insert("headerFillColor",      ColorToTomlArray(o.headerFillColor));
+        nb.insert("coordsDisplay",        o.coordsDisplay);
+        nb.insert("chromeColor",          ColorToTomlArray(o.chromeColor));
+        nb.insert("borderColor",          ColorToTomlArray(o.borderColor));
+        nb.insert("dividerColor",         ColorToTomlArray(o.dividerColor));
+        nb.insert("headerDividerColor",   ColorToTomlArray(o.headerDividerColor));
+        nb.insert("accentColor",          ColorToTomlArray(o.accentColor));
+        nb.insert("buttonColor",          ColorToTomlArray(o.buttonColor));
+        nb.insert("outlineWidth",         o.outlineWidth);
+        nb.insert("textColor",            ColorToTomlArray(o.textColor));
+        nb.insert("dataColor",            ColorToTomlArray(o.dataColor));
+        nb.insert("titleTextColor",       ColorToTomlArray(o.titleTextColor));
+        nb.insert("throwsTextColor",      ColorToTomlArray(o.throwsTextColor));
+        nb.insert("divineTextColor",      ColorToTomlArray(o.divineTextColor));
+        nb.insert("versionTextColor",     ColorToTomlArray(o.versionTextColor));
+        nb.insert("throwsBackgroundColor", ColorToTomlArray(o.throwsBackgroundColor));
+        nb.insert("negCoordColor",        ColorToTomlArray(o.negCoordColor));
+        nb.insert("negCoordColorEnabled", o.negCoordColorEnabled);
+        nb.insert("certaintyColor",       ColorToTomlArray(o.certaintyColor));
+        nb.insert("certaintyMidColor",    ColorToTomlArray(o.certaintyMidColor));
+        nb.insert("certaintyLowColor",    ColorToTomlArray(o.certaintyLowColor));
+        nb.insert("subpixelPositiveColor", ColorToTomlArray(o.subpixelPositiveColor));
+        nb.insert("subpixelNegativeColor", ColorToTomlArray(o.subpixelNegativeColor));
+        nb.insert("showEyeOverlay",       o.showEyeOverlay);
+        nb.insert("shownPredictions",     o.shownPredictions);
+        nb.insert("showAllPreds",         o.showAllPreds);
+        nb.insert("alwaysShowBoat",       o.alwaysShowBoat);
+        nb.insert("angleDisplay",         o.angleDisplay);
+        nb.insert("rowSpacing",           o.rowSpacing);
+        nb.insert("colSpacing",           o.colSpacing);
+        nb.insert("sidePadding",          o.sidePadding);
+        nb.insert("customFontPath",       o.customFontPath);
+        nb.insert("overlayOpacity",       o.overlayOpacity);
+        nb.insert("overlayScale",         o.overlayScale);
+        nb.insert("onlyOnMyScreen",       o.onlyOnMyScreen);
+        nb.insert("onlyOnObs",            o.onlyOnObs);
+        { toml::array arr; for (auto& m : o.allowedModes) arr.push_back(m); nb.insert("allowedModes", arr); }
+        toml::array colArr;
+        for (auto& col : o.columns) {
+            toml::table ct;
+            ct.insert("id",     col.id);
+            ct.insert("header", col.header);
+            ct.insert("show",   col.show);
+            colArr.push_back(ct);
+        }
+        nb.insert("columns", colArr);
+        out.insert("ninjabrainOverlay", nb);
+    }
+
     toml::table cursorsTbl;
     CursorsConfigToToml(config.cursors, cursorsTbl);
     out.insert("cursors", cursorsTbl);
@@ -2166,6 +2237,109 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
     if (auto t = GetTable(tbl, "debug")) { DebugGlobalConfigFromToml(*t, config.debug); }
 
     if (auto t = GetTable(tbl, "eyezoom")) { EyeZoomConfigFromToml(*t, config.eyezoom); }
+
+    // NinjabrainBot overlay config
+    if (auto nb = tbl.get_as<toml::table>("ninjabrainOverlay")) {
+        auto& c = config.ninjabrainOverlay;
+        c.enabled              = GetOr(*nb, "enabled",              true);
+        c.x                    = GetOr(*nb, "x",                    5);
+        c.y                    = GetOr(*nb, "y",                    -5);
+        c.relativeTo           = GetStringOr(*nb, "relativeTo",     "bottomLeftScreen");
+        c.apiBaseUrl           = GetStringOr(*nb, "apiBaseUrl",     ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL);
+        c.fontSize             = GetOr(*nb, "fontSize",             56.0f);
+        c.bgEnabled            = GetOr(*nb, "bgEnabled",            true);
+        c.bgOpacity            = GetOr(*nb, "bgOpacity",            0.92f);
+        c.bgColor              = ColorFromTomlArray(nb->get_as<toml::array>("bgColor"),        Color{0.15f,0.16f,0.17f,1.0f});
+        c.layoutStyle          = GetStringOr(*nb, "layoutStyle",          "compact");
+        c.layoutStyle          = "compact";
+        c.titleText            = GetStringOr(*nb, "titleText",            "Ninjabrain Bot");
+        c.showTitleBar         = false;
+        c.showWindowControls   = GetOr(*nb, "showWindowControls",   false);
+        c.showThrowDetails     = GetOr(*nb, "showThrowDetails",     true);
+        c.showSeparators       = GetOr(*nb, "showSeparators",       true);
+        c.showRowStripes       = GetOr(*nb, "showRowStripes",       true);
+        c.borderWidth          = GetOr(*nb, "borderWidth",          1);
+        c.cornerRadius         = GetOr(*nb, "cornerRadius",         0.0f);
+        c.chromeColor          = ColorFromTomlArray(nb->get_as<toml::array>("chromeColor"),    Color{0.18f,0.20f,0.24f,1.0f});
+        c.borderColor          = ColorFromTomlArray(nb->get_as<toml::array>("borderColor"),    Color{0.28f,0.29f,0.31f,1.0f});
+        c.dividerColor         = ColorFromTomlArray(nb->get_as<toml::array>("dividerColor"),   Color{0.24f,0.25f,0.27f,1.0f});
+        c.headerDividerColor   = ColorFromTomlArray(nb->get_as<toml::array>("headerDividerColor"), c.borderColor);
+        const float legacyHeaderFillMix = std::clamp(GetOr(*nb, "headerFillOpacity", 0.55f), 0.0f, 1.0f);
+        const Color legacyHeaderFillColor = {
+            c.bgColor.r + (c.dividerColor.r - c.bgColor.r) * legacyHeaderFillMix,
+            c.bgColor.g + (c.dividerColor.g - c.bgColor.g) * legacyHeaderFillMix,
+            c.bgColor.b + (c.dividerColor.b - c.bgColor.b) * legacyHeaderFillMix,
+            1.0f,
+        };
+        c.headerFillColor      = ColorFromTomlArray(nb->get_as<toml::array>("headerFillColor"), legacyHeaderFillColor);
+        c.headerFillColor.a    = 1.0f;
+        c.coordsDisplay        = GetStringOr(*nb, "coordsDisplay",  "chunk");
+        c.accentColor          = ColorFromTomlArray(nb->get_as<toml::array>("accentColor"),    Color{0.31f,0.86f,0.31f,1.0f});
+        c.buttonColor          = ColorFromTomlArray(nb->get_as<toml::array>("buttonColor"),    Color{0.23f,0.26f,0.30f,1.0f});
+        c.outlineWidth         = GetOr(*nb, "outlineWidth",         0);
+        c.textColor            = ColorFromTomlArray(nb->get_as<toml::array>("textColor"),      Color{0.76f,0.76f,0.76f,1.0f});
+        c.dataColor            = ColorFromTomlArray(nb->get_as<toml::array>("dataColor"),      Color{1.0f,1.0f,1.0f,1.0f});
+        c.titleTextColor       = ColorFromTomlArray(nb->get_as<toml::array>("titleTextColor"), c.dataColor);
+        c.throwsTextColor      = ColorFromTomlArray(nb->get_as<toml::array>("throwsTextColor"), c.dataColor);
+        c.divineTextColor      = ColorFromTomlArray(nb->get_as<toml::array>("divineTextColor"), c.dataColor);
+        c.versionTextColor     = ColorFromTomlArray(nb->get_as<toml::array>("versionTextColor"), c.textColor);
+        c.throwsBackgroundColor = ColorFromTomlArray(nb->get_as<toml::array>("throwsBackgroundColor"), c.bgColor);
+        c.negCoordColor        = ColorFromTomlArray(nb->get_as<toml::array>("negCoordColor"),  Color{1.0f,0.45f,0.45f,1.0f});
+        c.negCoordColorEnabled = GetOr(*nb, "negCoordColorEnabled", true);
+        c.certaintyColor       = ColorFromTomlArray(nb->get_as<toml::array>("certaintyColor"), Color{0.31f,0.86f,0.31f,1.0f});
+        c.certaintyMidColor    = ColorFromTomlArray(nb->get_as<toml::array>("certaintyMidColor"), Color{1.0f,0.74f,0.17f,1.0f});
+        c.certaintyLowColor    = ColorFromTomlArray(nb->get_as<toml::array>("certaintyLowColor"), Color{0.97f,0.20f,0.20f,1.0f});
+        c.subpixelPositiveColor = ColorFromTomlArray(nb->get_as<toml::array>("subpixelPositiveColor"), Color{0.459f,0.800f,0.424f,1.0f});
+        c.subpixelNegativeColor = ColorFromTomlArray(nb->get_as<toml::array>("subpixelNegativeColor"), Color{0.800f,0.431f,0.447f,1.0f});
+        c.showEyeOverlay       = GetOr(*nb, "showEyeOverlay",       true);
+        c.shownPredictions     = GetOr(*nb, "shownPredictions",     5);
+        c.showAllPreds         = GetOr(*nb, "showAllPreds",         false);
+        c.alwaysShowBoat       = GetOr(*nb, "alwaysShowBoat",       false);
+        c.angleDisplay         = GetOr(*nb, "angleDisplay",         1);
+        c.rowSpacing           = GetOr(*nb, "rowSpacing",           4.0f);
+        c.colSpacing           = GetOr(*nb, "colSpacing",           12.0f);
+        c.sidePadding          = GetOr(*nb, "sidePadding",          0.0f);
+        c.customFontPath       = GetStringOr(*nb, "customFontPath", "");
+        c.overlayOpacity       = GetOr(*nb, "overlayOpacity",       1.0f);
+        c.overlayScale         = GetOr(*nb, "overlayScale",         0.24f);
+        c.onlyOnMyScreen       = GetOr(*nb, "onlyOnMyScreen",       false);
+        c.onlyOnObs            = GetOr(*nb, "onlyOnObs",            false);
+        if (c.layoutStyle != "compact" && c.layoutStyle != "classicWindow") { c.layoutStyle = "compact"; }
+        if (c.apiBaseUrl.empty()) { c.apiBaseUrl = ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL; }
+        if (c.titleText.empty()) { c.titleText = "Ninjabrain Bot"; }
+        if (c.fontSize < 16.0f) { c.fontSize = 16.0f; }
+        if (c.borderWidth < 0) { c.borderWidth = 0; }
+        if (c.cornerRadius < 0.0f) { c.cornerRadius = 0.0f; }
+        if (c.coordsDisplay != "block" && c.coordsDisplay != "chunk") { c.coordsDisplay = "chunk"; }
+        if (c.sidePadding < 0.0f) { c.sidePadding = 0.0f; }
+        if (c.sidePadding > 200.0f) { c.sidePadding = 200.0f; }
+        if (auto* arr = nb->get_as<toml::array>("allowedModes")) {
+            c.allowedModes.clear();
+            for (auto& el : *arr) { if (auto* s = el.as_string()) c.allowedModes.push_back(s->get()); }
+        }
+        if (auto cols = nb->get_as<toml::array>("columns")) {
+            c.columns.clear();
+            for (auto& elem : *cols) {
+                if (auto ct = elem.as_table()) {
+                    NinjabrainColumn col;
+                    if (auto v = ct->get_as<std::string>("id"))     col.id     = v->get();
+                    if (auto v = ct->get_as<std::string>("header")) col.header = v->get();
+                    col.show = GetOr(*ct, "show", true);
+                    c.columns.push_back(col);
+                }
+            }
+        }
+        if (c.columns.empty()) {
+            c.columns = {
+                {"coords",    "Chunk",    true},
+                {"certainty", "%",        true},
+                {"distance",  "Dist.",    true},
+                {"nether",    "Nether",   true},
+                {"angle",     "Angle",    true},
+                {"boat",      "Boat",     false},
+            };
+        }
+    }
 
     if (auto t = GetTable(tbl, "cursors")) { CursorsConfigFromToml(*t, config.cursors); }
 

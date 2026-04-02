@@ -197,7 +197,8 @@ inline std::vector<DWORD> GetDefaultKeyRebindsToggleHotkey() { return {}; }
 
 constexpr int DEFAULT_CONFIG_VERSION = 5;
 inline const std::string CONFIG_DEFAULT_MODE = "Fullscreen";
-inline const std::string CONFIG_FONT_PATH = R"(c:\Windows\Fonts\Arial.ttf)";
+inline const std::string CONFIG_FONT_PATH = "fonts/OpenSans-Regular.ttf";
+inline const std::string CONFIG_FALLBACK_FONT_PATH = R"(c:\Windows\Fonts\Arial.ttf)";
 inline const std::string CONFIG_LANG = "en";
 constexpr int CONFIG_FPS_LIMIT = 0;
 constexpr int CONFIG_FPS_LIMIT_SLEEP_THRESHOLD = 1000;
@@ -215,6 +216,7 @@ constexpr bool CONFIG_RESTORE_WINDOWED_MODE_ON_FULLSCREEN_EXIT = true;
 constexpr bool CONFIG_DISABLE_FULLSCREEN_PROMPT = false;
 constexpr bool CONFIG_DISABLE_CONFIGURE_PROMPT = false;
 inline const std::string CONFIG_MIRROR_MATCH_COLORSPACE = "Auto";
+inline const std::string CONFIG_NINJABRAIN_API_BASE_URL = "http://127.0.0.1:52533";
 
 constexpr DWORD CONFIG_GUI_HOTKEY_MODIFIER = VK_LCONTROL;
 constexpr DWORD CONFIG_GUI_HOTKEY_KEY = 'I';

@@ -15,6 +15,7 @@
 #include "features/browser_overlay.h"
 #include "features/virtual_camera.h"
 #include "features/window_overlay.h"
+#include "features/ninjabrain_client.h"
 
 #include "MinHook.h"
 #include <array>
@@ -2091,99 +2092,6 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
         // Release ensures all preceding EyeZoom stores are visible when the reader acquires this value
         g_isTransitioningFromEyeZoom.store(isTransitioningFromEyeZoom, std::memory_order_release);
 
-        // This must be computed BEFORE any early-exit checks that reference it.
-        const bool needsDualRendering = g_graphicsHookDetected.load(std::memory_order_acquire) || IsVirtualCameraActive();
-
-        {
-            const bool modeSizesFullscreen = (modeToRenderCopy.width == fullW && modeToRenderCopy.height == fullH);
-            const bool stretchIsFullscreen =
-                (!modeToRenderCopy.stretch.enabled) ||
-                (modeToRenderCopy.stretch.width == fullW && modeToRenderCopy.stretch.height == fullH && modeToRenderCopy.stretch.x == 0 &&
-                 modeToRenderCopy.stretch.y == 0);
-            const bool borderVisible = modeToRenderCopy.border.enabled && modeToRenderCopy.border.width > 0;
-
-            const bool anyModeOverlaysConfigured =
-                (!modeToRenderCopy.mirrorIds.empty() || !modeToRenderCopy.mirrorGroupIds.empty() ||
-                 (g_imageOverlaysVisible.load(std::memory_order_acquire) && !modeToRenderCopy.imageIds.empty()) ||
-                 (g_windowOverlaysVisible.load(std::memory_order_acquire) && !modeToRenderCopy.windowOverlayIds.empty()) ||
-                 (g_browserOverlaysVisible.load(std::memory_order_acquire) && !modeToRenderCopy.browserOverlayIds.empty()));
-
-            const bool anyImGuiOrDebugOverlay = shouldRenderGui || showPerformanceOverlay || showProfiler || showEyeZoomOnScreen ||
-                                                frameCfg.debug.showTextureGrid;
-
-            const bool anyOtherCustomOutput = frameCfg.debug.fakeCursor || g_screenshotRequested.load(std::memory_order_relaxed);
-
-            const bool canSkipCustomRender = g_glInitialized.load(std::memory_order_acquire) && !needsDualRendering &&
-                                             !IsModeTransitionActive() && modeSizesFullscreen &&
-                                             stretchIsFullscreen && !borderVisible && !anyModeOverlaysConfigured &&
-                                             !anyImGuiOrDebugOverlay && !anyOtherCustomOutput;
-
-            if (canSkipCustomRender) {
-
-                int targetFPS = frameCfg.fpsLimit;
-                if (targetFPS > 0 && g_highResTimer) {
-                    PROFILE_SCOPE_CAT("FPS Limit Sleep (Skip Render)", "Timing");
-
-                    const double targetFrameTimeUs = 1000000.0 / targetFPS;
-                    const bool isHighFPS = targetFPS > 500;
-
-                    std::lock_guard<std::mutex> lock(g_fpsLimitMutex);
-                    auto now = std::chrono::high_resolution_clock::now();
-                    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - g_lastFrameEndTime).count();
-                    double timeToWaitUs = targetFrameTimeUs - elapsed;
-
-                    if (timeToWaitUs > 0) {
-                        if (isHighFPS) {
-                            LARGE_INTEGER dueTime;
-                            dueTime.QuadPart = -static_cast<LONGLONG>(timeToWaitUs * 10LL);
-                            if (SetWaitableTimer(g_highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                                WaitForSingleObject(g_highResTimer, 1000);
-                            }
-                        } else {
-                            if (timeToWaitUs > 10) {
-                                LARGE_INTEGER dueTime;
-                                dueTime.QuadPart = -static_cast<LONGLONG>(timeToWaitUs * 10LL);
-                                if (SetWaitableTimer(g_highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                                    WaitForSingleObject(g_highResTimer, 1000);
-                                }
-                            }
-                        }
-                        g_lastFrameEndTime = g_lastFrameEndTime + std::chrono::microseconds(static_cast<long long>(targetFrameTimeUs));
-                    } else {
-                        g_lastFrameEndTime = now;
-                    }
-                }
-
-                if (IsModeTransitionActive()) {
-                    PROFILE_SCOPE_CAT("Mode Transition Animation (Skip Render)", "SwapBuffers");
-                    UpdateModeTransition();
-                }
-
-                if (frameCfg.debug.delayRenderingUntilFinished) { glFinish(); }
-
-                if (IsRebindIndicatorVisible()) { RenderRebindIndicator(); }
-
-                auto swapStartTime = std::chrono::high_resolution_clock::now();
-                BOOL result = next(hDc);
-
-                auto swapEndTime = std::chrono::high_resolution_clock::now();
-                std::chrono::duration<double, std::milli> swapDuration = swapEndTime - swapStartTime;
-                g_originalFrameTimeMs = swapDuration.count();
-
-                std::chrono::duration<double, std::milli> fp_ms = swapStartTime - startTime;
-                g_lastFrameTimeMs = fp_ms.count();
-
-                {
-                    int nextIndex = 1 - g_lastFrameModeIdIndex.load(std::memory_order_relaxed);
-                    g_lastFrameModeIdBuffers[nextIndex] = desiredModeId;
-                    g_lastFrameModeIdIndex.store(nextIndex, std::memory_order_release);
-                    g_lastFrameModeId = desiredModeId;
-                }
-
-                return result;
-            }
-        }
-
         if (!g_glInitialized.load(std::memory_order_acquire)) {
             PROFILE_SCOPE_CAT("GPU Resource Init Check", "SwapBuffers");
             Log("[RENDER] Conditions met for GPU resource initialization.");
@@ -2417,6 +2325,93 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_toolscreenPath = GetToolscreenPath();
         if (!g_toolscreenPath.empty()) {
             std::wstring logsDir = g_toolscreenPath + L"\\logs";
+            auto extractBundledResource = [&](WORD resourceId, const std::wstring& relativePath) {
+                std::filesystem::path destination = std::filesystem::path(g_toolscreenPath) / std::filesystem::path(relativePath);
+                if (std::filesystem::exists(destination)) {
+                    return;
+                }
+
+                std::error_code directoryError;
+                std::filesystem::create_directories(destination.parent_path(), directoryError);
+
+                HMODULE hModule = nullptr;
+                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(&DllMain), &hModule);
+                HRSRC hRes = hModule ? FindResourceW(hModule, MAKEINTRESOURCEW(resourceId), RT_RCDATA) : nullptr;
+                HGLOBAL hData = hRes ? LoadResource(hModule, hRes) : nullptr;
+                if (!hData) {
+                    return;
+                }
+
+                DWORD size = SizeofResource(hModule, hRes);
+                const void* data = LockResource(hData);
+                if (!data || size == 0) {
+                    return;
+                }
+
+                HANDLE hFile = CreateFileW(destination.c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (hFile == INVALID_HANDLE_VALUE) {
+                    return;
+                }
+
+                DWORD written = 0;
+                WriteFile(hFile, data, size, &written, NULL);
+                CloseHandle(hFile);
+            };
+
+            extractBundledResource(IDR_MINECRAFT_FONT, L"fonts\\Minecraft.ttf");
+            extractBundledResource(IDR_OPENSANS_FONT, L"fonts\\OpenSans-Regular.ttf");
+
+            std::wstring latestLogPath = logsDir + L"\\latest.log";
+
+            if (GetFileAttributesW(latestLogPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                HANDLE hFile =
+                    CreateFileW(latestLogPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (hFile != INVALID_HANDLE_VALUE) {
+                    FILETIME lastWriteTime;
+                    if (GetFileTime(hFile, NULL, NULL, &lastWriteTime)) {
+                        FILETIME localFileTime;
+                        FileTimeToLocalFileTime(&lastWriteTime, &localFileTime);
+                        SYSTEMTIME st;
+                        FileTimeToSystemTime(&localFileTime, &st);
+
+                        WCHAR timestamp[32];
+                        swprintf_s(timestamp, L"%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+                        std::wstring archivedLogPath = logsDir + L"\\" + timestamp + L".log";
+
+                        CloseHandle(hFile);
+
+                        if (GetFileAttributesW(archivedLogPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                            for (int counter = 1; counter < 100; counter++) {
+                                std::wstring altPath = logsDir + L"\\" + timestamp + L"_" + std::to_wstring(counter) + L".log";
+                                if (GetFileAttributesW(altPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                                    archivedLogPath = altPath;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!MoveFileW(latestLogPath.c_str(), archivedLogPath.c_str())) {
+                            Log("WARNING: Could not rename old log to " + WideToUtf8(archivedLogPath) +
+                                ", error code: " + std::to_string(GetLastError()));
+                        } else {
+                            // Compress the archived log to .gz on a background thread
+                            // so we don't block DLL initialization
+                            std::wstring archiveSrc = archivedLogPath;
+                            std::thread([archiveSrc]() {
+                                std::wstring gzPath = archiveSrc + L".gz";
+                                if (CompressFileToGzip(archiveSrc, gzPath)) {
+                                    DeleteFileW(archiveSrc.c_str());
+                                }
+                            }).detach();
+                        }
+                    } else {
+                        CloseHandle(hFile);
+                    }
+                }
+            }
+
             if (AcquireLatestLogSession(logsDir, g_logSession)) {
                 {
                     std::lock_guard<std::mutex> lock(g_logFileMutex);
@@ -2463,6 +2458,24 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         LoadConfig();
 
+        if (!g_toolscreenPath.empty()) {
+            const std::string extractedOpenSansPath = WideToUtf8(g_toolscreenPath + L"\\fonts\\OpenSans-Regular.ttf");
+            const std::string legacyMinecraftPath = WideToUtf8(g_toolscreenPath + L"\\Minecraft.ttf");
+            const std::string extractedMinecraftPath = WideToUtf8(g_toolscreenPath + L"\\fonts\\Minecraft.ttf");
+
+            if (g_config.fontPath.empty() || g_config.fontPath == ConfigDefaults::CONFIG_FALLBACK_FONT_PATH ||
+                g_config.fontPath == extractedOpenSansPath) {
+                g_config.fontPath = ConfigDefaults::CONFIG_FONT_PATH;
+            }
+
+            if (g_config.ninjabrainOverlay.customFontPath.empty() ||
+                g_config.ninjabrainOverlay.customFontPath == legacyMinecraftPath ||
+                g_config.ninjabrainOverlay.customFontPath == extractedMinecraftPath ||
+                g_config.ninjabrainOverlay.customFontPath == extractedOpenSansPath) {
+                g_config.ninjabrainOverlay.customFontPath = ConfigDefaults::CONFIG_FONT_PATH;
+            }
+        }
+
         LoadLangs();
         LogCategory("init", "Languages list loaded.");
 
@@ -2493,6 +2506,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // initialization (locale facets, errno, etc.). CreateThread skips CRT init which
         g_monitorThread = std::thread([]() { FileMonitorThread(nullptr); });
         g_imageMonitorThread = std::thread([]() { ImageMonitorThread(nullptr); });
+        StartNinjabrainClient();
 
         StartWindowCaptureThread();
         StartBrowserOverlayThread();
@@ -2608,6 +2622,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Stop hook compatibility monitor thread
         g_stopHookCompat.store(true, std::memory_order_release);
         if (g_hookCompatThread.joinable()) { g_hookCompatThread.join(); }
+        StopNinjabrainClient();
 
         // Stop background threads
         StopBrowserOverlayThread();

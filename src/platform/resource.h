@@ -17,3 +17,9 @@
 #define IDR_ICON_RENAME        112
 #define IDR_ICON_DUPLICATE     113
 #define IDR_ICON_ADD           114
+#define IDR_BOAT_GRAY          115
+#define IDR_BOAT_BLUE          116
+#define IDR_BOAT_GREEN         117
+#define IDR_BOAT_RED           118
+#define IDR_MINECRAFT_FONT     119
+#define IDR_OPENSANS_FONT      120
