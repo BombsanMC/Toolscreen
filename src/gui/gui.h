@@ -556,6 +556,7 @@ struct NinjabrainColumn {
     std::string id;
     std::string header;
     bool show = true;
+    int staticWidth = 0;
 };
 
 struct NinjabrainOverlayConfig {
@@ -574,6 +575,7 @@ struct NinjabrainOverlayConfig {
     bool showTitleBar = false;
     bool showWindowControls = false;
     bool showThrowDetails = true;
+    bool staticColumnWidths = true;
     bool showSeparators = true;
     bool showRowStripes = true;
     int borderWidth = 0;

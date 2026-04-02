@@ -594,6 +594,7 @@
     "ninjabrain.subpixel_positive_color": "亚像素 +",
     "ninjabrain.show_row_stripes": "显示交替行",
     "ninjabrain.show_separators": "显示分隔线",
+    "ninjabrain.static_column_widths": "使用固定列宽",
     "ninjabrain.show_throw_details": "显示投掷详情面板",
     "ninjabrain.throws_background": "投掷背景",
     "ninjabrain.throws_text_color": "投掷文本",

@@ -8199,7 +8199,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     const float fs = GetNinjabrainFontSize() * scale;
     if (!font || !font->IsLoaded()) font = ImGui::GetFont();
     const float lineH = fs;
-    const float colGap = nb.colSpacing * scale;
+    const float colGap = 0.0f;
     const int outlineR = nb.outlineWidth;
     const float contentPadX = (8.0f + (float)outlineR) * scale;
     const float sidePadX = (std::max)(0.0f, nb.sidePadding) * scale;
@@ -8223,6 +8223,8 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     ImU32 titleTextCol = ColorToImU32(nb.titleTextColor);
     ImU32 throwsTextCol = ColorToImU32(nb.throwsTextColor);
     ImU32 versionTextCol = ColorToImU32(nb.versionTextColor);
+    ImU32 posAdjustmentCol = ColorToImU32(nb.subpixelPositiveColor);
+    ImU32 negAdjustmentCol = ColorToImU32(nb.subpixelNegativeColor);
     ImU32 negCoordCol = ColorToImU32(nb.subpixelNegativeColor);
 
     int boatIconIdx = 0;
@@ -8269,6 +8271,34 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     };
     auto measureRow = [&](Col& c, int ri) {
         c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c.rows[ri].text).x);
+    };
+    auto reserveStaticColWidth = [&](Col& c, const NinjabrainColumn& colCfg) {
+        if (!nb.staticColumnWidths) return;
+
+        if (colCfg.staticWidth > 0) {
+            c.width = static_cast<float>(colCfg.staticWidth) * scale;
+            return;
+        }
+
+        const std::string& colId = colCfg.id;
+
+        if (colId == "coords") {
+            const char* sample = (nb.coordsDisplay == "chunk") ? "(-99999, -99999)" : "(-999999, -999999)";
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, sample).x);
+        } else if (colId == "certainty") {
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "100.0%").x);
+        } else if (colId == "distance") {
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "999999").x);
+        } else if (colId == "nether") {
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "(-999999, -999999)").x);
+        } else if (colId == "angle") {
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99 (-> 180.0)").x);
+            if (!nb.showThrowDetails) {
+                c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99+999").x);
+            }
+        } else if (colId == "boat") {
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "MEASURING").x);
+        }
     };
     auto getCoordsDisplay = [&](int chunkX, int chunkZ, int& displayX, int& displayZ) {
         if (nb.coordsDisplay == "chunk") {
@@ -8324,7 +8354,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
             initCol(c, colCfg.header.c_str(), numRows);
             for (int i = 0; i < numRows; i++) {
                 const double distanceValue = data.predictions[i].overworldDistance;
-                const int displayDistance = (int)std::round(distanceValue);
+                const int displayDistance = (int)std::floor(distanceValue);
                 snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%d", displayDistance);
                 c.rows[i].color = dataCol;
                 measureRow(c, i);
@@ -8393,9 +8423,6 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
                     int infoIdx = numRows;
                     auto& ft = data.throws[data.eyeCount - 1];
 
-                    const ImU32 posCol = ColorToImU32(nb.subpixelPositiveColor);
-                    const ImU32 negCol = ColorToImU32(nb.subpixelNegativeColor);
-
                     int correctionIncrements = 0;
                     if (ft.hasCorrectionIncrements) {
                         correctionIncrements = ft.correctionIncrements;
@@ -8409,12 +8436,12 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
                         c.rows[infoIdx].xOffset = 0;
                     } else {
                         char basePart[32];
-                        snprintf(basePart, sizeof(basePart), "%.2f ", ft.angleWithoutCorrection);
+                        snprintf(basePart, sizeof(basePart), "%.2f", ft.angleWithoutCorrection);
                         c.rows[infoIdx].xOffset = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, basePart).x;
                         c.rows[infoIdx].part1Color = textCol;
-                        snprintf(c.rows[infoIdx].text, sizeof(c.rows[infoIdx].text), "%.2f %+d", ft.angleWithoutCorrection,
+                        snprintf(c.rows[infoIdx].text, sizeof(c.rows[infoIdx].text), "%.2f%+d", ft.angleWithoutCorrection,
                                  correctionIncrements);
-                        c.rows[infoIdx].color = (correctionIncrements > 0) ? posCol : negCol;
+                        c.rows[infoIdx].color = (correctionIncrements > 0) ? posAdjustmentCol : negAdjustmentCol;
                     }
                     measureRow(c, infoIdx);
                 }
@@ -8436,6 +8463,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         } else {
             continue;
         }
+        reserveStaticColWidth(c, colCfg);
         numCols++;
     }
 
@@ -8469,6 +8497,36 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         }
         drawList->AddText(font, sz, pos, col, txt);
     };
+    auto drawCenteredSegmentedText = [&](float left, float width, float y, const char* text, ImU32 color,
+                                         float splitOffset, ImU32 part1Color) {
+        drawList->PushClipRect(ImVec2(left, -FLT_MAX), ImVec2(left + width, FLT_MAX), true);
+        float textW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
+        float textX = left + (width - textW) * 0.5f;
+        if (splitOffset <= 0.0f) {
+            drawText(fs, ImVec2(textX, y), color, text);
+            drawList->PopClipRect();
+            return;
+        }
+
+        const char* splitPtr = text;
+        while (*splitPtr) {
+            const char* next = splitPtr + 1;
+            while ((*next & 0xC0) == 0x80) ++next;
+            float measuredWidth = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text, splitPtr).x;
+            if (measuredWidth >= splitOffset) break;
+            splitPtr = next;
+        }
+
+        char part1[64] = {};
+        int part1Length = (int)(splitPtr - text);
+        if (part1Length > 63) part1Length = 63;
+        memcpy(part1, text, part1Length);
+        drawText(fs, ImVec2(textX, y), part1Color, part1);
+
+        float part1W = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
+        drawText(fs, ImVec2(textX + part1W, y), color, splitPtr);
+        drawList->PopClipRect();
+    };
 
     auto calculateOrigin = [&](float totalW, float totalH, float& ox, float& oy) {
         int oxI = 0;
@@ -8500,12 +8558,14 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         const char* header;
         char value[64];
         ImU32 color;
+        ImU32 part1Color;
+        float xOffset;
     };
     DetailField detailFields[4] = {
-        { "x", "-", throwsTextCol },
-        { "z", "-", throwsTextCol },
-        { "Angle", "-", throwsTextCol },
-        { "Error", "-", throwsTextCol },
+        { "x", "-", throwsTextCol, throwsTextCol, 0.0f },
+        { "z", "-", throwsTextCol, throwsTextCol, 0.0f },
+        { "Angle", "-", throwsTextCol, throwsTextCol, 0.0f },
+        { "Error", "-", throwsTextCol, throwsTextCol, 0.0f },
     };
 
     if (data.hasPlayerPos) {
@@ -8515,9 +8575,24 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         detailFields[1].color = throwsTextCol;
     }
     if (data.eyeCount > 0) {
-        snprintf(detailFields[2].value, sizeof(detailFields[2].value), "%.2f", data.lastAngleWithoutCorrection);
+        const auto& lastThrow = data.throws[data.eyeCount - 1];
+        const int correctionIncrements = lastThrow.hasCorrectionIncrements
+            ? lastThrow.correctionIncrements
+            : data.correctionIncrements151;
+        if (correctionIncrements == 0) {
+            snprintf(detailFields[2].value, sizeof(detailFields[2].value), "%.2f", data.lastAngleWithoutCorrection);
+            detailFields[2].color = throwsTextCol;
+            detailFields[2].xOffset = 0.0f;
+        } else {
+            char basePart[32];
+            snprintf(basePart, sizeof(basePart), "%.2f", data.lastAngleWithoutCorrection);
+            detailFields[2].xOffset = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, basePart).x;
+            detailFields[2].part1Color = throwsTextCol;
+            snprintf(detailFields[2].value, sizeof(detailFields[2].value), "%.2f%+d", data.lastAngleWithoutCorrection,
+                     correctionIncrements);
+            detailFields[2].color = (correctionIncrements > 0) ? posAdjustmentCol : negAdjustmentCol;
+        }
         snprintf(detailFields[3].value, sizeof(detailFields[3].value), "%.4f", data.lastThrowError);
-        detailFields[2].color = throwsTextCol;
         detailFields[3].color = throwsTextCol;
     }
 
@@ -8527,6 +8602,15 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         for (int fi = 0; fi < 4; ++fi) {
             float headerW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailFields[fi].header).x;
             float valueW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailFields[fi].value).x;
+            if (nb.staticColumnWidths) {
+                if (fi == 0 || fi == 1) {
+                    valueW = (std::max)(valueW, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "-999999.99").x);
+                } else if (fi == 2) {
+                    valueW = (std::max)(valueW, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99+999").x);
+                } else if (fi == 3) {
+                    valueW = (std::max)(valueW, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "-180.0000").x);
+                }
+            }
             detailMinColWidths[fi] = (std::max)(headerW, valueW) + cellPadX * 2.0f;
             detailTableMinW += detailMinColWidths[fi];
         }
@@ -8607,8 +8691,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     float cx = tableX;
     for (int ci = 0; ci < numCols; ++ci) {
         Col& col = cols[ci];
-        float headerW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, col.header).x;
-        drawText(fs, ImVec2(cx + (col.width - headerW) * 0.5f, headerY), textCol, col.header);
+        drawCenteredSegmentedText(cx, col.width, headerY, col.header, textCol, 0.0f, textCol);
         cx += col.width + (ci < numCols - 1 ? colGap : 0.0f);
     }
 
@@ -8632,30 +8715,8 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
                     drawList->AddImage((ImTextureID)(intptr_t)boatTex, ImVec2(ix, rowTextY), ImVec2(ix + iconSz, rowTextY + iconSz),
                                        ImVec2(0, 0), ImVec2(1, 1), iconTint);
                 } else {
-                    float rw = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, col.rows[ri].text).x;
-                    float rx = rowX + (col.width - rw) / 2.0f;
-                    if (col.rows[ri].xOffset > 0.0f) {
-                        const char* full = col.rows[ri].text;
-                        const char* splitPtr = full;
-                        while (*splitPtr) {
-                            const char* next = splitPtr + 1;
-                            while ((*next & 0xC0) == 0x80) ++next;
-                            float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, full, splitPtr).x;
-                            if (w >= col.rows[ri].xOffset) break;
-                            splitPtr = next;
-                        }
-
-                        char part1[64] = {};
-                        int len1 = (int)(splitPtr - full);
-                        if (len1 > 63) len1 = 63;
-                        memcpy(part1, full, len1);
-                        drawText(fs, ImVec2(rx, rowTextY), col.rows[ri].part1Color, part1);
-
-                        float part1W = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
-                        drawText(fs, ImVec2(rx + part1W, rowTextY), col.rows[ri].color, splitPtr);
-                    } else {
-                        drawText(fs, ImVec2(rx, rowTextY), col.rows[ri].color, col.rows[ri].text);
-                    }
+                    drawCenteredSegmentedText(rowX, col.width, rowTextY, col.rows[ri].text, col.rows[ri].color,
+                                             col.rows[ri].xOffset, col.rows[ri].part1Color);
                 }
             }
             rowX += col.width + (ci < numCols - 1 ? colGap : 0.0f);
@@ -8679,9 +8740,9 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
             drawText(fs, ImVec2(detailX + (detailColWidths[fi] - headerW) * 0.5f, detailHeaderY + (detailHeaderH - lineH) * 0.5f),
                      textCol, detailFields[fi].header);
 
-            float valueW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailFields[fi].value).x;
-            drawText(fs, ImVec2(detailX + (detailColWidths[fi] - valueW) * 0.5f, detailRowY + (detailRowH - lineH) * 0.5f),
-                     detailFields[fi].color, detailFields[fi].value);
+            drawCenteredSegmentedText(detailX, detailColWidths[fi], detailRowY + (detailRowH - lineH) * 0.5f,
+                                     detailFields[fi].value, detailFields[fi].color,
+                                     detailFields[fi].xOffset, detailFields[fi].part1Color);
             detailX += detailColWidths[fi];
         }
 

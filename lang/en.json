@@ -613,6 +613,7 @@
   "ninjabrain.scale": "Scale",
   "ninjabrain.show_row_stripes": "Show row stripes",
   "ninjabrain.show_separators": "Show separators",
+  "ninjabrain.static_column_widths": "Use static column widths",
   "ninjabrain.show_throw_details": "Show throw details panel",
   "ninjabrain.enable_api_hint": "In Ninjabrain Bot, go to Settings -> Advanced -> Enable API.",
   "ninjabrain.status_connected": "Connected",

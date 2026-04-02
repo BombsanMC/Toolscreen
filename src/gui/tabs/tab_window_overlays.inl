@@ -695,6 +695,7 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.window_overlays"))) {
         ImGui::SeparatorText(trc("ninjabrain.appearance"));
 
         if (ImGui::Checkbox((std::string(trc("ninjabrain.show_throw_details")) + "##nb").c_str(), &nb.showThrowDetails)) changed = true;
+        if (ImGui::Checkbox((std::string(trc("ninjabrain.static_column_widths")) + "##nb").c_str(), &nb.staticColumnWidths)) changed = true;
         if (ImGui::Checkbox((std::string(trc("ninjabrain.show_separators")) + "##nb").c_str(), &nb.showSeparators)) changed = true;
         if (ImGui::Checkbox((std::string(trc("ninjabrain.show_row_stripes")) + "##nb").c_str(), &nb.showRowStripes)) changed = true;
 
@@ -814,23 +815,19 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.window_overlays"))) {
         ImGui::SetNextItemWidth(120.f);
         if (ImGui::SliderFloat("##nbRowSpacing", &nb.rowSpacing, 0.0f, 30.0f, "%.0f px")) changed = true;
         ImGui::NextColumn();
-        ImGui::Text("%s", trc("ninjabrain.col_spacing"));
-        ImGui::NextColumn();
-        ImGui::SetNextItemWidth(120.f);
-        if (ImGui::SliderFloat("##nbColSpacing", &nb.colSpacing, 0.0f, 60.0f, "%.0f px")) changed = true;
-        ImGui::NextColumn();
         ImGui::Columns(1);
         ImGui::Spacing();
 
         ImGui::Text("%s", trc("ninjabrain.columns"));
         ImGui::Spacing();
-        if (ImGui::BeginTable("##nbCols", 4,
+        if (ImGui::BeginTable("##nbCols", 5,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit))
         {
             ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed,   22.f);
             ImGui::TableSetupColumn("Show",   ImGuiTableColumnFlags_WidthFixed,   44.f);
-            ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("Order",  ImGuiTableColumnFlags_WidthFixed,   80.f);
+            ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 148.f);
+            ImGui::TableSetupColumn(trc("label.width"), ImGuiTableColumnFlags_WidthFixed, 112.f);
+            ImGui::TableSetupColumn("Order",  ImGuiTableColumnFlags_WidthFixed,   92.f);
             ImGui::TableHeadersRow();
 
             int moveFrom = -1, moveTo = -1;
@@ -852,12 +849,21 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.window_overlays"))) {
                 if (ImGui::InputText("##hdr", buf, sizeof(buf))) { col.header = buf; changed = true; }
 
                 ImGui::TableSetColumnIndex(3);
+                ImGui::BeginDisabled(!nb.staticColumnWidths);
+                int staticWidth = col.staticWidth;
+                if (Spinner("##width", &staticWidth, 1, 0, 2000, 40.0f, 1.0f)) {
+                    col.staticWidth = staticWidth;
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+
+                ImGui::TableSetColumnIndex(4);
                 if (ci == 0) ImGui::BeginDisabled();
-                if (ImGui::Button("Up##col"))   { moveFrom = ci; moveTo = ci - 1; changed = true; }
+                if (ImGui::Button("Up##col", ImVec2(34.0f, 0.0f)))   { moveFrom = ci; moveTo = ci - 1; changed = true; }
                 if (ci == 0) ImGui::EndDisabled();
-                ImGui::SameLine();
+                ImGui::SameLine(0.0f, 2.0f);
                 if (ci == (int)nb.columns.size() - 1) ImGui::BeginDisabled();
-                if (ImGui::Button("Down##col")) { moveFrom = ci; moveTo = ci + 1; changed = true; }
+                if (ImGui::Button("Down##col", ImVec2(42.0f, 0.0f))) { moveFrom = ci; moveTo = ci + 1; changed = true; }
                 if (ci == (int)nb.columns.size() - 1) ImGui::EndDisabled();
 
                 ImGui::PopID();

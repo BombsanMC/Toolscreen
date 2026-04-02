@@ -2037,6 +2037,7 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("showTitleBar",         o.showTitleBar);
         nb.insert("showWindowControls",   o.showWindowControls);
         nb.insert("showThrowDetails",     o.showThrowDetails);
+        nb.insert("staticColumnWidths",   o.staticColumnWidths);
         nb.insert("showSeparators",       o.showSeparators);
         nb.insert("showRowStripes",       o.showRowStripes);
         nb.insert("borderWidth",          o.borderWidth);
@@ -2084,6 +2085,7 @@ void ConfigToToml(const Config& config, toml::table& out) {
             ct.insert("id",     col.id);
             ct.insert("header", col.header);
             ct.insert("show",   col.show);
+            ct.insert("staticWidth", col.staticWidth);
             colArr.push_back(ct);
         }
         nb.insert("columns", colArr);
@@ -2256,6 +2258,7 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.showTitleBar         = false;
         c.showWindowControls   = GetOr(*nb, "showWindowControls",   false);
         c.showThrowDetails     = GetOr(*nb, "showThrowDetails",     true);
+        c.staticColumnWidths   = GetOr(*nb, "staticColumnWidths",   true);
         c.showSeparators       = GetOr(*nb, "showSeparators",       true);
         c.showRowStripes       = GetOr(*nb, "showRowStripes",       true);
         c.borderWidth          = GetOr(*nb, "borderWidth",          1);
@@ -2325,6 +2328,7 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
                     if (auto v = ct->get_as<std::string>("id"))     col.id     = v->get();
                     if (auto v = ct->get_as<std::string>("header")) col.header = v->get();
                     col.show = GetOr(*ct, "show", true);
+                    col.staticWidth = (std::max)(0, GetOr(*ct, "staticWidth", 0));
                     c.columns.push_back(col);
                 }
             }
