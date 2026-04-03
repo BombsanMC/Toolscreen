@@ -29,6 +29,8 @@ class NinjabrainApiConnectionTracker {
 
         void MarkStrongholdConnected();
         void MarkStrongholdDisconnected(std::string error);
+        void MarkInformationMessagesConnected();
+        void MarkInformationMessagesDisconnected(std::string error);
         void MarkBoatConnected();
         void MarkBoatDisconnected(std::string error);
 
@@ -48,10 +50,12 @@ class NinjabrainApiConnectionTracker {
         std::string apiBaseUrl_;
         std::string lastError_;
         StreamState strongholdState_ = StreamState::Disconnected;
+        StreamState informationMessagesState_ = StreamState::Disconnected;
         StreamState boatState_ = StreamState::Disconnected;
 };
 
 void ClearNinjabrainStrongholdData(NinjabrainData& data);
+void ClearNinjabrainInformationMessagesData(NinjabrainData& data);
 void ClearNinjabrainBoatData(NinjabrainData& data);
 
 void ApplyNinjabrainBoatEvent(
@@ -64,12 +68,20 @@ void ApplyNinjabrainStrongholdEvent(
     NinjabrainData& data,
     const NinjabrainLogCallback& logError = {});
 
+void ApplyNinjabrainInformationMessagesEvent(
+    const std::string& payload,
+    NinjabrainData& data,
+    const NinjabrainLogCallback& logError = {});
+
 std::string NormalizeNinjabrainApiBaseUrl(std::string apiBaseUrl);
 
 struct NinjabrainApiSessionCallbacks {
     std::function<void(const std::string&)> onStrongholdMessage;
     std::function<void()> onStrongholdConnect;
     std::function<void(const std::string&)> onStrongholdDisconnect;
+    std::function<void(const std::string&)> onInformationMessagesMessage;
+    std::function<void()> onInformationMessagesConnect;
+    std::function<void(const std::string&)> onInformationMessagesDisconnect;
     std::function<void(const std::string&)> onBoatMessage;
     std::function<void()> onBoatConnect;
     std::function<void(const std::string&)> onBoatDisconnect;
@@ -98,5 +110,6 @@ class NinjabrainApiSession {
     std::string apiBaseUrl_;
     NinjabrainApiSessionCallbacks callbacks_;
     std::jthread strongholdThread_;
+    std::jthread informationMessagesThread_;
     std::jthread boatThread_;
 };

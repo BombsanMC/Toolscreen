@@ -37,7 +37,7 @@ void RunSettingsGuiBasicTest(TestRunMode runMode = TestRunMode::Automated) {
     g_configIsDirty.store(false, std::memory_order_release);
 
     if (runMode == TestRunMode::Visual) {
-        RunVisualLoop(window, "settings-gui-basic", &RenderInteractiveSettingsFrame);
+        RunVisualLoopWithNinjabrainPreview(window, "settings-gui-basic", &RenderInteractiveSettingsFrame);
         return;
     }
 
@@ -63,7 +63,7 @@ void RunSettingsGuiAdvancedTest(TestRunMode runMode = TestRunMode::Automated) {
     g_configIsDirty.store(false, std::memory_order_release);
 
     if (runMode == TestRunMode::Visual) {
-        RunVisualLoop(window, "settings-gui-advanced", &RenderInteractiveSettingsFrame);
+        RunVisualLoopWithNinjabrainPreview(window, "settings-gui-advanced", &RenderInteractiveSettingsFrame);
         return;
     }
 

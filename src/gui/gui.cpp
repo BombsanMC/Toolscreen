@@ -233,6 +233,25 @@ const std::vector<std::pair<const char*, const char*>>& GetSettingsImageRelative
     return options;
 }
 
+const std::vector<std::pair<const char*, const char*>>& GetSettingsScreenImageRelativeToOptions() {
+    static std::vector<std::pair<const char*, const char*>> options;
+    static uint64_t cachedGeneration = static_cast<uint64_t>(-1);
+
+    const uint64_t generation = GetTranslationGeneration();
+    if (cachedGeneration != generation) {
+        options = {
+            {"topLeftScreen", trc("position.top_left_screen")},
+            {"topRightScreen", trc("position.top_right_screen")},
+            {"bottomLeftScreen", trc("position.bottom_left_screen")},
+            {"bottomRightScreen", trc("position.bottom_right_screen")},
+            {"centerScreen", trc("position.center_screen")}
+        };
+        cachedGeneration = generation;
+    }
+
+    return options;
+}
+
 const char* GetSettingsFriendlyName(const std::string& key, const std::vector<std::pair<const char*, const char*>>& options) {
     for (const auto& option : options) {
         if (key == option.first) {
@@ -459,6 +478,7 @@ void RenderSettingsGUI() {
 
     const auto& relativeToOptions = GetSettingsRelativeToOptions();
     const auto& imageRelativeToOptions = GetSettingsImageRelativeToOptions();
+    const auto& ninjabrainRelativeToOptions = GetSettingsScreenImageRelativeToOptions();
     auto getFriendlyName = [](const std::string& key, const std::vector<std::pair<const char*, const char*>>& options) {
         return GetSettingsFriendlyName(key, options);
     };

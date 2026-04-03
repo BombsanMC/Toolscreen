@@ -6,18 +6,25 @@
 #include "config/config_defaults.h"
 #include "gui/gui.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace {
 
+struct BackgroundStopThread {
+    std::thread thread;
+    std::shared_ptr<std::atomic_bool> completed;
+};
+
 std::mutex g_ninjabrainClientMutex;
 NinjabrainApiConnectionTracker g_ninjabrainClientStatus;
-std::thread g_ninjabrainClientStopThread;
-bool g_ninjabrainClientStopInProgress = false;
-bool g_ninjabrainClientRestartPending = false;
+std::vector<BackgroundStopThread> g_ninjabrainClientStopThreads;
+uint64_t g_ninjabrainClientGeneration = 0;
+uint64_t g_ninjabrainClientActiveGeneration = 0;
 
 bool IsNinjabrainOverlayEnabled() {
     if (const auto configSnapshot = GetConfigSnapshot()) {
@@ -45,52 +52,66 @@ std::string ResolveApiBaseUrl() {
 
 std::unique_ptr<NinjabrainApiSession> g_ninjabrainClientSession;
 
-void ReapCompletedNinjabrainClientStopThread(std::thread& threadToJoin) {
+bool IsActiveNinjabrainClientGeneration(uint64_t generation) {
     std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
-    if (!g_ninjabrainClientStopInProgress && g_ninjabrainClientStopThread.joinable() &&
-        g_ninjabrainClientStopThread.get_id() != std::this_thread::get_id()) {
-        threadToJoin = std::move(g_ninjabrainClientStopThread);
+    return g_ninjabrainClientActiveGeneration == generation;
+}
+
+void ReapCompletedNinjabrainClientStopThreads(std::vector<std::thread>& threadsToJoin) {
+    std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
+    auto it = g_ninjabrainClientStopThreads.begin();
+    while (it != g_ninjabrainClientStopThreads.end()) {
+        if (it->completed && it->completed->load(std::memory_order_acquire) && it->thread.joinable() &&
+            it->thread.get_id() != std::this_thread::get_id()) {
+            threadsToJoin.push_back(std::move(it->thread));
+            it = g_ninjabrainClientStopThreads.erase(it);
+            continue;
+        }
+
+        ++it;
     }
 }
 
 } // namespace
 
 void StartNinjabrainClient() {
-    std::thread threadToJoin;
-    ReapCompletedNinjabrainClientStopThread(threadToJoin);
-    if (threadToJoin.joinable()) { threadToJoin.join(); }
+    std::vector<std::thread> threadsToJoin;
+    ReapCompletedNinjabrainClientStopThreads(threadsToJoin);
+    for (auto& threadToJoin : threadsToJoin) {
+        if (threadToJoin.joinable()) { threadToJoin.join(); }
+    }
 
+    uint64_t generation = 0;
     std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
     if (!IsNinjabrainOverlayEnabled()) {
-        g_ninjabrainClientRestartPending = false;
         return;
     }
     if (g_ninjabrainClientSession) {
-        g_ninjabrainClientRestartPending = false;
-        return;
-    }
-    if (g_ninjabrainClientStopInProgress) {
-        g_ninjabrainClientRestartPending = true;
         return;
     }
 
     const std::string apiBaseUrl = ResolveApiBaseUrl();
+    generation = ++g_ninjabrainClientGeneration;
+    g_ninjabrainClientActiveGeneration = generation;
 
     PublishNinjabrainData(NinjabrainData{});
 
     g_ninjabrainClientStatus.Start(apiBaseUrl);
 
     NinjabrainApiSessionCallbacks callbacks;
-    callbacks.onStrongholdMessage = [](const std::string& payload) {
+    callbacks.onStrongholdMessage = [generation](const std::string& payload) {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
         ModifyNinjabrainData([&](NinjabrainData& data) {
             ApplyNinjabrainStrongholdEvent(payload, data, LogNinjabrainMessage);
         });
     };
-    callbacks.onStrongholdConnect = []() {
+    callbacks.onStrongholdConnect = [generation]() {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
         std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
         g_ninjabrainClientStatus.MarkStrongholdConnected();
     };
-    callbacks.onStrongholdDisconnect = [](const std::string& error) {
+    callbacks.onStrongholdDisconnect = [generation](const std::string& error) {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
         {
             std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
             g_ninjabrainClientStatus.MarkStrongholdDisconnected(error);
@@ -99,16 +120,40 @@ void StartNinjabrainClient() {
             ClearNinjabrainStrongholdData(data);
         });
     };
-    callbacks.onBoatMessage = [](const std::string& payload) {
+    callbacks.onInformationMessagesMessage = [generation](const std::string& payload) {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
+        ModifyNinjabrainData([&](NinjabrainData& data) {
+            ApplyNinjabrainInformationMessagesEvent(payload, data, LogNinjabrainMessage);
+        });
+    };
+    callbacks.onInformationMessagesConnect = [generation]() {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
+        std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
+        g_ninjabrainClientStatus.MarkInformationMessagesConnected();
+    };
+    callbacks.onInformationMessagesDisconnect = [generation](const std::string& error) {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
+        {
+            std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
+            g_ninjabrainClientStatus.MarkInformationMessagesDisconnected(error);
+        }
+        ModifyNinjabrainData([](NinjabrainData& data) {
+            ClearNinjabrainInformationMessagesData(data);
+        });
+    };
+    callbacks.onBoatMessage = [generation](const std::string& payload) {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
         ModifyNinjabrainData([&](NinjabrainData& data) {
             ApplyNinjabrainBoatEvent(payload, data, LogNinjabrainMessage);
         });
     };
-    callbacks.onBoatConnect = []() {
+    callbacks.onBoatConnect = [generation]() {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
         std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
         g_ninjabrainClientStatus.MarkBoatConnected();
     };
-    callbacks.onBoatDisconnect = [](const std::string& error) {
+    callbacks.onBoatDisconnect = [generation](const std::string& error) {
+        if (!IsActiveNinjabrainClientGeneration(generation)) { return; }
         {
             std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
             g_ninjabrainClientStatus.MarkBoatDisconnected(error);
@@ -122,41 +167,46 @@ void StartNinjabrainClient() {
     try {
         g_ninjabrainClientSession = std::make_unique<NinjabrainApiSession>(apiBaseUrl, std::move(callbacks));
     } catch (...) {
+        g_ninjabrainClientActiveGeneration = 0;
         g_ninjabrainClientStatus.Stop();
         throw;
     }
 }
 
 void StopNinjabrainClient() {
-    std::thread threadToJoin;
+    std::vector<std::thread> threadsToJoin;
     std::unique_ptr<NinjabrainApiSession> session;
     {
         std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
-        g_ninjabrainClientRestartPending = false;
+        g_ninjabrainClientActiveGeneration = 0;
         session = std::move(g_ninjabrainClientSession);
-        if (g_ninjabrainClientStopThread.joinable() && g_ninjabrainClientStopThread.get_id() != std::this_thread::get_id()) {
-            threadToJoin = std::move(g_ninjabrainClientStopThread);
+        for (auto& stopThread : g_ninjabrainClientStopThreads) {
+            if (stopThread.thread.joinable() && stopThread.thread.get_id() != std::this_thread::get_id()) {
+                threadsToJoin.push_back(std::move(stopThread.thread));
+            }
         }
+        g_ninjabrainClientStopThreads.clear();
         g_ninjabrainClientStatus.Stop();
     }
 
     if (session) { session->Stop(); }
-    if (threadToJoin.joinable()) { threadToJoin.join(); }
-
-    std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
-    g_ninjabrainClientStopInProgress = false;
-    g_ninjabrainClientRestartPending = false;
+    for (auto& threadToJoin : threadsToJoin) {
+        if (threadToJoin.joinable()) { threadToJoin.join(); }
+    }
 }
 
 void StopNinjabrainClientAsync() {
-    std::thread threadToJoin;
-    ReapCompletedNinjabrainClientStopThread(threadToJoin);
-    if (threadToJoin.joinable()) { threadToJoin.join(); }
+    std::vector<std::thread> threadsToJoin;
+    ReapCompletedNinjabrainClientStopThreads(threadsToJoin);
+    for (auto& threadToJoin : threadsToJoin) {
+        if (threadToJoin.joinable()) { threadToJoin.join(); }
+    }
 
     std::unique_ptr<NinjabrainApiSession> session;
+    std::shared_ptr<std::atomic_bool> completed;
     {
         std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
-        g_ninjabrainClientRestartPending = false;
+        g_ninjabrainClientActiveGeneration = 0;
         if (!g_ninjabrainClientSession) {
             g_ninjabrainClientStatus.Stop();
             return;
@@ -164,39 +214,32 @@ void StopNinjabrainClientAsync() {
 
         session = std::move(g_ninjabrainClientSession);
         g_ninjabrainClientStatus.Stop();
-        g_ninjabrainClientStopInProgress = true;
-        g_ninjabrainClientStopThread = std::thread([session = std::move(session)]() mutable {
-            const auto stopStart = std::chrono::steady_clock::now();
-            session->Stop();
-            session.reset();
+        completed = std::make_shared<std::atomic_bool>(false);
+        g_ninjabrainClientStopThreads.push_back(BackgroundStopThread{
+            std::thread([session = std::move(session), completed]() mutable {
+                const auto stopStart = std::chrono::steady_clock::now();
+                session->Stop();
+                session.reset();
 
-            bool shouldRestart = false;
-            {
-                std::lock_guard<std::mutex> lock(g_ninjabrainClientMutex);
-                g_ninjabrainClientStopInProgress = false;
-                shouldRestart = g_ninjabrainClientRestartPending;
-                g_ninjabrainClientRestartPending = false;
-            }
-
-            const auto stopDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - stopStart).count();
-            LogNinjabrainMessage("Client shutdown finished in " + std::to_string(stopDurationMs) + " ms.");
-
-            if (shouldRestart && IsNinjabrainOverlayEnabled()) {
-                try {
-                    StartNinjabrainClient();
-                } catch (const std::exception& ex) {
-                    LogNinjabrainMessage(std::string("Failed to restart client after shutdown: ") + ex.what());
-                } catch (...) {
-                    LogNinjabrainMessage("Failed to restart client after shutdown.");
-                }
-            }
+                const auto stopDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - stopStart).count();
+                LogNinjabrainMessage("Client shutdown finished in " + std::to_string(stopDurationMs) + " ms.");
+                completed->store(true, std::memory_order_release);
+            }),
+            completed,
         });
     }
 }
 
 void RestartNinjabrainClient() {
     StopNinjabrainClient();
+    StartNinjabrainClient();
+}
+
+void RestartNinjabrainClientAsync() {
+    if (!IsNinjabrainOverlayEnabled()) { return; }
+
+    StopNinjabrainClientAsync();
     StartNinjabrainClient();
 }
 

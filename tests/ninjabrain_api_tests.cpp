@@ -437,7 +437,8 @@ std::string DescribeSessionState(const SessionState& state) {
     description << "resultType=" << state.data.resultType << ", boatState=" << state.data.boatState
                 << ", hasBoatAngle=" << (state.data.hasBoatAngle ? "true" : "false")
                 << ", boatAngle=" << state.data.boatAngle << ", predictionCount=" << state.data.predictionCount
-                << ", eyeCount=" << state.data.eyeCount;
+                << ", eyeCount=" << state.data.eyeCount
+                << ", informationMessageCount=" << state.data.informationMessageCount;
 
     if (!state.logs.empty()) {
         description << ", lastLog='" << state.logs.back() << '\'';
@@ -470,6 +471,17 @@ NinjabrainApiSessionCallbacks CreateSessionCallbacks(SessionState& state) {
     callbacks.onStrongholdDisconnect = [&](const std::string&) {
         std::lock_guard<std::mutex> lock(state.mutex);
         ClearNinjabrainStrongholdData(state.data);
+    };
+    callbacks.onInformationMessagesConnect = []() {};
+    callbacks.onInformationMessagesMessage = [&](const std::string& payload) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ApplyNinjabrainInformationMessagesEvent(payload, state.data, [&](const std::string& message) {
+            state.logs.push_back(message);
+        });
+    };
+    callbacks.onInformationMessagesDisconnect = [&](const std::string&) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ClearNinjabrainInformationMessagesData(state.data);
     };
     callbacks.onBoatConnect = []() {};
     callbacks.onBoatMessage = [&](const std::string& payload) {
@@ -521,6 +533,25 @@ TOOLSCREEN_TEST(connection_tracker_reports_offline_state) {
     }
 }
 
+TOOLSCREEN_TEST(connection_tracker_treats_information_messages_as_connected) {
+    NinjabrainApiConnectionTracker tracker;
+
+    tracker.Start(std::string(" ") + kServerBaseUrl + "/");
+    tracker.MarkStrongholdDisconnected("Connection refused");
+
+    {
+        const NinjabrainApiStatus status = tracker.Snapshot();
+        REQUIRE(status.connectionState == NinjabrainApiConnectionState::Offline);
+    }
+
+    tracker.MarkInformationMessagesConnected();
+
+    {
+        const NinjabrainApiStatus status = tracker.Snapshot();
+        REQUIRE(status.connectionState == NinjabrainApiConnectionState::Connected);
+    }
+}
+
 TOOLSCREEN_TEST(boat_event_parses_snapshot) {
     NinjabrainData data;
 
@@ -550,6 +581,80 @@ TOOLSCREEN_TEST(stronghold_failure_preserves_boat) {
     RequireEqual(data.eyeCount, 0, "eyeCount");
     RequireEqual(data.predictionCount, 0, "predictionCount");
     REQUIRE(!data.validPrediction);
+}
+
+TOOLSCREEN_TEST(information_messages_event_parses_snapshot) {
+    NinjabrainData data;
+
+    ApplyNinjabrainInformationMessagesEvent(
+        R"({
+            "informationMessages":[
+                {
+                    "severity":"WARNING",
+                    "type":"MISMEASURE",
+                    "message":"Detected unusually large errors, you probably mismeasured or your standard deviation is too low."
+                },
+                {
+                    "severity":"INFO",
+                    "type":"NEXT_THROW_DIRECTION",
+                    "message":"Go left 1 blocks, or right 1 blocks, for ~95% certainty after next measurement."
+                }
+            ]
+        })",
+        data);
+
+    RequireEqual(data.informationMessageCount, 2, "informationMessageCount");
+    RequireEqual(data.informationMessages[0].severity, std::string("WARNING"), "informationMessages[0].severity");
+    RequireEqual(data.informationMessages[0].type, std::string("MISMEASURE"), "informationMessages[0].type");
+    RequireEqual(
+        data.informationMessages[0].message,
+        std::string("Detected unusually large errors, you probably mismeasured or your standard deviation is too low."),
+        "informationMessages[0].message");
+    RequireEqual(data.informationMessages[1].severity, std::string("INFO"), "informationMessages[1].severity");
+    RequireEqual(data.informationMessages[1].type, std::string("NEXT_THROW_DIRECTION"), "informationMessages[1].type");
+    RequireEqual(
+        data.informationMessages[1].message,
+        std::string("Go left 1 blocks, or right 1 blocks, for ~95% certainty after next measurement."),
+        "informationMessages[1].message");
+}
+
+TOOLSCREEN_TEST(stronghold_clear_preserves_information_messages) {
+    NinjabrainData data;
+    data.informationMessageCount = 1;
+    data.informationMessages[0].severity = "WARNING";
+    data.informationMessages[0].type = "MISMEASURE";
+    data.informationMessages[0].message = "Keep this warning";
+
+    ApplyNinjabrainStrongholdEvent(R"({"resultType":"NONE"})", data);
+
+    RequireEqual(data.resultType, std::string("NONE"), "resultType");
+    RequireEqual(data.informationMessageCount, 1, "informationMessageCount");
+    RequireEqual(data.informationMessages[0].severity, std::string("WARNING"), "informationMessages[0].severity");
+    RequireEqual(data.informationMessages[0].type, std::string("MISMEASURE"), "informationMessages[0].type");
+    RequireEqual(data.informationMessages[0].message, std::string("Keep this warning"), "informationMessages[0].message");
+}
+
+TOOLSCREEN_TEST(stronghold_event_preserves_information_messages) {
+    NinjabrainData data;
+    data.informationMessageCount = 1;
+    data.informationMessages[0].severity = "WARNING";
+    data.informationMessages[0].type = "MISMEASURE";
+    data.informationMessages[0].message = "Keep this warning";
+
+    ApplyNinjabrainStrongholdEvent(
+        R"({
+            "eyeThrows":[],
+            "resultType":"TRIANGULATION",
+            "playerPosition":{},
+            "predictions":[{"chunkX":1,"chunkZ":2,"certainty":0.5,"overworldDistance":100.0}]
+        })",
+        data);
+
+    RequireEqual(data.resultType, std::string("TRIANGULATION"), "resultType");
+    RequireEqual(data.informationMessageCount, 1, "informationMessageCount");
+    RequireEqual(data.informationMessages[0].severity, std::string("WARNING"), "informationMessages[0].severity");
+    RequireEqual(data.informationMessages[0].type, std::string("MISMEASURE"), "informationMessages[0].type");
+    RequireEqual(data.informationMessages[0].message, std::string("Keep this warning"), "informationMessages[0].message");
 }
 
 TOOLSCREEN_TEST(stronghold_event_parses_prediction_details) {

@@ -17,6 +17,7 @@ using namespace std::chrono_literals;
 constexpr auto kNinjabrainReconnectIntervalMs = 3000;
 constexpr auto kNinjabrainConnectionTimeout = 3s;
 constexpr char kStrongholdEventsPath[] = "/api/v1/stronghold/events";
+constexpr char kInformationMessagesEventsPath[] = "/api/v1/information-messages/events";
 constexpr char kBoatEventsPath[] = "/api/v1/boat/events";
 
 std::string TrimString(std::string value) {
@@ -49,6 +50,7 @@ void NinjabrainApiConnectionTracker::Start(std::string apiBaseUrl) {
     apiBaseUrl_ = NormalizeNinjabrainApiBaseUrl(std::move(apiBaseUrl));
     lastError_.clear();
     strongholdState_ = StreamState::Connecting;
+    informationMessagesState_ = StreamState::Connecting;
     boatState_ = StreamState::Connecting;
 }
 
@@ -56,6 +58,7 @@ void NinjabrainApiConnectionTracker::Stop() {
     sessionRunning_ = false;
     lastError_.clear();
     strongholdState_ = StreamState::Disconnected;
+    informationMessagesState_ = StreamState::Disconnected;
     boatState_ = StreamState::Disconnected;
 }
 
@@ -65,6 +68,14 @@ void NinjabrainApiConnectionTracker::MarkStrongholdConnected() {
 
 void NinjabrainApiConnectionTracker::MarkStrongholdDisconnected(std::string error) {
     MarkStreamDisconnected(strongholdState_, std::move(error));
+}
+
+void NinjabrainApiConnectionTracker::MarkInformationMessagesConnected() {
+    MarkStreamConnected(informationMessagesState_);
+}
+
+void NinjabrainApiConnectionTracker::MarkInformationMessagesDisconnected(std::string error) {
+    MarkStreamDisconnected(informationMessagesState_, std::move(error));
 }
 
 void NinjabrainApiConnectionTracker::MarkBoatConnected() {
@@ -84,7 +95,9 @@ NinjabrainApiStatus NinjabrainApiConnectionTracker::Snapshot() const {
         return status;
     }
 
-    if (strongholdState_ == StreamState::Connected || boatState_ == StreamState::Connected) {
+    if (strongholdState_ == StreamState::Connected ||
+        informationMessagesState_ == StreamState::Connected ||
+        boatState_ == StreamState::Connected) {
         status.connectionState = NinjabrainApiConnectionState::Connected;
         return status;
     }
@@ -101,7 +114,9 @@ NinjabrainApiStatus NinjabrainApiConnectionTracker::Snapshot() const {
 
 void NinjabrainApiConnectionTracker::MarkStreamConnected(StreamState& streamState) {
     streamState = StreamState::Connected;
-    if (strongholdState_ == StreamState::Connected && boatState_ == StreamState::Connected) {
+    if (strongholdState_ == StreamState::Connected &&
+        informationMessagesState_ == StreamState::Connected &&
+        boatState_ == StreamState::Connected) {
         lastError_.clear();
     }
 }
@@ -115,11 +130,20 @@ void ClearNinjabrainStrongholdData(NinjabrainData& data) {
     const std::string boatState = data.boatState;
     const double boatAngle = data.boatAngle;
     const bool hasBoatAngle = data.hasBoatAngle;
+    const auto informationMessages = data.informationMessages;
+    const int informationMessageCount = data.informationMessageCount;
 
     data = NinjabrainData{};
+    data.informationMessages = informationMessages;
+    data.informationMessageCount = informationMessageCount;
     data.boatState = boatState;
     data.boatAngle = boatAngle;
     data.hasBoatAngle = hasBoatAngle;
+}
+
+void ClearNinjabrainInformationMessagesData(NinjabrainData& data) {
+    data.informationMessages = {};
+    data.informationMessageCount = 0;
 }
 
 void ClearNinjabrainBoatData(NinjabrainData& data) {
@@ -162,7 +186,7 @@ void ApplyNinjabrainStrongholdEvent(
 
         const NinjabrainData previous = data;
         const std::string resultType = parsedJson.value("resultType", "NONE");
-        if (resultType == "NONE" || resultType == "FAILED") {
+        if (resultType == "NONE") {
             ClearNinjabrainStrongholdData(data);
             data.resultType = resultType;
             return;
@@ -185,6 +209,9 @@ void ApplyNinjabrainStrongholdEvent(
             for (int index = 0; index < next.eyeCount; ++index) {
                 const auto& throwJson = (*eyeThrows)[index];
                 auto& currentThrow = next.throws[index];
+                currentThrow.xInOverworld = throwJson.value("xInOverworld", next.playerX);
+                currentThrow.zInOverworld = throwJson.value("zInOverworld", next.playerZ);
+                currentThrow.hasPosition = throwJson.contains("xInOverworld") || throwJson.contains("zInOverworld") || next.hasPlayerPos;
                 currentThrow.angle = throwJson.value("angle", 0.0);
                 currentThrow.angleWithoutCorrection = throwJson.value("angleWithoutCorrection", currentThrow.angle);
                 currentThrow.correction = throwJson.value("correction", 0.0);
@@ -268,12 +295,44 @@ void ApplyNinjabrainStrongholdEvent(
             next.validPrediction = true;
         }
 
+        next.informationMessages = data.informationMessages;
+        next.informationMessageCount = data.informationMessageCount;
         next.boatState = data.boatState;
         next.boatAngle = data.boatAngle;
         next.hasBoatAngle = data.hasBoatAngle;
         data = std::move(next);
     } catch (const std::exception& exception) {
         LogIfPresent(logError, "Failed to parse stronghold event: " + std::string(exception.what()));
+    }
+}
+
+void ApplyNinjabrainInformationMessagesEvent(
+    const std::string& payload,
+    NinjabrainData& data,
+    const NinjabrainLogCallback& logError) {
+    if (payload.empty()) { return; }
+
+    try {
+        const json parsedJson = json::parse(payload);
+        data.informationMessages = {};
+        data.informationMessageCount = 0;
+
+        const auto informationMessages = parsedJson.find("informationMessages");
+        if (informationMessages == parsedJson.end() || !informationMessages->is_array()) {
+            return;
+        }
+
+        data.informationMessageCount =
+            (std::min)(static_cast<int>(informationMessages->size()), static_cast<int>(data.informationMessages.size()));
+        for (int index = 0; index < data.informationMessageCount; ++index) {
+            const auto& messageJson = (*informationMessages)[index];
+            auto& message = data.informationMessages[index];
+            message.severity = messageJson.value("severity", "INFO");
+            message.type = messageJson.value("type", "");
+            message.message = messageJson.value("message", "");
+        }
+    } catch (const std::exception& exception) {
+        LogIfPresent(logError, "Failed to parse information-messages event: " + std::string(exception.what()));
     }
 }
 
@@ -296,6 +355,15 @@ NinjabrainApiSession::NinjabrainApiSession(std::string apiBaseUrl, NinjabrainApi
             callbacks_.onStrongholdConnect,
             callbacks_.onStrongholdDisconnect);
     });
+    informationMessagesThread_ = std::jthread([this](std::stop_token stopToken) {
+        RunStream(
+            stopToken,
+            "information-messages",
+            kInformationMessagesEventsPath,
+            callbacks_.onInformationMessagesMessage,
+            callbacks_.onInformationMessagesConnect,
+            callbacks_.onInformationMessagesDisconnect);
+    });
     boatThread_ = std::jthread([this](std::stop_token stopToken) {
         RunStream(
             stopToken,
@@ -313,6 +381,7 @@ NinjabrainApiSession::~NinjabrainApiSession() {
 
 void NinjabrainApiSession::Stop() {
     strongholdThread_.request_stop();
+    informationMessagesThread_.request_stop();
     boatThread_.request_stop();
 }
 

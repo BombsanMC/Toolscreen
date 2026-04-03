@@ -3,11 +3,14 @@
 #include "common/utils.h"
 #include "config/config_toml.h"
 #include "features/browser_overlay.h"
+#include "features/ninjabrain_client.h"
+#include "features/ninjabrain_data.h"
 #include "features/window_overlay.h"
 #include "gui/gui.h"
 #include "hooks/input_hook.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_win32.h"
+#include "platform/resource.h"
 #include "render/render.h"
 #include "runtime/logic_thread.h"
 
@@ -26,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -37,6 +41,8 @@ constexpr int kWindowWidth = 1600;
 constexpr int kWindowHeight = 900;
 constexpr wchar_t kWindowClassName[] = L"ToolscreenGuiIntegrationTestWindow";
 constexpr char kDefaultVisualTestCase[] = "settings-gui-advanced";
+
+std::string g_visualNinjabrainPreviewModeId;
 
 enum class TestRunMode {
     Automated,
@@ -83,6 +89,43 @@ void Expect(bool condition, const std::string& message) {
 
 std::string Narrow(const std::wstring& value) {
     return WideToUtf8(value);
+}
+
+void WriteEmbeddedResourceFile(WORD resourceId, const std::filesystem::path& destination) {
+    std::error_code error;
+    std::filesystem::create_directories(destination.parent_path(), error);
+    Expect(!error, "Failed to create resource directory: " + Narrow(destination.parent_path().wstring()));
+
+    HMODULE module = nullptr;
+    const BOOL gotModule = GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&WriteEmbeddedResourceFile), &module);
+    Expect(gotModule == TRUE && module != nullptr, "Failed to resolve test module for embedded resources.");
+
+    HRSRC resourceHandle = FindResourceW(module, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    Expect(resourceHandle != nullptr, "Failed to find embedded test resource " + std::to_string(resourceId) + ".");
+
+    HGLOBAL resourceDataHandle = LoadResource(module, resourceHandle);
+    Expect(resourceDataHandle != nullptr, "Failed to load embedded test resource " + std::to_string(resourceId) + ".");
+
+    const DWORD resourceSize = SizeofResource(module, resourceHandle);
+    const void* resourceData = LockResource(resourceDataHandle);
+    Expect(resourceData != nullptr && resourceSize > 0,
+           "Embedded test resource was empty: " + std::to_string(resourceId) + ".");
+
+    HANDLE fileHandle = CreateFileW(destination.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Expect(fileHandle != INVALID_HANDLE_VALUE, "Failed to open staged resource path: " + Narrow(destination.wstring()));
+
+    DWORD written = 0;
+    const BOOL wrote = WriteFile(fileHandle, resourceData, resourceSize, &written, nullptr);
+    CloseHandle(fileHandle);
+    Expect(wrote == TRUE && written == resourceSize,
+           "Failed to stage embedded resource to: " + Narrow(destination.wstring()));
+}
+
+void StageBundledFontAssets(const std::filesystem::path& root) {
+    WriteEmbeddedResourceFile(IDR_MINECRAFT_FONT, root / "fonts" / "Minecraft.ttf");
+    WriteEmbeddedResourceFile(IDR_OPENSANS_FONT, root / "fonts" / "OpenSans-Regular.ttf");
 }
 
 LRESULT CALLBACK TestWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -463,6 +506,8 @@ void ResetGlobalTestState(const std::filesystem::path& root) {
     g_modeFilePath = (root / "mode.txt").wstring();
     g_stateFilePath = (root / "state.txt").wstring();
 
+    StageBundledFontAssets(root);
+
     g_config = Config();
     g_configIsDirty.store(false, std::memory_order_release);
     g_configLoadFailed.store(false, std::memory_order_release);
@@ -487,21 +532,135 @@ void ResetGlobalTestState(const std::filesystem::path& root) {
     }
 
     ClearGuiTabSelectionOverride();
+    PublishNinjabrainData(NinjabrainData{});
     LoadLangs();
     Expect(!GetLangs().empty(), "Expected embedded language metadata to load.");
     Expect(LoadTranslation("en"), "Expected embedded English translations to load.");
     UpdateCachedWindowMetricsFromSize(kWindowWidth, kWindowHeight);
 }
 
+const ModeConfig* ResolveVisualNinjabrainPreviewMode() {
+    if (!g_configLoaded.load(std::memory_order_acquire) || g_config.modes.empty()) {
+        return nullptr;
+    }
+
+    auto findMode = [](const std::string& modeId) -> const ModeConfig* {
+        for (const auto& mode : g_config.modes) {
+            if (EqualsIgnoreCase(mode.id, modeId)) {
+                return &mode;
+            }
+        }
+
+        return nullptr;
+    };
+
+    for (const std::string& allowedMode : g_config.ninjabrainOverlay.allowedModes) {
+        if (const ModeConfig* mode = findMode(allowedMode)) {
+            return mode;
+        }
+    }
+
+    if (const ModeConfig* defaultMode = findMode(g_config.defaultMode)) {
+        return defaultMode;
+    }
+
+    return &g_config.modes.front();
+}
+
+class ScopedVisualNinjabrainPreviewSession {
+  public:
+    ScopedVisualNinjabrainPreviewSession() {
+        const ModeConfig* previewMode = ResolveVisualNinjabrainPreviewMode();
+        if (previewMode == nullptr) {
+            return;
+        }
+
+        originalOverlay_ = g_config.ninjabrainOverlay;
+        {
+            std::lock_guard<std::mutex> lock(g_modeIdMutex);
+            originalCurrentModeId_ = g_currentModeId;
+            originalModeIdBuffers_[0] = g_modeIdBuffers[0];
+            originalModeIdBuffers_[1] = g_modeIdBuffers[1];
+        }
+        originalModeIdIndex_ = g_currentModeIdIndex.load(std::memory_order_acquire);
+
+        g_visualNinjabrainPreviewModeId = previewMode->id;
+        {
+            std::lock_guard<std::mutex> lock(g_modeIdMutex);
+            g_currentModeId = previewMode->id;
+            const int nextIndex = 1 - g_currentModeIdIndex.load(std::memory_order_relaxed);
+            g_modeIdBuffers[nextIndex] = previewMode->id;
+            g_currentModeIdIndex.store(nextIndex, std::memory_order_release);
+        }
+
+        g_config.ninjabrainOverlay.enabled = true;
+        g_config.ninjabrainOverlay.onlyOnMyScreen = false;
+        g_config.ninjabrainOverlay.onlyOnObs = false;
+        g_config.ninjabrainOverlay.relativeTo = "topLeftScreen";
+        g_config.ninjabrainOverlay.x = 48;
+        g_config.ninjabrainOverlay.y = 40;
+        PublishConfigSnapshot();
+        RequestDynamicGuiFontRefresh(true);
+        StartNinjabrainClient();
+        active_ = true;
+    }
+
+    ~ScopedVisualNinjabrainPreviewSession() {
+        g_config.ninjabrainOverlay = originalOverlay_;
+        {
+            std::lock_guard<std::mutex> lock(g_modeIdMutex);
+            g_currentModeId = originalCurrentModeId_;
+            g_modeIdBuffers[0] = originalModeIdBuffers_[0];
+            g_modeIdBuffers[1] = originalModeIdBuffers_[1];
+        }
+        g_currentModeIdIndex.store(originalModeIdIndex_, std::memory_order_release);
+        PublishConfigSnapshot();
+        RequestDynamicGuiFontRefresh(true);
+
+        if (!active_) {
+            g_visualNinjabrainPreviewModeId.clear();
+            return;
+        }
+
+        StopNinjabrainClient();
+        PublishNinjabrainData(NinjabrainData{});
+        g_visualNinjabrainPreviewModeId.clear();
+    }
+
+  private:
+    bool active_ = false;
+        NinjabrainOverlayConfig originalOverlay_;
+        std::string originalCurrentModeId_;
+        std::array<std::string, 2> originalModeIdBuffers_{};
+        int originalModeIdIndex_ = 0;
+};
+
+void RenderModeOverlayFrame(DummyWindow& window, const Config& config, const ModeConfig& mode, GLuint gameTextureId,
+                            bool renderGui);
+const ModeConfig& FindModeOrThrow(std::string_view modeId);
+
 void RenderSettingsFrame(DummyWindow& window, const char* topLevelTabLabel, const char* inputsSubTabLabel = nullptr) {
     if (!window.hasModernGL()) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
     ScopedTabSelection scopedSelection(topLevelTabLabel, inputsSubTabLabel);
+
+    if (!g_visualNinjabrainPreviewModeId.empty()) {
+        const ModeConfig& previewMode = FindModeOrThrow(g_visualNinjabrainPreviewModeId);
+        RenderModeOverlayFrame(window, g_config, previewMode, 0, true);
+        return;
+    }
+
     Expect(window.BeginFrame(), "GUI integration test window closed unexpectedly.");
     RenderSettingsGUI();
     window.EndFrame();
 }
 
 void RenderInteractiveSettingsFrame(DummyWindow& window) {
+    if (!g_visualNinjabrainPreviewModeId.empty()) {
+        const ModeConfig& previewMode = FindModeOrThrow(g_visualNinjabrainPreviewModeId);
+        RenderModeOverlayFrame(window, g_config, previewMode, 0, true);
+        return;
+    }
+
     if (!window.BeginFrame()) {
         return;
     }
@@ -531,6 +690,12 @@ void RenderInteractiveConfigErrorFrame(DummyWindow& window) {
 
 template <typename RenderFrameFn>
 void RunVisualLoop(DummyWindow& window, std::string_view testCaseName, RenderFrameFn&& renderFrame);
+
+template <typename RenderFrameFn>
+void RunVisualLoopWithNinjabrainPreview(DummyWindow& window, std::string_view testCaseName, RenderFrameFn&& renderFrame) {
+    ScopedVisualNinjabrainPreviewSession previewSession;
+    RunVisualLoop(window, testCaseName, std::forward<RenderFrameFn>(renderFrame));
+}
 
 constexpr char kPrimaryModeId[] = "Primary Mode";
 constexpr char kPrecisionModeId[] = "Precision Mode";
@@ -1523,13 +1688,23 @@ void PopulateRichConfigFixture() {
     g_config.ninjabrainOverlay.throwsTextColor = { 0.84f, 0.85f, 0.86f, 1.0f };
     g_config.ninjabrainOverlay.divineTextColor = { 0.74f, 0.82f, 0.91f, 1.0f };
     g_config.ninjabrainOverlay.versionTextColor = { 0.65f, 0.66f, 0.67f, 1.0f };
+    g_config.ninjabrainOverlay.showDirectionToStronghold = false;
     g_config.ninjabrainOverlay.textColor = { 0.55f, 0.56f, 0.57f, 1.0f };
     g_config.ninjabrainOverlay.certaintyColor = { 0.12f, 0.98f, 0.34f, 1.0f };
     g_config.ninjabrainOverlay.certaintyMidColor = { 0.94f, 0.88f, 0.20f, 1.0f };
     g_config.ninjabrainOverlay.certaintyLowColor = { 0.82f, 0.18f, 0.22f, 1.0f };
     g_config.ninjabrainOverlay.subpixelPositiveColor = { 0.32f, 0.87f, 0.41f, 1.0f };
     g_config.ninjabrainOverlay.subpixelNegativeColor = { 0.81f, 0.34f, 0.37f, 1.0f };
-    g_config.ninjabrainOverlay.negCoordColorEnabled = false;
+    g_config.ninjabrainOverlay.coordPositiveColor = { 0.61f, 0.72f, 0.83f, 1.0f };
+    g_config.ninjabrainOverlay.coordNegativeColor = { 0.73f, 0.24f, 0.27f, 1.0f };
+    g_config.ninjabrainOverlay.resultsMarginLeft = 9.0f;
+    g_config.ninjabrainOverlay.resultsMarginRight = 5.0f;
+    g_config.ninjabrainOverlay.informationMessagesMarginLeft = 17.0f;
+    g_config.ninjabrainOverlay.informationMessagesMarginRight = 11.0f;
+    g_config.ninjabrainOverlay.throwsMarginLeft = 7.0f;
+    g_config.ninjabrainOverlay.throwsMarginRight = 15.0f;
+    g_config.ninjabrainOverlay.failureMarginLeft = 21.0f;
+    g_config.ninjabrainOverlay.failureMarginRight = 13.0f;
     g_config.ninjabrainOverlay.sidePadding = 18.0f;
 
     MirrorConfig verifierMirror;
@@ -2054,13 +2229,23 @@ void VerifyRichWindowOverlays() {
     ExpectColorNear(ninjabrain.throwsTextColor, { 0.84f, 0.85f, 0.86f, 1.0f }, "Expected Ninjabrain throws text color to roundtrip.");
     ExpectColorNear(ninjabrain.divineTextColor, { 0.74f, 0.82f, 0.91f, 1.0f }, "Expected Ninjabrain divine text color to roundtrip.");
     ExpectColorNear(ninjabrain.versionTextColor, { 0.65f, 0.66f, 0.67f, 1.0f }, "Expected Ninjabrain version text color to roundtrip.");
+    Expect(!ninjabrain.showDirectionToStronghold, "Expected Ninjabrain direction-to-stronghold toggle to roundtrip.");
     ExpectColorNear(ninjabrain.textColor, { 0.55f, 0.56f, 0.57f, 1.0f }, "Expected Ninjabrain header text color to roundtrip.");
     ExpectColorNear(ninjabrain.certaintyColor, { 0.12f, 0.98f, 0.34f, 1.0f }, "Expected Ninjabrain certainty high color to roundtrip.");
     ExpectColorNear(ninjabrain.certaintyMidColor, { 0.94f, 0.88f, 0.20f, 1.0f }, "Expected Ninjabrain certainty mid color to roundtrip.");
     ExpectColorNear(ninjabrain.certaintyLowColor, { 0.82f, 0.18f, 0.22f, 1.0f }, "Expected Ninjabrain certainty low color to roundtrip.");
     ExpectColorNear(ninjabrain.subpixelPositiveColor, { 0.32f, 0.87f, 0.41f, 1.0f }, "Expected Ninjabrain subpixel positive color to roundtrip.");
     ExpectColorNear(ninjabrain.subpixelNegativeColor, { 0.81f, 0.34f, 0.37f, 1.0f }, "Expected Ninjabrain subpixel negative color to roundtrip.");
-    Expect(!ninjabrain.negCoordColorEnabled, "Expected Ninjabrain negative coordinate tint toggle to roundtrip.");
+    ExpectColorNear(ninjabrain.coordPositiveColor, { 0.61f, 0.72f, 0.83f, 1.0f }, "Expected Ninjabrain positive coordinate color to roundtrip.");
+    ExpectColorNear(ninjabrain.coordNegativeColor, { 0.73f, 0.24f, 0.27f, 1.0f }, "Expected Ninjabrain negative coordinate color to roundtrip.");
+    ExpectFloatNear(ninjabrain.resultsMarginLeft, 9.0f, "Expected Ninjabrain results left margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.resultsMarginRight, 5.0f, "Expected Ninjabrain results right margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.informationMessagesMarginLeft, 17.0f, "Expected Ninjabrain information-message left margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.informationMessagesMarginRight, 11.0f, "Expected Ninjabrain information-message right margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.throwsMarginLeft, 7.0f, "Expected Ninjabrain throws left margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.throwsMarginRight, 15.0f, "Expected Ninjabrain throws right margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.failureMarginLeft, 21.0f, "Expected Ninjabrain failed-result left margin to roundtrip.");
+    ExpectFloatNear(ninjabrain.failureMarginRight, 13.0f, "Expected Ninjabrain failed-result right margin to roundtrip.");
     ExpectFloatNear(ninjabrain.sidePadding, 18.0f, "Expected Ninjabrain sidePadding to roundtrip.");
 }
 
@@ -2210,7 +2395,7 @@ void RunRichConfigRoundtripCase(std::string_view caseName, VerifyFn&& verify, Te
     verify();
 
     if (runMode == TestRunMode::Visual) {
-        RunVisualLoop(window, caseName, &RenderInteractiveSettingsFrame);
+        RunVisualLoopWithNinjabrainPreview(window, caseName, &RenderInteractiveSettingsFrame);
     }
 }
 
@@ -2226,7 +2411,7 @@ void RunConfigLoadCase(std::string_view caseName, WriteFixtureFn&& writeFixture,
     verify();
 
     if (runMode == TestRunMode::Visual) {
-        RunVisualLoop(window, caseName, &RenderInteractiveSettingsFrame);
+        RunVisualLoopWithNinjabrainPreview(window, caseName, &RenderInteractiveSettingsFrame);
     }
 }
 
@@ -2256,7 +2441,7 @@ void RunDefaultSettingsTabCase(std::string_view caseName, const std::string& top
     PrepareDefaultConfigForGui(caseName, basicModeEnabled);
 
     if (runMode == TestRunMode::Visual) {
-        RunVisualLoop(window, caseName, [&](DummyWindow& visualWindow) {
+        RunVisualLoopWithNinjabrainPreview(window, caseName, [&](DummyWindow& visualWindow) {
             RenderSettingsFrame(visualWindow, topLevelTabLabel.c_str(),
                                 inputsSubTabLabel.empty() ? nullptr : inputsSubTabLabel.c_str());
         });
@@ -2273,7 +2458,7 @@ void RunPopulatedSettingsTabCase(std::string_view caseName, const std::string& t
     PrepareRichConfigForGui(caseName);
 
     if (runMode == TestRunMode::Visual) {
-        RunVisualLoop(window, caseName, [&](DummyWindow& visualWindow) {
+        RunVisualLoopWithNinjabrainPreview(window, caseName, [&](DummyWindow& visualWindow) {
             RenderSettingsFrame(visualWindow, topLevelTabLabel.c_str(),
                                 inputsSubTabLabel.empty() ? nullptr : inputsSubTabLabel.c_str());
         });

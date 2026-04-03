@@ -91,6 +91,7 @@ const auto& GetTestCaseDefinitions() {
         {"mode-browser-overlay-render", &RunModeBrowserOverlayRenderTest},
         {"mode-image-overlay-render-png", &RunModeImageOverlayRenderPngTest},
         {"mode-image-overlay-render-mpeg", &RunModeImageOverlayRenderMpegTest},
+        {"mode-ninjabrain-overlay-render", &RunModeNinjabrainOverlayRenderTest},
         {"rebind-indicator-renders-below-settings-gui", &RunRebindIndicatorRendersBelowSettingsGuiTest},
         {"config-error-gui", &RunConfigErrorGuiTest},
         {"profiler-unspecified-breakdown", &RunProfilerUnspecifiedBreakdownTest},

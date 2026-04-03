@@ -6,6 +6,7 @@
 #include "runtime/logic_thread.h"
 #include "mirror_thread.h"
 #include "obs_thread.h"
+#include "common/i18n.h"
 #include "common/profiler.h"
 #include "gui/imgui_input_queue.h"
 #include "third_party/stb_image.h"
@@ -380,7 +381,8 @@ static int s_eyeZoomTempHeight = 0;
 static GLuint s_eyeZoomBlitFBO = 0;
 
 static GLuint s_boatIconTex[4] = {0, 0, 0, 0};
-static bool   s_boatIconsLoaded = false;
+static GLuint s_ninjabrainMessageIconTex[3] = {0, 0, 0};
+static bool   s_ninjabrainOverlayIconsLoaded = false;
 
 GLuint GetEyeZoomSnapshotTexture() { return s_eyeZoomSnapshotTexture; }
 int GetEyeZoomSnapshotWidth() { return s_eyeZoomSnapshotWidth; }
@@ -4156,12 +4158,14 @@ static bool HasNinjabrainOverlayContent(const NinjabrainOverlayConfig& nb, const
                                         bool* outHasTriangulation = nullptr, bool* outShowForBoat = nullptr) {
     const bool hasTriangulation = data.validPrediction &&
         (data.resultType == "TRIANGULATION" || data.resultType == "DIVINE");
+    const bool hasFailedResult = data.resultType == "FAILED";
+    const bool hasInformationMessages = data.informationMessageCount > 0;
     const bool boatError = (data.boatState == "ERROR");
     const bool showForBoat = nb.alwaysShowBoat || boatError;
 
     if (outHasTriangulation) { *outHasTriangulation = hasTriangulation; }
     if (outShowForBoat) { *outShowForBoat = showForBoat; }
-    return hasTriangulation || showForBoat;
+    return hasTriangulation || hasFailedResult || hasInformationMessages || showForBoat;
 }
 
 static bool ShouldRenderNinjabrainOverlayForRequest(const SameThreadOverlayState& request) {
@@ -7992,11 +7996,13 @@ static ImFont* NB_SafeAddFontFromFileTTF(ImFontAtlas* atlas, const char* path, f
 void LoadNinjabrainFont(ImFontAtlas* atlas, const NinjabrainOverlayConfig& overlay, float scaleFactor) {
     if (!atlas) return;
     const float requestedFontSize = (overlay.fontSize > 1.0f) ? overlay.fontSize : 56.0f;
-    const float nbSize = requestedFontSize * scaleFactor;
+    const float overlayScale = (overlay.overlayScale > 0.01f) ? overlay.overlayScale : 1.0f;
+    const float nbSize = (std::max)(1.0f, requestedFontSize * overlayScale * scaleFactor);
 
     ImFontConfig fontCfg;
-    fontCfg.OversampleH = 1;
-    fontCfg.OversampleV = 1;
+    fontCfg.OversampleH = overlay.fontAntialiasing ? 2 : 1;
+    fontCfg.OversampleV = overlay.fontAntialiasing ? 2 : 1;
+    fontCfg.PixelSnapH = !overlay.fontAntialiasing;
 
     // Resolve relative custom path against the toolscreen directory
     auto resolvePath = [](const std::string& p) -> std::string {
@@ -8092,21 +8098,66 @@ static ImU32 NBGradientColor(double probability, const Color& lowColor, const Co
 }
 
 
-static void EnsureBoatIconsLoaded()
+static bool LoadPngTextureResource(HMODULE hModule, int resourceId, GLuint& outTexture, const char* debugName)
 {
-    if (s_boatIconsLoaded) return;
+    HRSRC hResource = FindResourceW(hModule, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    if (!hResource) {
+        Log(std::string("Failed to find ") + debugName + " resource ID: " + std::to_string(resourceId));
+        return false;
+    }
+
+    HGLOBAL hLoaded = LoadResource(hModule, hResource);
+    if (!hLoaded) {
+        Log(std::string("Failed to load ") + debugName + " resource ID: " + std::to_string(resourceId));
+        return false;
+    }
+
+    void* pData = LockResource(hLoaded);
+    DWORD dataSize = SizeofResource(hModule, hResource);
+    if (!pData || dataSize == 0) {
+        Log(std::string("Invalid ") + debugName + " resource data for ID: " + std::to_string(resourceId));
+        return false;
+    }
+
+    int w = 0;
+    int h = 0;
+    int ch = 0;
+    unsigned char* px = stbi_load_from_memory((const unsigned char*)pData, dataSize, &w, &h, &ch, 4);
+    if (!px) {
+        Log(std::string("Failed to decode ") + debugName + " PNG for resource ID: " + std::to_string(resourceId));
+        return false;
+    }
+
+    glGenTextures(1, &outTexture);
+    BindTextureDirect(GL_TEXTURE_2D, outTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    stbi_image_free(px);
+    return true;
+}
+
+static void EnsureNinjabrainOverlayIconsLoaded()
+{
+    if (s_ninjabrainOverlayIconsLoaded) return;
 
     // Make sure OpenGL context is current
     if (!wglGetCurrentContext()) return;
 
-    s_boatIconsLoaded = true;
+    s_ninjabrainOverlayIconsLoaded = true;
 
     // Get our DLL's own module handle - resources live in the DLL, not the EXE
     HMODULE hModule = NULL;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCWSTR)&EnsureBoatIconsLoaded, &hModule);
+                       (LPCWSTR)&EnsureNinjabrainOverlayIconsLoaded, &hModule);
     if (!hModule) {
-        Log("EnsureBoatIconsLoaded: failed to get module handle");
+        Log("EnsureNinjabrainOverlayIconsLoaded: failed to get module handle");
         return;
     }
 
@@ -8126,53 +8177,27 @@ static void EnsureBoatIconsLoaded()
     };
 
     for (int i = 0; i < 4; i++) {
-        HRSRC hResource = FindResourceW(hModule, MAKEINTRESOURCEW(resourceIds[i]), RT_RCDATA);
-        if (!hResource) {
-            Log("Failed to find boat icon resource for index " + std::to_string(i));
-            continue;
+        if (LoadPngTextureResource(hModule, resourceIds[i], s_boatIconTex[i], "boat icon")) {
+            Log("Loaded boat icon from resource ID: " + std::to_string(resourceIds[i]));
         }
-
-        // Load the resource
-        HGLOBAL hLoaded = LoadResource(hModule, hResource);
-        if (!hLoaded) {
-            Log("Failed to load boat icon resource for index " + std::to_string(i));
-            continue;
-        }
-        
-        // Get pointer to resource data
-        void* pData = LockResource(hLoaded);
-        DWORD dataSize = SizeofResource(hModule, hResource);
-        
-        if (!pData || dataSize == 0) {
-            Log("Invalid boat icon resource data for index " + std::to_string(i));
-            continue;
-        }
-        
-        // Load PNG from memory
-        int w, h, ch;
-        unsigned char* px = stbi_load_from_memory((const unsigned char*)pData, dataSize, &w, &h, &ch, 4);
-        
-        if (!px) {
-            Log("Failed to decode boat icon PNG for index " + std::to_string(i));
-            continue;
-        }
-        
-        // Create OpenGL texture
-        glGenTextures(1, &s_boatIconTex[i]);
-        BindTextureDirect(GL_TEXTURE_2D, s_boatIconTex[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        stbi_image_free(px);
-        Log("Loaded boat icon from resource ID: " + std::to_string(resourceIds[i]));
-        
     }
+
+    const int messageResourceIds[3] = {
+        IDR_NINJABRAIN_INFO_ICON,
+        IDR_NINJABRAIN_WARNING_ICON,
+        IDR_NINJABRAIN_LOCK_ICON,
+    };
+    const char* messageDebugNames[3] = {
+        "Ninjabrain info icon",
+        "Ninjabrain warning icon",
+        "Ninjabrain lock icon",
+    };
+    for (int i = 0; i < 3; ++i) {
+        if (LoadPngTextureResource(hModule, messageResourceIds[i], s_ninjabrainMessageIconTex[i], messageDebugNames[i])) {
+            Log(std::string("Loaded ") + messageDebugNames[i] + " from resource ID: " + std::to_string(messageResourceIds[i]));
+        }
+    }
+
     BindTextureDirect(GL_TEXTURE_2D, previousTexture);
 }
 #include <algorithm>
@@ -8183,27 +8208,57 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
 
     if (!IsNinjabrainOverlayModeAllowed(nb, modeId)) return;
 
-    EnsureBoatIconsLoaded();
+    EnsureNinjabrainOverlayIconsLoaded();
 
     const auto dataSnapshot = GetNinjabrainDataSnapshot();
     if (!dataSnapshot) return;
 
     const NinjabrainData& data = *dataSnapshot;
+    const bool failedResult = data.resultType == "FAILED";
+    const bool hasInformationMessages = data.informationMessageCount > 0;
 
     bool hasTriangulation = false;
     bool showForBoat = false;
     if (!HasNinjabrainOverlayContent(nb, data, &hasTriangulation, &showForBoat)) return;
+    const bool showPredictionTable = hasTriangulation || showForBoat;
 
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
     const float scale = (nb.overlayScale > 0.01f) ? nb.overlayScale : 1.0f;
-    const float fs = GetNinjabrainFontSize() * scale;
+    const float fs = GetNinjabrainFontSize();
     if (!font || !font->IsLoaded()) font = ImGui::GetFont();
     const float lineH = fs;
-    const float colGap = 0.0f;
+    const float colGap = (std::max)(0.0f, nb.resultsColumnGap) * scale;
     const int outlineR = nb.outlineWidth;
     const float contentPadX = (8.0f + (float)outlineR) * scale;
     const float sidePadX = (std::max)(0.0f, nb.sidePadding) * scale;
+    const float contentPadTop = (std::max)(0.0f, nb.contentPaddingTop) * scale;
+    const float contentPadBottom = (std::max)(0.0f, nb.contentPaddingBottom) * scale;
+    const float resultsMarginLeft = (std::max)(0.0f, nb.resultsMarginLeft) * scale;
+    const float resultsMarginRight = (std::max)(0.0f, nb.resultsMarginRight) * scale;
+    const float resultsMarginTop = (std::max)(0.0f, nb.resultsMarginTop) * scale;
+    const float resultsMarginBottom = (std::max)(0.0f, nb.resultsMarginBottom) * scale;
+    const float resultsHeaderPadY = (std::max)(0.0f, nb.resultsHeaderPaddingY) * scale;
     const float rowH = lineH + nb.rowSpacing * scale;
+    const std::string infoPlacement =
+        (nb.informationMessagesPlacement == "top" || nb.informationMessagesPlacement == "bottom")
+            ? nb.informationMessagesPlacement
+            : "middle";
+    const float infoMarginLeft = (std::max)(0.0f, nb.informationMessagesMarginLeft) * scale;
+    const float infoMarginRight = (std::max)(0.0f, nb.informationMessagesMarginRight) * scale;
+    const float infoFontScale = (std::max)(0.4f, nb.informationMessagesFontScale);
+    const float infoFs = fs * infoFontScale;
+    const float infoLineH = (std::max)(1.0f, infoFs);
+    const float throwsMarginLeft = (std::max)(0.0f, nb.throwsMarginLeft) * scale;
+    const float throwsMarginRight = (std::max)(0.0f, nb.throwsMarginRight) * scale;
+    const float throwsMarginTop = (std::max)(0.0f, nb.throwsMarginTop) * scale;
+    const float throwsMarginBottom = (std::max)(0.0f, nb.throwsMarginBottom) * scale;
+    const float throwsHeaderPadY = (std::max)(0.0f, nb.throwsHeaderPaddingY) * scale;
+    const float throwsRowPadY = (std::max)(0.0f, nb.throwsRowPaddingY) * scale;
+    const float failureMarginLeft = (std::max)(0.0f, nb.failureMarginLeft) * scale;
+    const float failureMarginRight = (std::max)(0.0f, nb.failureMarginRight) * scale;
+    const float failureMarginTop = (std::max)(0.0f, nb.failureMarginTop) * scale;
+    const float failureMarginBottom = (std::max)(0.0f, nb.failureMarginBottom) * scale;
+    const float failureLineGap = (std::max)(0.0f, nb.failureLineGap) * scale;
 
     auto applyAlpha = [](ImU32 col, float alphaMul) -> ImU32 {
         if (alphaMul >= 1.0f) return col;
@@ -8225,7 +8280,8 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     ImU32 versionTextCol = ColorToImU32(nb.versionTextColor);
     ImU32 posAdjustmentCol = ColorToImU32(nb.subpixelPositiveColor);
     ImU32 negAdjustmentCol = ColorToImU32(nb.subpixelNegativeColor);
-    ImU32 negCoordCol = ColorToImU32(nb.subpixelNegativeColor);
+    ImU32 posCoordCol = ColorToImU32(nb.coordPositiveColor);
+    ImU32 negCoordCol = ColorToImU32(nb.coordNegativeColor);
 
     int boatIconIdx = 0;
     if      (data.boatState == "MEASURING") boatIconIdx = 1;
@@ -8238,6 +8294,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         ImU32 color;
         ImU32 part1Color;
         float xOffset;
+        bool  centerOnPart1;
     };
     static constexpr int kRenderedRowLimit = (int)kNinjabrainPredictionLimit + 1;
     struct Col {
@@ -8246,6 +8303,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         float  width;
         int    rowCount;
         bool   isBoatIcon;
+        bool   leftAlign;
     };
     Col cols[10];
     int numCols = 0;
@@ -8255,11 +8313,11 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     if (data.predictionCount > 0 && numRows > data.predictionCount) numRows = data.predictionCount;
     const bool boatOnly = !hasTriangulation && showForBoat;
     if (boatOnly) numRows = 1;
-    if (numRows < 1) return;
 
     auto initCol = [&](Col& c, const char* hdr, int rows) {
         c.rowCount   = rows;
         c.isBoatIcon = false;
+        c.leftAlign  = false;
         snprintf(c.header, sizeof(c.header), "%s", hdr);
         c.width = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c.header).x;
         for (int i = 0; i < kRenderedRowLimit; i++) {
@@ -8267,6 +8325,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
             c.rows[i].color      = dataCol;
             c.rows[i].part1Color = textCol;
             c.rows[i].xOffset    = 0;
+            c.rows[i].centerOnPart1 = false;
         }
     };
     auto measureRow = [&](Col& c, int ri) {
@@ -8283,16 +8342,20 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         const std::string& colId = colCfg.id;
 
         if (colId == "coords") {
-            const char* sample = (nb.coordsDisplay == "chunk") ? "(-99999, -99999)" : "(-999999, -999999)";
+            const char* sample = (nb.coordsDisplay == "chunk") ? "(-999, -999)" : "(-9999, -9999)";
             c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, sample).x);
         } else if (colId == "certainty") {
-            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "100.0%").x);
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "100.00%").x);
         } else if (colId == "distance") {
             c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "999999").x);
         } else if (colId == "nether") {
-            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "(-999999, -999999)").x);
+            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "(-9999, -9999)").x);
         } else if (colId == "angle") {
-            c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99 (-> 180.0)").x);
+            if (nb.showDirectionToStronghold) {
+                c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99 (-> 180.0)").x);
+            } else {
+                c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99").x);
+            }
             if (!nb.showThrowDetails) {
                 c.width = (std::max)(c.width, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "359.99+999").x);
             }
@@ -8314,160 +8377,167 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         displayZ = chunkZ * 2;
     };
 
-    for (const auto& colCfg : nb.columns) {
-        if (!colCfg.show) continue;
-        if (numCols >= 10) break;
-        if (colCfg.id == "angle_change" || colCfg.id == "eyes") continue;
-        if (boatOnly && colCfg.id != "boat") continue;
+    if (!failedResult && showPredictionTable) {
+        for (const auto& colCfg : nb.columns) {
+            if (!colCfg.show) continue;
+            if (numCols >= 10) break;
+            if (colCfg.id == "angle_change" || colCfg.id == "eyes") continue;
+            if (boatOnly && colCfg.id != "boat") continue;
 
-        Col& c = cols[numCols];
+            Col& c = cols[numCols];
 
-        if (colCfg.id == "coords") {
-            initCol(c, colCfg.header.c_str(), numRows);
-            for (int i = 0; i < numRows; i++) {
-                int rawX = 0;
-                int rawZ = 0;
-                getCoordsDisplay(data.predictions[i].chunkX, data.predictions[i].chunkZ, rawX, rawZ);
-                snprintf(c.rows[i].text, sizeof(c.rows[i].text), "(%d, %d)", rawX, rawZ);
-                if (nb.negCoordColorEnabled && (rawX < 0) != (rawZ < 0)) {
-                    char part1[32];
-                    snprintf(part1, sizeof(part1), "(%d, ", rawX);
-                    c.rows[i].xOffset    = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
-                    c.rows[i].part1Color = (rawX < 0) ? negCoordCol : dataCol;
-                    c.rows[i].color      = (rawZ < 0) ? negCoordCol : dataCol;
-                } else {
-                    bool anyNeg = nb.negCoordColorEnabled && (rawX < 0 || rawZ < 0);
-                    c.rows[i].color   = anyNeg ? negCoordCol : dataCol;
-                    c.rows[i].xOffset = 0;
-                }
-                measureRow(c, i);
-            }
-        } else if (colCfg.id == "certainty") {
-            initCol(c, colCfg.header.c_str(), numRows);
-            for (int i = 0; i < numRows; i++) {
-                snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%.1f%%", data.predictions[i].certainty * 100.0);
-                c.rows[i].color = NBGradientColor(data.predictions[i].certainty, nb.certaintyLowColor,
-                                                 nb.certaintyMidColor, nb.certaintyColor);
-                measureRow(c, i);
-            }
-        } else if (colCfg.id == "distance") {
-            initCol(c, colCfg.header.c_str(), numRows);
-            for (int i = 0; i < numRows; i++) {
-                const double distanceValue = data.predictions[i].overworldDistance;
-                const int displayDistance = (int)std::floor(distanceValue);
-                snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%d", displayDistance);
-                c.rows[i].color = dataCol;
-                measureRow(c, i);
-            }
-        } else if (colCfg.id == "nether") {
-            initCol(c, colCfg.header.c_str(), numRows);
-            for (int i = 0; i < numRows; i++) {
-                int nx = 0;
-                int nz = 0;
-                getNetherDisplay(data.predictions[i].chunkX, data.predictions[i].chunkZ, nx, nz);
-                snprintf(c.rows[i].text, sizeof(c.rows[i].text), "(%d, %d)", nx, nz);
-                if (nb.negCoordColorEnabled && (nx < 0) != (nz < 0)) {
-                    char part1[32];
-                    snprintf(part1, sizeof(part1), "(%d, ", nx);
-                    c.rows[i].xOffset    = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
-                    c.rows[i].part1Color = (nx < 0) ? negCoordCol : dataCol;
-                    c.rows[i].color      = (nz < 0) ? negCoordCol : dataCol;
-                } else {
-                    bool anyNeg = nb.negCoordColorEnabled && (nx < 0 || nz < 0);
-                    c.rows[i].color   = anyNeg ? negCoordCol : dataCol;
-                    c.rows[i].xOffset = 0;
-                }
-                measureRow(c, i);
-            }
-        } else if (colCfg.id == "angle") {
-
-            if (data.eyeCount == 0) {
-                initCol(c, colCfg.header.c_str(), 1);
-                snprintf(c.rows[0].text, sizeof(c.rows[0].text), "-");
-                c.rows[0].color = textCol;
-                measureRow(c, 0);
-            } else {
-                int totalRows = numRows + (nb.showThrowDetails ? 0 : 1);
-                if (totalRows > kRenderedRowLimit) totalRows = kRenderedRowLimit;
-                initCol(c, colCfg.header.c_str(), totalRows);
-
+            if (colCfg.id == "coords") {
+                initCol(c, colCfg.header.c_str(), numRows);
                 for (int i = 0; i < numRows; i++) {
-                    if (data.predictionAngles[i].valid) {
-                        double nc    = data.predictionAngles[i].neededCorrection;
-                        double absNc = std::abs(nc);
-                        if (absNc < 0.05) {
-                            snprintf(c.rows[i].text, sizeof(c.rows[i].text),
-                                     "%.2f", data.predictionAngles[i].actualAngle);
-                            c.rows[i].color   = dataCol;
-                            c.rows[i].xOffset = 0;
-                        } else {
-                            const char* arrow = (nc > 0) ? "-> " : "<- ";
-                            char part1[32];
-                            snprintf(part1, sizeof(part1), "%.2f ", data.predictionAngles[i].actualAngle);
-                            c.rows[i].xOffset    = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
-                            c.rows[i].part1Color = dataCol;
-                            snprintf(c.rows[i].text, sizeof(c.rows[i].text),
-                                     "%.2f (%s%.1f)", data.predictionAngles[i].actualAngle, arrow, absNc);
-                            c.rows[i].color = NBGradientColor(1.0 - absNc / 180.0, nb.certaintyLowColor,
-                                                             nb.certaintyMidColor, nb.certaintyColor);
-                        }
+                    int rawX = 0;
+                    int rawZ = 0;
+                    getCoordsDisplay(data.predictions[i].chunkX, data.predictions[i].chunkZ, rawX, rawZ);
+                    snprintf(c.rows[i].text, sizeof(c.rows[i].text), "(%d, %d)", rawX, rawZ);
+                    if ((rawX < 0) != (rawZ < 0)) {
+                        char part1[32];
+                        snprintf(part1, sizeof(part1), "(%d, ", rawX);
+                        c.rows[i].xOffset    = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
+                        c.rows[i].part1Color = (rawX < 0) ? negCoordCol : posCoordCol;
+                        c.rows[i].color      = (rawZ < 0) ? negCoordCol : posCoordCol;
                     } else {
-                        snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%.2f", data.lastAngle);
-                        c.rows[i].color   = dataCol;
+                        const bool anyNeg = rawX < 0 || rawZ < 0;
+                        c.rows[i].color   = anyNeg ? negCoordCol : posCoordCol;
                         c.rows[i].xOffset = 0;
                     }
                     measureRow(c, i);
                 }
-
-                if (!nb.showThrowDetails) {
-                    int infoIdx = numRows;
-                    auto& ft = data.throws[data.eyeCount - 1];
-
-                    int correctionIncrements = 0;
-                    if (ft.hasCorrectionIncrements) {
-                        correctionIncrements = ft.correctionIncrements;
-                    } else {
-                        correctionIncrements = data.correctionIncrements151;
-                    }
-
-                    if (correctionIncrements == 0) {
-                        snprintf(c.rows[infoIdx].text, sizeof(c.rows[infoIdx].text), "%.2f", ft.angleWithoutCorrection);
-                        c.rows[infoIdx].color = textCol;
-                        c.rows[infoIdx].xOffset = 0;
-                    } else {
-                        char basePart[32];
-                        snprintf(basePart, sizeof(basePart), "%.2f", ft.angleWithoutCorrection);
-                        c.rows[infoIdx].xOffset = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, basePart).x;
-                        c.rows[infoIdx].part1Color = textCol;
-                        snprintf(c.rows[infoIdx].text, sizeof(c.rows[infoIdx].text), "%.2f%+d", ft.angleWithoutCorrection,
-                                 correctionIncrements);
-                        c.rows[infoIdx].color = (correctionIncrements > 0) ? posAdjustmentCol : negAdjustmentCol;
-                    }
-                    measureRow(c, infoIdx);
+            } else if (colCfg.id == "certainty") {
+                initCol(c, colCfg.header.c_str(), numRows);
+                for (int i = 0; i < numRows; i++) {
+                    snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%.1f%%", data.predictions[i].certainty * 100.0);
+                    c.rows[i].color = NBGradientColor(data.predictions[i].certainty, nb.certaintyLowColor,
+                                                     nb.certaintyMidColor, nb.certaintyColor);
+                    measureRow(c, i);
                 }
-            }
-        } else if (colCfg.id == "boat") {
-            initCol(c, colCfg.header.c_str(), 1);
-            c.isBoatIcon = (boatTex != 0);
-            if (c.isBoatIcon) {
-                c.width = (std::max)(c.width, rowH);
+            } else if (colCfg.id == "distance") {
+                initCol(c, colCfg.header.c_str(), numRows);
+                for (int i = 0; i < numRows; i++) {
+                    const double distanceValue = data.predictions[i].overworldDistance;
+                    const int displayDistance = (int)std::floor(distanceValue);
+                    snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%d", displayDistance);
+                    c.rows[i].color = dataCol;
+                    measureRow(c, i);
+                }
+            } else if (colCfg.id == "nether") {
+                initCol(c, colCfg.header.c_str(), numRows);
+                for (int i = 0; i < numRows; i++) {
+                    int nx = 0;
+                    int nz = 0;
+                    getNetherDisplay(data.predictions[i].chunkX, data.predictions[i].chunkZ, nx, nz);
+                    snprintf(c.rows[i].text, sizeof(c.rows[i].text), "(%d, %d)", nx, nz);
+                    if ((nx < 0) != (nz < 0)) {
+                        char part1[32];
+                        snprintf(part1, sizeof(part1), "(%d, ", nx);
+                        c.rows[i].xOffset    = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
+                        c.rows[i].part1Color = (nx < 0) ? negCoordCol : posCoordCol;
+                        c.rows[i].color      = (nz < 0) ? negCoordCol : posCoordCol;
+                    } else {
+                        const bool anyNeg = nx < 0 || nz < 0;
+                        c.rows[i].color   = anyNeg ? negCoordCol : posCoordCol;
+                        c.rows[i].xOffset = 0;
+                    }
+                    measureRow(c, i);
+                }
+            } else if (colCfg.id == "angle") {
+                c.leftAlign = true;
+
+                if (data.eyeCount == 0) {
+                    initCol(c, colCfg.header.c_str(), 1);
+                    c.leftAlign = true;
+                    snprintf(c.rows[0].text, sizeof(c.rows[0].text), "-");
+                    c.rows[0].color = textCol;
+                    measureRow(c, 0);
+                } else {
+                    int totalRows = numRows + (nb.showThrowDetails ? 0 : 1);
+                    if (totalRows > kRenderedRowLimit) totalRows = kRenderedRowLimit;
+                    initCol(c, colCfg.header.c_str(), totalRows);
+                    c.leftAlign = true;
+
+                    for (int i = 0; i < numRows; i++) {
+                        if (data.predictionAngles[i].valid) {
+                            double nc    = data.predictionAngles[i].neededCorrection;
+                            double absNc = std::abs(nc);
+                            if (!nb.showDirectionToStronghold) {
+                                snprintf(c.rows[i].text, sizeof(c.rows[i].text),
+                                         "%.2f", data.predictionAngles[i].actualAngle);
+                                c.rows[i].color   = dataCol;
+                                c.rows[i].xOffset = 0;
+                            } else {
+                                const char* arrow = (nc > 0) ? "-> " : "<- ";
+                                char part1[32];
+                                snprintf(part1, sizeof(part1), "%.2f ", data.predictionAngles[i].actualAngle);
+                                c.rows[i].xOffset    = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, part1).x;
+                                c.rows[i].part1Color = dataCol;
+                                c.rows[i].centerOnPart1 = true;
+                                snprintf(c.rows[i].text, sizeof(c.rows[i].text),
+                                         "%.2f (%s%.1f)", data.predictionAngles[i].actualAngle, arrow, absNc);
+                                c.rows[i].color = NBGradientColor(1.0 - absNc / 180.0, nb.certaintyLowColor,
+                                                                 nb.certaintyMidColor, nb.certaintyColor);
+                            }
+                        } else {
+                            snprintf(c.rows[i].text, sizeof(c.rows[i].text), "%.2f", data.lastAngle);
+                            c.rows[i].color   = dataCol;
+                            c.rows[i].xOffset = 0;
+                        }
+                        measureRow(c, i);
+                    }
+
+                    if (!nb.showThrowDetails) {
+                        int infoIdx = numRows;
+                        auto& ft = data.throws[data.eyeCount - 1];
+
+                        int correctionIncrements = 0;
+                        if (ft.hasCorrectionIncrements) {
+                            correctionIncrements = ft.correctionIncrements;
+                        } else {
+                            correctionIncrements = data.correctionIncrements151;
+                        }
+
+                        if (correctionIncrements == 0) {
+                            snprintf(c.rows[infoIdx].text, sizeof(c.rows[infoIdx].text), "%.2f", ft.angleWithoutCorrection);
+                            c.rows[infoIdx].color = textCol;
+                            c.rows[infoIdx].xOffset = 0;
+                        } else {
+                            char basePart[32];
+                            snprintf(basePart, sizeof(basePart), "%.2f", ft.angleWithoutCorrection);
+                            c.rows[infoIdx].xOffset = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, basePart).x;
+                            c.rows[infoIdx].part1Color = textCol;
+                            c.rows[infoIdx].centerOnPart1 = true;
+                            snprintf(c.rows[infoIdx].text, sizeof(c.rows[infoIdx].text), "%.2f%+d", ft.angleWithoutCorrection,
+                                     correctionIncrements);
+                            c.rows[infoIdx].color = (correctionIncrements > 0) ? posAdjustmentCol : negAdjustmentCol;
+                        }
+                        measureRow(c, infoIdx);
+                    }
+                }
+            } else if (colCfg.id == "boat") {
+                initCol(c, colCfg.header.c_str(), 1);
+                c.isBoatIcon = (boatTex != 0);
+                if (c.isBoatIcon) {
+                    c.width = (std::max)(c.width, rowH);
+                } else {
+                    snprintf(c.rows[0].text, sizeof(c.rows[0].text), "%s", data.boatState.c_str());
+                    ImU32 boatCol = IM_COL32(160, 160, 160, 255);
+                    if      (data.boatState == "MEASURING") boatCol = IM_COL32(100, 160, 255, 255);
+                    else if (data.boatState == "VALID")     boatCol = IM_COL32(80,  220, 80,  255);
+                    else if (data.boatState == "ERROR")     boatCol = IM_COL32(255, 80,  80,  255);
+                    c.rows[0].color = boatCol;
+                    measureRow(c, 0);
+                }
             } else {
-                snprintf(c.rows[0].text, sizeof(c.rows[0].text), "%s", data.boatState.c_str());
-                ImU32 boatCol = IM_COL32(160, 160, 160, 255);
-                if      (data.boatState == "MEASURING") boatCol = IM_COL32(100, 160, 255, 255);
-                else if (data.boatState == "VALID")     boatCol = IM_COL32(80,  220, 80,  255);
-                else if (data.boatState == "ERROR")     boatCol = IM_COL32(255, 80,  80,  255);
-                c.rows[0].color = boatCol;
-                measureRow(c, 0);
+                continue;
             }
-        } else {
-            continue;
+            reserveStaticColWidth(c, colCfg);
+            numCols++;
         }
-        reserveStaticColWidth(c, colCfg);
-        numCols++;
     }
 
-    if (numCols == 0) return;
+    if (numCols == 0 && !failedResult && !hasInformationMessages) return;
 
     int maxRows = 0;
     for (int ci = 0; ci < numCols; ci++) maxRows = (std::max)(maxRows, cols[ci].rowCount);
@@ -8481,27 +8551,112 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
 
     auto drawText = [&](float sz, ImVec2 pos, ImU32 col, const char* txt) {
         col = applyOpacity(col);
+        pos.x = roundf(pos.x);
+        pos.y = roundf(pos.y);
         if (outlineR > 0) {
             int outA = (int)(220 * opacityMul);
             ImU32 outCol = IM_COL32(0, 0, 0, outA);
-            int r2 = outlineR * outlineR;
-            for (int dy = -outlineR; dy <= outlineR; dy++) {
-                for (int dx = -outlineR; dx <= outlineR; dx++) {
-                    if (dx == 0 && dy == 0) continue;
-                    if (dx * dx + dy * dy > r2) continue;
-                    drawList->AddText(font, sz,
-                        ImVec2(pos.x + (float)dx, pos.y + (float)dy),
-                        outCol, txt);
+            if (outlineR == 1) {
+                static constexpr ImVec2 kImmediateOutlineOffsets[] = {
+                    ImVec2(-1.0f, -1.0f), ImVec2(0.0f, -1.0f), ImVec2(1.0f, -1.0f),
+                    ImVec2(-1.0f,  0.0f),                         ImVec2(1.0f,  0.0f),
+                    ImVec2(-1.0f,  1.0f), ImVec2(0.0f,  1.0f), ImVec2(1.0f,  1.0f),
+                };
+                for (const ImVec2& offset : kImmediateOutlineOffsets) {
+                    drawList->AddText(font, sz, ImVec2(pos.x + offset.x, pos.y + offset.y), outCol, txt);
+                }
+            } else {
+                // Match the mirror border optimization pattern: avoid sampling every point in the radius box.
+                for (int offset = 1; offset <= outlineR; ++offset) {
+                    const float d = static_cast<float>(offset);
+                    drawList->AddText(font, sz, ImVec2(pos.x - d, pos.y - d), outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x,     pos.y - d), outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x + d, pos.y - d), outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x - d, pos.y),     outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x + d, pos.y),     outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x - d, pos.y + d), outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x,     pos.y + d), outCol, txt);
+                    drawList->AddText(font, sz, ImVec2(pos.x + d, pos.y + d), outCol, txt);
                 }
             }
         }
         drawList->AddText(font, sz, pos, col, txt);
     };
+    auto touchesPanelEdge = [](float edge, float panelEdge) {
+        return std::fabs(edge - panelEdge) <= 0.5f;
+    };
+    auto roundedBandFlags = [](bool roundTop, bool roundBottom) {
+        ImDrawFlags flags = ImDrawFlags_None;
+        if (roundTop) {
+            flags |= ImDrawFlags_RoundCornersTop;
+        }
+        if (roundBottom) {
+            flags |= ImDrawFlags_RoundCornersBottom;
+        }
+        return flags;
+    };
+    auto drawRoundedBand = [&](ImVec2 min, ImVec2 max, ImU32 color, bool roundTop, bool roundBottom) {
+        const ImDrawFlags flags = roundedBandFlags(roundTop, roundBottom);
+        const float radius = (flags != ImDrawFlags_None) ? nb.cornerRadius : 0.0f;
+        drawList->AddRectFilled(min, max, color, radius, flags);
+    };
+    auto drawOverlayBackground = [&](float left, float top, float width, float height, ImU32 color) {
+        if (!nb.bgEnabled) {
+            return;
+        }
+        drawList->AddRectFilled(ImVec2(left, top), ImVec2(left + width, top + height), color, nb.cornerRadius);
+    };
+    auto drawOverlayBackgroundGaps = [&](float left, float top, float width, float height, ImU32 color,
+                                         std::vector<std::pair<float, float>> coveredBands) {
+        if (!nb.bgEnabled) {
+            return;
+        }
+        if (coveredBands.empty()) {
+            drawOverlayBackground(left, top, width, height, color);
+            return;
+        }
+
+        const float panelTop = top;
+        const float panelBottom = top + height;
+        std::sort(coveredBands.begin(), coveredBands.end(), [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
+
+        float cursor = panelTop;
+        for (const auto& coveredBand : coveredBands) {
+            const float coveredTop = (std::max)(panelTop, coveredBand.first);
+            const float coveredBottom = (std::min)(panelBottom, coveredBand.second);
+            if (coveredBottom <= coveredTop) {
+                continue;
+            }
+            if (coveredTop > cursor) {
+                drawRoundedBand(ImVec2(left, cursor), ImVec2(left + width, coveredTop), color,
+                                touchesPanelEdge(cursor, panelTop), touchesPanelEdge(coveredTop, panelBottom));
+            }
+            cursor = (std::max)(cursor, coveredBottom);
+        }
+
+        if (cursor < panelBottom) {
+            drawRoundedBand(ImVec2(left, cursor), ImVec2(left + width, panelBottom), color,
+                            touchesPanelEdge(cursor, panelTop), true);
+        }
+    };
+    auto drawOverlayBorder = [&](float left, float top, float width, float height, ImU32 color) {
+        if (nb.borderWidth <= 0) {
+            return;
+        }
+        const float borderThickness = static_cast<float>(nb.borderWidth);
+        const float halfBorder = borderThickness * 0.5f;
+        drawList->AddRect(ImVec2(left - halfBorder, top - halfBorder),
+                          ImVec2(left + width + halfBorder, top + height + halfBorder),
+                          color, nb.cornerRadius + halfBorder, 0, borderThickness);
+    };
     auto drawCenteredSegmentedText = [&](float left, float width, float y, const char* text, ImU32 color,
-                                         float splitOffset, ImU32 part1Color) {
+                                         float splitOffset, ImU32 part1Color, bool centerOnPart1, bool leftAlign) {
         drawList->PushClipRect(ImVec2(left, -FLT_MAX), ImVec2(left + width, FLT_MAX), true);
         float textW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
-        float textX = left + (width - textW) * 0.5f;
+        float anchorW = centerOnPart1 && splitOffset > 0.0f ? splitOffset : textW;
+        float textX = leftAlign ? left : left + (width - anchorW) * 0.5f;
         if (splitOffset <= 0.0f) {
             drawText(fs, ImVec2(textX, y), color, text);
             drawList->PopClipRect();
@@ -8527,6 +8682,153 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         drawText(fs, ImVec2(textX + part1W, y), color, splitPtr);
         drawList->PopClipRect();
     };
+    auto containsAsciiCaseInsensitive = [](const std::string& value, const char* needle) {
+        if (!needle || !needle[0]) { return false; }
+        const size_t needleLen = strlen(needle);
+        return std::search(value.begin(), value.end(), needle, needle + needleLen,
+                           [](char left, char right) {
+                               return std::tolower(static_cast<unsigned char>(left)) ==
+                                      std::tolower(static_cast<unsigned char>(right));
+                           }) != value.end();
+    };
+    const float infoPreferredContentW = (std::max)(120.0f, nb.informationMessagesMinWidth) * scale;
+    const float infoMessageMarginTop = (std::max)(0.0f, nb.informationMessagesMarginTop) * scale;
+    const float infoMessageMarginBottom = (std::max)(0.0f, nb.informationMessagesMarginBottom) * scale;
+    const float infoIconTextMargin = (std::max)(0.0f, nb.informationMessagesIconTextMargin) * scale;
+    const float infoLineGap = 2.0f * scale * infoFontScale;
+    const float infoIconSize = infoLineH * 0.82f * std::clamp(nb.informationMessagesIconScale, 0.25f, 4.0f);
+    const float infoTextInset = infoIconSize + infoIconTextMargin;
+
+    auto isAsciiSpace = [](char ch) {
+        return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+    };
+    auto nextUtf8Char = [](const char* cursor, const char* end) {
+        if (cursor >= end) { return end; }
+        const char* next = cursor + 1;
+        while (next < end && ((*next & 0xC0) == 0x80)) { ++next; }
+        return next;
+    };
+    auto measureWrappedText = [&](const std::string& text, float wrapWidth, float* outMaxLineWidth = nullptr) {
+        const char* cursor = text.c_str();
+        const char* end = cursor + text.size();
+        int lineCount = 0;
+        float maxLineWidth = 0.0f;
+
+        while (cursor < end) {
+            while (cursor < end && isAsciiSpace(*cursor)) { ++cursor; }
+            if (cursor >= end) { break; }
+
+            const char* wrap = font->CalcWordWrapPosition(infoFs, cursor, end, wrapWidth);
+            if (wrap == cursor) { wrap = nextUtf8Char(cursor, end); }
+
+            const char* lineEnd = wrap;
+            while (lineEnd > cursor && isAsciiSpace(lineEnd[-1])) { --lineEnd; }
+
+            maxLineWidth = (std::max)(maxLineWidth, font->CalcTextSizeA(infoFs, FLT_MAX, 0.0f, cursor, lineEnd).x);
+            ++lineCount;
+            cursor = wrap;
+        }
+
+        if (lineCount == 0) { lineCount = 1; }
+        if (outMaxLineWidth) { *outMaxLineWidth = maxLineWidth; }
+        return lineCount * infoLineH + (lineCount - 1) * infoLineGap;
+    };
+    auto measureInfoMessagesBlock = [&](float contentWidth) {
+        if (!hasInformationMessages) { return 0.0f; }
+
+        const float wrapWidth = (std::max)(1.0f, contentWidth - infoTextInset);
+        float totalHeight = infoMessageMarginTop + infoMessageMarginBottom;
+        for (int index = 0; index < data.informationMessageCount; ++index) {
+            const float messageTextHeight = measureWrappedText(data.informationMessages[index].message, wrapWidth);
+            totalHeight += (std::max)(messageTextHeight, infoIconSize);
+        }
+        return totalHeight;
+    };
+    auto drawInfoMessageIcon = [&](const NinjabrainInformationMessage& message, float centerX, float centerY) {
+        const float halfSize = infoIconSize * 0.5f;
+        const float iconTextSize = infoFs * 0.72f;
+
+        GLuint iconTexture = 0;
+        if (containsAsciiCaseInsensitive(message.type, "lock")) {
+            iconTexture = s_ninjabrainMessageIconTex[2];
+        } else if (message.severity == "WARNING" || message.severity == "ERROR") {
+            iconTexture = s_ninjabrainMessageIconTex[1];
+        } else {
+            iconTexture = s_ninjabrainMessageIconTex[0];
+        }
+
+        if (iconTexture != 0) {
+            drawList->AddImage((ImTextureID)(intptr_t)iconTexture,
+                               ImVec2(centerX - halfSize, centerY - halfSize),
+                               ImVec2(centerX + halfSize, centerY + halfSize),
+                               ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), applyOpacity(IM_COL32(255, 255, 255, 255)));
+            return;
+        }
+
+        if (message.severity == "WARNING") {
+            const ImU32 triangleCol = applyOpacity(IM_COL32(232, 192, 57, 255));
+            const ImU32 iconTextCol = applyOpacity(IM_COL32(36, 33, 22, 255));
+            drawList->AddTriangleFilled(
+                ImVec2(centerX, centerY - halfSize * 1.05f),
+                ImVec2(centerX - halfSize, centerY + halfSize * 0.9f),
+                ImVec2(centerX + halfSize, centerY + halfSize * 0.9f),
+                triangleCol);
+            const float textW = font->CalcTextSizeA(iconTextSize, FLT_MAX, 0.0f, "!").x;
+            drawText(iconTextSize, ImVec2(centerX - textW * 0.5f, centerY - iconTextSize * 0.62f), iconTextCol, "!");
+            return;
+        }
+
+        ImU32 fillCol = applyOpacity(IM_COL32(63, 168, 244, 255));
+        ImU32 iconTextCol = applyOpacity(IM_COL32(255, 255, 255, 255));
+        if (message.severity == "ERROR") {
+            fillCol = applyOpacity(IM_COL32(224, 89, 89, 255));
+        }
+
+        drawList->AddCircleFilled(ImVec2(centerX, centerY), halfSize, fillCol, 20);
+        const float textW = font->CalcTextSizeA(iconTextSize, FLT_MAX, 0.0f, "i").x;
+        drawText(iconTextSize, ImVec2(centerX - textW * 0.5f, centerY - iconTextSize * 0.58f), iconTextCol, "i");
+    };
+    auto drawInfoMessagesBlock = [&](float surfaceLeft, float surfaceRight, float contentLeft, float top, float contentWidth,
+                                     ImU32 dividerColor, ImU32 messageColor) {
+        if (!hasInformationMessages) { return top; }
+
+        const float wrapWidth = (std::max)(1.0f, contentWidth - infoTextInset);
+        const float iconCenterX = contentLeft + infoIconSize * 0.5f;
+        const float messageTextX = contentLeft + infoTextInset;
+        float y = top + infoMessageMarginTop;
+        for (int index = 0; index < data.informationMessageCount; ++index) {
+            const auto& message = data.informationMessages[index];
+            const float messageTextHeight = measureWrappedText(message.message, wrapWidth);
+            const float messageHeight = (std::max)(messageTextHeight, infoIconSize);
+            const float rowCenterY = y + messageHeight * 0.5f;
+            drawInfoMessageIcon(message, iconCenterX, rowCenterY);
+
+            const char* cursor = message.message.c_str();
+            const char* end = cursor + message.message.size();
+            float textY = y + (messageHeight - messageTextHeight) * 0.5f;
+            while (cursor < end) {
+                while (cursor < end && isAsciiSpace(*cursor)) { ++cursor; }
+                if (cursor >= end) { break; }
+
+                const char* wrap = font->CalcWordWrapPosition(infoFs, cursor, end, wrapWidth);
+                if (wrap == cursor) { wrap = nextUtf8Char(cursor, end); }
+
+                const char* lineEnd = wrap;
+                while (lineEnd > cursor && isAsciiSpace(lineEnd[-1])) { --lineEnd; }
+
+                std::string line(cursor, lineEnd);
+                drawText(infoFs, ImVec2(messageTextX, textY), messageColor, line.c_str());
+                textY += infoLineH + infoLineGap;
+                cursor = wrap;
+            }
+
+            y += messageHeight;
+            if (index + 1 < data.informationMessageCount) {
+                drawList->AddLine(ImVec2(surfaceLeft, y), ImVec2(surfaceRight, y), dividerColor, 1.0f);
+            }
+        }
+        return y + infoMessageMarginBottom;
+    };
 
     auto calculateOrigin = [&](float totalW, float totalH, float& ox, float& oy) {
         int oxI = 0;
@@ -8536,6 +8838,489 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         ox = (float)oxI;
         oy = (float)oyI;
     };
+    const bool useManualSectionLayout = nb.sectionLayoutMode == "manual";
+
+    enum class NinjabrainManualAnchor {
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+    };
+    auto parseManualAnchor = [](const std::string& anchor) {
+        if (anchor == "topRight") { return NinjabrainManualAnchor::TopRight; }
+        if (anchor == "bottomLeft") { return NinjabrainManualAnchor::BottomLeft; }
+        if (anchor == "bottomRight") { return NinjabrainManualAnchor::BottomRight; }
+        return NinjabrainManualAnchor::TopLeft;
+    };
+    auto isRightManualAnchor = [](NinjabrainManualAnchor anchor) {
+        return anchor == NinjabrainManualAnchor::TopRight || anchor == NinjabrainManualAnchor::BottomRight;
+    };
+    auto isBottomManualAnchor = [](NinjabrainManualAnchor anchor) {
+        return anchor == NinjabrainManualAnchor::BottomLeft || anchor == NinjabrainManualAnchor::BottomRight;
+    };
+    struct NinjabrainManualSectionPlacement {
+        NinjabrainManualAnchor anchor = NinjabrainManualAnchor::TopLeft;
+        float offsetX = 0.0f;
+        float offsetY = 0.0f;
+        int drawOrder = 0;
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+    auto computeManualContentSize = [&](const std::vector<NinjabrainManualSectionPlacement>& sections, float& outW, float& outH) {
+        float leftWidth = 0.0f;
+        float rightWidth = 0.0f;
+        float topHeight = 0.0f;
+        float bottomHeight = 0.0f;
+        for (const auto& section : sections) {
+            if (section.width <= 0.0f || section.height <= 0.0f) { continue; }
+            const float horizontalExtent = section.offsetX + section.width;
+            const float verticalExtent = section.offsetY + section.height;
+            if (isRightManualAnchor(section.anchor)) {
+                rightWidth = (std::max)(rightWidth, horizontalExtent);
+            } else {
+                leftWidth = (std::max)(leftWidth, horizontalExtent);
+            }
+            if (isBottomManualAnchor(section.anchor)) {
+                bottomHeight = (std::max)(bottomHeight, verticalExtent);
+            } else {
+                topHeight = (std::max)(topHeight, verticalExtent);
+            }
+        }
+        outW = leftWidth + rightWidth;
+        outH = topHeight + bottomHeight;
+    };
+    auto computeManualSectionOrigin = [&](const NinjabrainManualSectionPlacement& section, float contentLeft, float contentTop,
+                                          float contentWidth, float contentHeight, float& outX, float& outY) {
+        const float localX = isRightManualAnchor(section.anchor)
+            ? (contentWidth - section.offsetX - section.width)
+            : section.offsetX;
+        const float localY = isBottomManualAnchor(section.anchor)
+            ? (contentHeight - section.offsetY - section.height)
+            : section.offsetY;
+        outX = contentLeft + localX;
+        outY = contentTop + localY;
+    };
+
+    struct ThrowDetailRow {
+        char x[32];
+        char z[32];
+        char angle[32];
+        char error[32];
+        ImU32 angleColor;
+        ImU32 anglePart1Color;
+        float angleSplitOffset;
+        bool angleCenterOnPart1;
+    };
+
+    auto buildThrowDetailRow = [&](const NinjabrainThrow& throwData, int correctionIncrements, ThrowDetailRow& row) {
+        if (throwData.hasPosition) {
+            snprintf(row.x, sizeof(row.x), "%.2f", throwData.xInOverworld);
+            snprintf(row.z, sizeof(row.z), "%.2f", throwData.zInOverworld);
+        } else {
+            snprintf(row.x, sizeof(row.x), "-");
+            snprintf(row.z, sizeof(row.z), "-");
+        }
+
+        row.angleColor = throwsTextCol;
+        row.anglePart1Color = throwsTextCol;
+        row.angleSplitOffset = 0.0f;
+        row.angleCenterOnPart1 = false;
+        if (correctionIncrements == 0) {
+            snprintf(row.angle, sizeof(row.angle), "%.2f", throwData.angleWithoutCorrection);
+        } else {
+            char basePart[32];
+            snprintf(basePart, sizeof(basePart), "%.2f", throwData.angleWithoutCorrection);
+            row.angleSplitOffset = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, basePart).x;
+            row.anglePart1Color = throwsTextCol;
+            row.angleCenterOnPart1 = true;
+            snprintf(row.angle, sizeof(row.angle), "%.2f%+d", throwData.angleWithoutCorrection, correctionIncrements);
+            row.angleColor = (correctionIncrements > 0) ? posAdjustmentCol : negAdjustmentCol;
+        }
+
+        if (std::abs(throwData.error) > 1e-9) {
+            snprintf(row.error, sizeof(row.error), "%.4f", throwData.error);
+        } else {
+            snprintf(row.error, sizeof(row.error), "-");
+        }
+    };
+
+    if (failedResult) {
+        const char* failureLine1 = trc("ninjabrain.failed_line1");
+        const char* failureLine2 = trc("ninjabrain.failed_line2");
+        const float failureBlockH = lineH * 2.0f + failureLineGap;
+        const float sectionHeaderH = lineH;
+        const float detailHeaderH = lineH + throwsHeaderPadY * 2.0f;
+        const float detailRowH = lineH + throwsRowPadY * 2.0f;
+        const float cellPadX = 8.0f * scale;
+        const int failedThrowCount = (std::min)(data.eyeCount, (int)kNinjabrainThrowLimit);
+
+        struct FailedThrowRow {
+            char x[32];
+            char z[32];
+            char angle[32];
+            char error[32];
+            ImU32 angleColor;
+            ImU32 anglePart1Color;
+            float angleSplitOffset;
+            bool angleCenterOnPart1;
+        };
+        FailedThrowRow failedRows[kNinjabrainThrowLimit] = {};
+        const char* failedHeaders[4] = { "x", "z", "Angle", "Error" };
+        float failedColWidths[4] = {};
+        for (int fi = 0; fi < 4; ++fi) {
+            failedColWidths[fi] = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failedHeaders[fi]).x + cellPadX * 2.0f;
+        }
+
+        for (int ri = 0; ri < failedThrowCount; ++ri) {
+            const auto& failedThrow = data.throws[ri];
+            int correctionIncrements = 0;
+            if (failedThrow.hasCorrectionIncrements) {
+                correctionIncrements = failedThrow.correctionIncrements;
+            } else if (ri == failedThrowCount - 1) {
+                correctionIncrements = data.correctionIncrements151;
+            }
+
+            ThrowDetailRow throwRow{};
+            buildThrowDetailRow(failedThrow, correctionIncrements, throwRow);
+            snprintf(failedRows[ri].x, sizeof(failedRows[ri].x), "%s", throwRow.x);
+            snprintf(failedRows[ri].z, sizeof(failedRows[ri].z), "%s", throwRow.z);
+            snprintf(failedRows[ri].angle, sizeof(failedRows[ri].angle), "%s", throwRow.angle);
+            snprintf(failedRows[ri].error, sizeof(failedRows[ri].error), "%s", throwRow.error);
+            failedRows[ri].angleColor = throwRow.angleColor;
+            failedRows[ri].anglePart1Color = throwRow.anglePart1Color;
+            failedRows[ri].angleSplitOffset = throwRow.angleSplitOffset;
+            failedRows[ri].angleCenterOnPart1 = throwRow.angleCenterOnPart1;
+
+            failedColWidths[0] = (std::max)(failedColWidths[0], font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failedRows[ri].x).x + cellPadX * 2.0f);
+            failedColWidths[1] = (std::max)(failedColWidths[1], font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failedRows[ri].z).x + cellPadX * 2.0f);
+            failedColWidths[2] = (std::max)(failedColWidths[2], font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failedRows[ri].angle).x + cellPadX * 2.0f);
+            failedColWidths[3] = (std::max)(failedColWidths[3], font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failedRows[ri].error).x + cellPadX * 2.0f);
+        }
+
+        float failedTableMinW = 0.0f;
+        for (float width : failedColWidths) failedTableMinW += width;
+
+        const char* throwSectionTitle = "Ender eye throws";
+        const float throwSectionTitleW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, throwSectionTitle).x;
+        const float failureMessageW = (std::max)(font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failureLine1).x,
+                                                 font->CalcTextSizeA(fs, FLT_MAX, 0.0f, failureLine2).x);
+        const float failedThrowsMinContentW = (std::max)(throwSectionTitleW, failedTableMinW);
+        const float failureMinContentW = failureMarginLeft + failureMessageW + failureMarginRight;
+        const float failedPreferredContentW = (std::max)((std::max)(failureMinContentW, infoMarginLeft + infoPreferredContentW + infoMarginRight),
+                                 throwsMarginLeft + failedThrowsMinContentW + throwsMarginRight);
+
+        if (useManualSectionLayout) {
+            const float failureSectionW = (std::max)(failureMinContentW, failedPreferredContentW);
+            const float failureSectionH = failureMarginTop + failureBlockH + failureMarginBottom;
+            const float infoSectionContentW = (std::max)(infoPreferredContentW, failedPreferredContentW - infoMarginLeft - infoMarginRight);
+            const float infoSectionW = infoMarginLeft + infoSectionContentW + infoMarginRight;
+            const float infoSectionH = hasInformationMessages ? measureInfoMessagesBlock(infoSectionContentW) : 0.0f;
+            const float throwsSectionContentW = (std::max)(failedThrowsMinContentW, failedPreferredContentW - throwsMarginLeft - throwsMarginRight);
+            const float throwsSectionW = throwsMarginLeft + throwsSectionContentW + throwsMarginRight;
+            const float throwsSectionH = failedThrowCount > 0
+                ? (throwsMarginTop + sectionHeaderH + detailHeaderH + detailRowH * (float)failedThrowCount + throwsMarginBottom)
+                : 0.0f;
+
+            std::vector<NinjabrainManualSectionPlacement> sections;
+            sections.reserve(3);
+            sections.push_back({ parseManualAnchor(nb.failureAnchor), nb.failureOffsetX * scale, nb.failureOffsetY * scale,
+                                 nb.failureDrawOrder, failureSectionW, failureSectionH });
+            if (hasInformationMessages) {
+                sections.push_back({ parseManualAnchor(nb.informationMessagesAnchor), nb.informationMessagesOffsetX * scale,
+                                     nb.informationMessagesOffsetY * scale, nb.informationMessagesDrawOrder,
+                                     infoSectionW, infoSectionH });
+            }
+            if (failedThrowCount > 0) {
+                sections.push_back({ parseManualAnchor(nb.throwsAnchor), nb.throwsOffsetX * scale, nb.throwsOffsetY * scale,
+                                     nb.throwsDrawOrder, throwsSectionW, throwsSectionH });
+            }
+
+            float contentW = 0.0f;
+            float contentH = 0.0f;
+            computeManualContentSize(sections, contentW, contentH);
+            const float totalW = (contentPadX + sidePadX) * 2.0f + contentW;
+            const float totalH = contentPadTop + contentH + contentPadBottom;
+
+            float ox = 0.0f;
+            float oy = 0.0f;
+            calculateOrigin(totalW, totalH, ox, oy);
+
+            const float backgroundAlpha = nb.bgEnabled ? nb.bgOpacity * nb.overlayOpacity : 0.0f;
+            const float surfaceAlpha = backgroundAlpha;
+            const ImU32 panelBgCol = colorWithAlpha(nb.bgColor, backgroundAlpha);
+            const ImU32 borderCol = colorWithAlpha(nb.headerDividerColor, nb.overlayOpacity);
+            const ImU32 dividerCol = colorWithAlpha(nb.dividerColor, backgroundAlpha);
+            const ImU32 resultsDividerCol = dividerCol;
+            const ImU32 headerDividerCol = colorWithAlpha(nb.headerDividerColor, backgroundAlpha);
+            const ImU32 headerFillCol = colorWithAlpha(nb.headerFillColor, surfaceAlpha);
+            const ImU32 throwsBgCol = colorWithAlpha(nb.throwsBackgroundColor, surfaceAlpha);
+
+            drawOverlayBackground(ox, oy, totalW, totalH, panelBgCol);
+            drawOverlayBorder(ox, oy, totalW, totalH, borderCol);
+
+            const float contentLeft = ox + contentPadX + sidePadX;
+            const float contentTop = oy + contentPadTop;
+            std::vector<std::pair<int, std::function<void()>>> drawSections;
+            drawSections.reserve(3);
+
+            {
+                NinjabrainManualSectionPlacement placement = {
+                    parseManualAnchor(nb.failureAnchor), nb.failureOffsetX * scale, nb.failureOffsetY * scale,
+                    nb.failureDrawOrder, failureSectionW, failureSectionH
+                };
+                float sectionX = 0.0f;
+                float sectionY = 0.0f;
+                computeManualSectionOrigin(placement, contentLeft, contentTop, contentW, contentH, sectionX, sectionY);
+                drawSections.push_back({ placement.drawOrder, [=, &drawText, &drawList]() {
+                    const float blockTop = sectionY + failureMarginTop;
+                    const float messageTop = blockTop;
+                    const float messageX = sectionX + failureMarginLeft;
+                    drawText(fs, ImVec2(messageX, messageTop), dataCol, failureLine1);
+                    drawText(fs, ImVec2(messageX, messageTop + lineH + failureLineGap), dataCol, failureLine2);
+                } });
+            }
+
+            if (hasInformationMessages) {
+                NinjabrainManualSectionPlacement placement = {
+                    parseManualAnchor(nb.informationMessagesAnchor), nb.informationMessagesOffsetX * scale,
+                    nb.informationMessagesOffsetY * scale, nb.informationMessagesDrawOrder, infoSectionW, infoSectionH
+                };
+                float sectionX = 0.0f;
+                float sectionY = 0.0f;
+                computeManualSectionOrigin(placement, contentLeft, contentTop, contentW, contentH, sectionX, sectionY);
+                drawSections.push_back({ placement.drawOrder, [=, &drawInfoMessagesBlock]() {
+                    drawInfoMessagesBlock(sectionX, sectionX + infoSectionW, sectionX + infoMarginLeft, sectionY,
+                                          infoSectionContentW, headerDividerCol, throwsTextCol);
+                } });
+            }
+
+            if (failedThrowCount > 0) {
+                NinjabrainManualSectionPlacement placement = {
+                    parseManualAnchor(nb.throwsAnchor), nb.throwsOffsetX * scale, nb.throwsOffsetY * scale,
+                    nb.throwsDrawOrder, throwsSectionW, throwsSectionH
+                };
+                float sectionX = 0.0f;
+                float sectionY = 0.0f;
+                computeManualSectionOrigin(placement, contentLeft, contentTop, contentW, contentH, sectionX, sectionY);
+                drawSections.push_back({ placement.drawOrder, [=, &drawText, &drawCenteredSegmentedText, &drawList]() {
+                    const float surfaceLeft = sectionX;
+                    const float surfaceRight = sectionX + throwsSectionW;
+                    const float sectionTop = sectionY + throwsMarginTop;
+                    const float sectionTextY = sectionTop + (sectionHeaderH - lineH) * 0.5f;
+                    const float detailHeaderY = sectionTop + sectionHeaderH;
+                    const float detailRowY = detailHeaderY + detailHeaderH;
+                    const float detailTableX = sectionX + throwsMarginLeft;
+
+                    const float detailRowsBottomY = detailRowY + detailRowH * (float)failedThrowCount;
+                    const bool roundHeaderTopCorners = touchesPanelEdge(sectionTop, oy);
+                    const bool roundDetailBottomCorners = touchesPanelEdge(detailRowsBottomY, oy + totalH);
+                    drawRoundedBand(ImVec2(surfaceLeft, sectionTop), ImVec2(surfaceRight, detailRowY), headerFillCol,
+                                    roundHeaderTopCorners, false);
+                    drawRoundedBand(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowsBottomY), throwsBgCol,
+                                    false, roundDetailBottomCorners);
+                    drawList->AddLine(ImVec2(surfaceLeft, sectionTop), ImVec2(surfaceRight, sectionTop), headerDividerCol, 1.0f);
+                    drawText(fs, ImVec2(detailTableX, sectionTextY), dataCol, throwSectionTitle);
+
+                    float detailX = detailTableX;
+                    for (int fi = 0; fi < 4; ++fi) {
+                        drawCenteredSegmentedText(detailX, failedColWidths[fi], detailHeaderY + (detailHeaderH - lineH) * 0.5f,
+                                                 failedHeaders[fi], textCol, 0.0f, textCol, false, false);
+                        detailX += failedColWidths[fi];
+                    }
+
+                    drawList->AddLine(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowY), headerDividerCol, 1.0f);
+                    for (int ri = 0; ri < failedThrowCount; ++ri) {
+                        const float rowTop = detailRowY + detailRowH * (float)ri;
+                        const float rowBottom = rowTop + detailRowH;
+                        const float rowTextY = rowTop + (detailRowH - lineH) * 0.5f;
+                        float detailRowX = detailTableX;
+
+                        drawCenteredSegmentedText(detailRowX, failedColWidths[0], rowTextY, failedRows[ri].x, throwsTextCol, 0.0f, throwsTextCol, false, false);
+                        detailRowX += failedColWidths[0];
+                        drawCenteredSegmentedText(detailRowX, failedColWidths[1], rowTextY, failedRows[ri].z, throwsTextCol, 0.0f, throwsTextCol, false, false);
+                        detailRowX += failedColWidths[1];
+                        drawCenteredSegmentedText(detailRowX, failedColWidths[2], rowTextY, failedRows[ri].angle,
+                                                 failedRows[ri].angleColor, failedRows[ri].angleSplitOffset,
+                                                 failedRows[ri].anglePart1Color, failedRows[ri].angleCenterOnPart1, false);
+                        detailRowX += failedColWidths[2];
+                        drawCenteredSegmentedText(detailRowX, failedColWidths[3], rowTextY, failedRows[ri].error, throwsTextCol, 0.0f, throwsTextCol, false, false);
+
+                        const ImU32 rowDivider = (ri == failedThrowCount - 1) ? dividerCol : headerDividerCol;
+                        drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), rowDivider, 1.0f);
+                    }
+                } });
+            }
+
+            std::stable_sort(drawSections.begin(), drawSections.end(), [](const auto& a, const auto& b) {
+                return a.first < b.first;
+            });
+            for (auto& drawSection : drawSections) {
+                drawSection.second();
+            }
+            return;
+        }
+
+        float contentW = failedPreferredContentW;
+        const float infoContentW = hasInformationMessages
+            ? (std::max)(infoPreferredContentW, contentW - infoMarginLeft - infoMarginRight)
+            : 0.0f;
+        const float infoBlockH = hasInformationMessages ? measureInfoMessagesBlock(infoContentW) : 0.0f;
+        const float failedThrowsContentW = (failedThrowCount > 0)
+            ? (std::max)((std::max)(throwSectionTitleW, failedTableMinW), contentW - throwsMarginLeft - throwsMarginRight)
+            : 0.0f;
+
+        if (failedThrowCount > 0) {
+            const float extraPerCol = (std::max)(0.0f, failedThrowsContentW - failedTableMinW) / 4.0f;
+            for (float& width : failedColWidths) {
+                width += extraPerCol;
+            }
+        }
+
+        const float totalW = (contentPadX + sidePadX) * 2.0f + contentW;
+        float totalH = contentPadTop;
+        if (hasInformationMessages && infoPlacement == "top") {
+            totalH += infoBlockH;
+        }
+        totalH += failureMarginTop + failureBlockH + failureMarginBottom;
+        if (hasInformationMessages && infoPlacement == "middle") {
+            totalH += infoBlockH;
+        }
+        if (failedThrowCount > 0) {
+            totalH += throwsMarginTop + sectionHeaderH + detailHeaderH + detailRowH * (float)failedThrowCount + throwsMarginBottom;
+        }
+        if (hasInformationMessages && infoPlacement == "bottom") {
+            totalH += infoBlockH;
+        }
+        totalH += contentPadBottom;
+
+        float ox = 0.0f;
+        float oy = 0.0f;
+        calculateOrigin(totalW, totalH, ox, oy);
+
+        const float backgroundAlpha = nb.bgEnabled ? nb.bgOpacity * nb.overlayOpacity : 0.0f;
+        const float surfaceAlpha = backgroundAlpha;
+        const ImU32 panelBgCol = colorWithAlpha(nb.bgColor, backgroundAlpha);
+        const ImU32 borderCol = colorWithAlpha(nb.headerDividerColor, nb.overlayOpacity);
+        const ImU32 dividerCol = colorWithAlpha(nb.dividerColor, backgroundAlpha);
+        const ImU32 resultsDividerCol = dividerCol;
+        const ImU32 headerDividerCol = colorWithAlpha(nb.headerDividerColor, backgroundAlpha);
+        const ImU32 headerFillCol = colorWithAlpha(nb.headerFillColor, surfaceAlpha);
+        const ImU32 throwsBgCol = colorWithAlpha(nb.throwsBackgroundColor, surfaceAlpha);
+
+        std::vector<std::pair<float, float>> backgroundCoveredBands;
+        float coveredCursorY = oy + contentPadTop;
+        if (hasInformationMessages && infoPlacement == "top") {
+            coveredCursorY += infoBlockH;
+        }
+        if (failedThrowCount > 0) {
+            if (hasInformationMessages && infoPlacement == "middle") {
+                coveredCursorY += failureMarginTop + failureBlockH + failureMarginBottom + infoBlockH;
+            } else {
+                coveredCursorY += failureMarginTop + failureBlockH + failureMarginBottom;
+            }
+            const float coveredSectionTop = coveredCursorY + throwsMarginTop;
+            const float coveredSectionBottom = coveredSectionTop + sectionHeaderH + detailHeaderH + detailRowH * (float)failedThrowCount;
+            backgroundCoveredBands.push_back({ coveredSectionTop, coveredSectionBottom });
+        }
+        drawOverlayBackgroundGaps(ox, oy, totalW, totalH, panelBgCol, std::move(backgroundCoveredBands));
+        drawOverlayBorder(ox, oy, totalW, totalH, borderCol);
+
+        const float surfaceLeft = ox;
+        const float surfaceRight = ox + totalW;
+        const float contentLeft = ox + contentPadX + sidePadX;
+        float contentBottomY = oy + contentPadTop;
+        if (hasInformationMessages && infoPlacement == "top") {
+            contentBottomY = drawInfoMessagesBlock(
+                surfaceLeft,
+                surfaceRight,
+                contentLeft + infoMarginLeft,
+                contentBottomY,
+                infoContentW,
+                headerDividerCol,
+                throwsTextCol);
+        }
+
+        const float failureBlockTop = contentBottomY + failureMarginTop;
+        const float messageTop = failureBlockTop;
+        const float messageX = contentLeft + failureMarginLeft;
+        drawText(fs, ImVec2(messageX, messageTop), dataCol, failureLine1);
+        drawText(fs, ImVec2(messageX, messageTop + lineH + failureLineGap), dataCol, failureLine2);
+
+        const float failureBottomY = failureBlockTop + failureBlockH;
+        contentBottomY = failureBottomY + failureMarginBottom;
+
+        if (hasInformationMessages && infoPlacement == "middle") {
+            contentBottomY = drawInfoMessagesBlock(
+                surfaceLeft,
+                surfaceRight,
+                contentLeft + infoMarginLeft,
+                contentBottomY,
+                infoContentW,
+                headerDividerCol,
+            throwsTextCol);
+        }
+
+        if (failedThrowCount > 0) {
+            const float sectionY = contentBottomY + throwsMarginTop;
+            const float sectionTextY = sectionY + (sectionHeaderH - lineH) * 0.5f;
+            const float detailHeaderY = sectionY + sectionHeaderH;
+            const float detailRowY = detailHeaderY + detailHeaderH;
+            const float detailTableX = contentLeft + throwsMarginLeft;
+
+            const float detailRowsBottomY = detailRowY + detailRowH * (float)failedThrowCount;
+            const bool roundHeaderTopCorners = touchesPanelEdge(sectionY, oy);
+            const bool roundDetailBottomCorners = touchesPanelEdge(detailRowsBottomY, oy + totalH);
+            drawRoundedBand(ImVec2(surfaceLeft, sectionY), ImVec2(surfaceRight, detailRowY), headerFillCol,
+                            roundHeaderTopCorners, false);
+            drawRoundedBand(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowsBottomY), throwsBgCol,
+                            false, roundDetailBottomCorners);
+            drawList->AddLine(ImVec2(surfaceLeft, sectionY), ImVec2(surfaceRight, sectionY), headerDividerCol, 1.0f);
+            drawText(fs, ImVec2(detailTableX, sectionTextY), dataCol, throwSectionTitle);
+
+            float detailX = detailTableX;
+            for (int fi = 0; fi < 4; ++fi) {
+                drawCenteredSegmentedText(detailX, failedColWidths[fi], detailHeaderY + (detailHeaderH - lineH) * 0.5f,
+                                         failedHeaders[fi], textCol, 0.0f, textCol, false, false);
+                detailX += failedColWidths[fi];
+            }
+
+            drawList->AddLine(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowY), headerDividerCol, 1.0f);
+            for (int ri = 0; ri < failedThrowCount; ++ri) {
+                const float rowTop = detailRowY + detailRowH * (float)ri;
+                const float rowBottom = rowTop + detailRowH;
+                const float rowTextY = rowTop + (detailRowH - lineH) * 0.5f;
+                float detailRowX = detailTableX;
+
+                drawCenteredSegmentedText(detailRowX, failedColWidths[0], rowTextY, failedRows[ri].x, throwsTextCol, 0.0f, throwsTextCol, false, false);
+                detailRowX += failedColWidths[0];
+                drawCenteredSegmentedText(detailRowX, failedColWidths[1], rowTextY, failedRows[ri].z, throwsTextCol, 0.0f, throwsTextCol, false, false);
+                detailRowX += failedColWidths[1];
+                drawCenteredSegmentedText(detailRowX, failedColWidths[2], rowTextY, failedRows[ri].angle,
+                                         failedRows[ri].angleColor, failedRows[ri].angleSplitOffset, failedRows[ri].anglePart1Color,
+                                         failedRows[ri].angleCenterOnPart1, false);
+                detailRowX += failedColWidths[2];
+                drawCenteredSegmentedText(detailRowX, failedColWidths[3], rowTextY, failedRows[ri].error, throwsTextCol, 0.0f, throwsTextCol, false, false);
+
+                const ImU32 rowDivider = (ri == failedThrowCount - 1) ? dividerCol : headerDividerCol;
+                drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), rowDivider, 1.0f);
+            }
+
+            contentBottomY = detailRowY + detailRowH * (float)failedThrowCount + throwsMarginBottom;
+        }
+
+        if (hasInformationMessages && infoPlacement == "bottom") {
+            drawInfoMessagesBlock(
+                surfaceLeft,
+                surfaceRight,
+                contentLeft + infoMarginLeft,
+                contentBottomY,
+                infoContentW,
+                headerDividerCol,
+                throwsTextCol);
+        }
+
+        return;
+    }
 
     float topTableW = 0.0f;
     for (int ci = 0; ci < numCols; ++ci) {
@@ -8543,65 +9328,65 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         if (ci < numCols - 1) topTableW += colGap;
     }
 
-    const bool showDetailPanel = nb.showThrowDetails;
+    const bool showTopTable = numCols > 0;
+    const int detailRowCount = (std::min)(data.eyeCount, (int)kNinjabrainThrowLimit);
+    const bool showDetailPanel = nb.showThrowDetails && (showPredictionTable || detailRowCount > 0);
     const bool showTitleBar = false;
-    const float headerBandPadY = (std::max)(2.0f, nb.rowSpacing * 0.4f) * scale;
-    const float headerBandH = lineH + headerBandPadY * 2.0f;
+    const float headerBandPadY = showTopTable ? resultsHeaderPadY : 0.0f;
+    const float headerBandH = showTopTable ? (lineH + headerBandPadY * 2.0f) : 0.0f;
+    const float resultsRowSpacing = (std::max)(0.0f, nb.rowSpacing) * scale;
+    const float resultsTextOffsetY = resultsRowSpacing * 0.5f;
+    const float resultsLastRowH = showTopTable ? (lineH + resultsTextOffsetY) : 0.0f;
+    const float resultsBodyH = (showTopTable && maxRows > 0)
+        ? (rowH * (float)(maxRows - 1) + resultsLastRowH)
+        : 0.0f;
     const float titleBarH = showTitleBar ? headerBandH : 0.0f;
     const float cellPadX = 8.0f * scale;
-    const float sectionGap = showDetailPanel ? 4.0f * scale : 0.0f;
-    const float sectionHeaderH = showDetailPanel ? (lineH + 2.0f * scale) : 0.0f;
-    const float detailHeaderH = showDetailPanel ? (lineH + 6.0f * scale) : 0.0f;
-    const float detailRowH = showDetailPanel ? (lineH + 6.0f * scale) : 0.0f;
+    const float sectionGap = showDetailPanel ? throwsMarginTop : 0.0f;
+    const float sectionHeaderH = showDetailPanel ? lineH : 0.0f;
+    const float detailHeaderH = showDetailPanel ? (lineH + throwsHeaderPadY * 2.0f) : 0.0f;
+    const float detailRowH = showDetailPanel ? (lineH + throwsRowPadY * 2.0f) : 0.0f;
 
-    struct DetailField {
-        const char* header;
-        char value[64];
-        ImU32 color;
-        ImU32 part1Color;
-        float xOffset;
-    };
-    DetailField detailFields[4] = {
-        { "x", "-", throwsTextCol, throwsTextCol, 0.0f },
-        { "z", "-", throwsTextCol, throwsTextCol, 0.0f },
-        { "Angle", "-", throwsTextCol, throwsTextCol, 0.0f },
-        { "Error", "-", throwsTextCol, throwsTextCol, 0.0f },
-    };
-
-    if (data.hasPlayerPos) {
-        snprintf(detailFields[0].value, sizeof(detailFields[0].value), "%.2f", data.playerX);
-        snprintf(detailFields[1].value, sizeof(detailFields[1].value), "%.2f", data.playerZ);
-        detailFields[0].color = throwsTextCol;
-        detailFields[1].color = throwsTextCol;
-    }
-    if (data.eyeCount > 0) {
-        const auto& lastThrow = data.throws[data.eyeCount - 1];
-        const int correctionIncrements = lastThrow.hasCorrectionIncrements
-            ? lastThrow.correctionIncrements
-            : data.correctionIncrements151;
-        if (correctionIncrements == 0) {
-            snprintf(detailFields[2].value, sizeof(detailFields[2].value), "%.2f", data.lastAngleWithoutCorrection);
-            detailFields[2].color = throwsTextCol;
-            detailFields[2].xOffset = 0.0f;
-        } else {
-            char basePart[32];
-            snprintf(basePart, sizeof(basePart), "%.2f", data.lastAngleWithoutCorrection);
-            detailFields[2].xOffset = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, basePart).x;
-            detailFields[2].part1Color = throwsTextCol;
-            snprintf(detailFields[2].value, sizeof(detailFields[2].value), "%.2f%+d", data.lastAngleWithoutCorrection,
-                     correctionIncrements);
-            detailFields[2].color = (correctionIncrements > 0) ? posAdjustmentCol : negAdjustmentCol;
+    const int detailRenderRowCount = showDetailPanel ? (detailRowCount > 0 ? detailRowCount : 1) : 0;
+    const char* detailHeaders[4] = { "x", "z", "Angle", "Error" };
+    ThrowDetailRow detailRows[kNinjabrainThrowLimit] = {};
+    if (showDetailPanel) {
+        for (int ri = 0; ri < detailRenderRowCount; ++ri) {
+            if (ri < detailRowCount) {
+                const auto& throwData = data.throws[ri];
+                int correctionIncrements = 0;
+                if (throwData.hasCorrectionIncrements) {
+                    correctionIncrements = throwData.correctionIncrements;
+                } else if (ri == detailRowCount - 1) {
+                    correctionIncrements = data.correctionIncrements151;
+                }
+                buildThrowDetailRow(throwData, correctionIncrements, detailRows[ri]);
+            } else {
+                snprintf(detailRows[ri].x, sizeof(detailRows[ri].x), "-");
+                snprintf(detailRows[ri].z, sizeof(detailRows[ri].z), "-");
+                snprintf(detailRows[ri].angle, sizeof(detailRows[ri].angle), "-");
+                snprintf(detailRows[ri].error, sizeof(detailRows[ri].error), "-");
+                detailRows[ri].angleColor = throwsTextCol;
+                detailRows[ri].anglePart1Color = throwsTextCol;
+                detailRows[ri].angleSplitOffset = 0.0f;
+                detailRows[ri].angleCenterOnPart1 = false;
+            }
         }
-        snprintf(detailFields[3].value, sizeof(detailFields[3].value), "%.4f", data.lastThrowError);
-        detailFields[3].color = throwsTextCol;
     }
 
     float detailMinColWidths[4] = {};
     float detailTableMinW = 0.0f;
     if (showDetailPanel) {
         for (int fi = 0; fi < 4; ++fi) {
-            float headerW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailFields[fi].header).x;
-            float valueW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailFields[fi].value).x;
+            float headerW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailHeaders[fi]).x;
+            float valueW = 0.0f;
+            for (int ri = 0; ri < detailRenderRowCount; ++ri) {
+                const char* cellText = (fi == 0) ? detailRows[ri].x
+                    : (fi == 1) ? detailRows[ri].z
+                    : (fi == 2) ? detailRows[ri].angle
+                                : detailRows[ri].error;
+                valueW = (std::max)(valueW, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, cellText).x);
+            }
             if (nb.staticColumnWidths) {
                 if (fi == 0 || fi == 1) {
                     valueW = (std::max)(valueW, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "-999999.99").x);
@@ -8618,55 +9403,277 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
 
     const char* throwSectionTitle = "Ender eye throws";
     const float throwSectionTitleW = showDetailPanel ? font->CalcTextSizeA(fs, FLT_MAX, 0.0f, throwSectionTitle).x : 0.0f;
-    float contentW = topTableW;
-    if (showDetailPanel) {
-        contentW = (std::max)(contentW, detailTableMinW);
-        contentW = (std::max)(contentW, throwSectionTitleW);
+    const float throwsMinContentW = (std::max)(detailTableMinW, throwSectionTitleW);
+
+    if (useManualSectionLayout) {
+        const float resultsSectionW = showTopTable ? (resultsMarginLeft + topTableW + resultsMarginRight) : 0.0f;
+        const float resultsSectionH = showTopTable
+            ? (resultsMarginTop + headerBandH + resultsBodyH + resultsMarginBottom)
+            : 0.0f;
+        const float infoSectionContentW = infoPreferredContentW;
+        const float infoSectionW = infoMarginLeft + infoSectionContentW + infoMarginRight;
+        const float infoSectionH = hasInformationMessages ? measureInfoMessagesBlock(infoSectionContentW) : 0.0f;
+        const float throwsSectionContentW = throwsMinContentW;
+        const float throwsSectionW = showDetailPanel ? (throwsMarginLeft + throwsSectionContentW + throwsMarginRight) : 0.0f;
+        const float throwsSectionH = showDetailPanel
+            ? (throwsMarginTop + sectionHeaderH + detailHeaderH + detailRowH * (float)detailRenderRowCount + throwsMarginBottom)
+            : 0.0f;
+
+        std::vector<NinjabrainManualSectionPlacement> sections;
+        sections.reserve(3);
+        if (showTopTable) {
+            sections.push_back({ parseManualAnchor(nb.resultsAnchor), nb.resultsOffsetX * scale, nb.resultsOffsetY * scale,
+                                 nb.resultsDrawOrder, resultsSectionW, resultsSectionH });
+        }
+        if (hasInformationMessages) {
+            sections.push_back({ parseManualAnchor(nb.informationMessagesAnchor), nb.informationMessagesOffsetX * scale,
+                                 nb.informationMessagesOffsetY * scale, nb.informationMessagesDrawOrder,
+                                 infoSectionW, infoSectionH });
+        }
+        if (showDetailPanel) {
+            sections.push_back({ parseManualAnchor(nb.throwsAnchor), nb.throwsOffsetX * scale, nb.throwsOffsetY * scale,
+                                 nb.throwsDrawOrder, throwsSectionW, throwsSectionH });
+        }
+
+        float contentW = 0.0f;
+        float contentH = 0.0f;
+        computeManualContentSize(sections, contentW, contentH);
+        const float totalW = (contentPadX + sidePadX) * 2.0f + contentW;
+        const float totalH = titleBarH + contentPadTop + contentH + contentPadBottom;
+
+        float ox = 0.0f;
+        float oy = 0.0f;
+        calculateOrigin(totalW, totalH, ox, oy);
+
+        const float backgroundAlpha = nb.bgEnabled ? nb.bgOpacity * nb.overlayOpacity : 0.0f;
+        const float surfaceAlpha = backgroundAlpha;
+        const ImU32 panelBgCol = colorWithAlpha(nb.bgColor, backgroundAlpha);
+        const ImU32 borderCol = colorWithAlpha(nb.headerDividerColor, nb.overlayOpacity);
+        const ImU32 dividerCol = colorWithAlpha(nb.dividerColor, backgroundAlpha);
+        const ImU32 resultsDividerCol = dividerCol;
+        const ImU32 headerDividerCol = colorWithAlpha(nb.headerDividerColor, backgroundAlpha);
+        const ImU32 headerFillCol = colorWithAlpha(nb.headerFillColor, surfaceAlpha);
+        const ImU32 throwsBgCol = colorWithAlpha(nb.throwsBackgroundColor, surfaceAlpha);
+
+        drawOverlayBackground(ox, oy, totalW, totalH, panelBgCol);
+        drawOverlayBorder(ox, oy, totalW, totalH, borderCol);
+
+        const float contentLeft = ox + contentPadX + sidePadX;
+        const float contentTop = oy + titleBarH + contentPadTop;
+        std::vector<std::pair<int, std::function<void()>>> drawSections;
+        drawSections.reserve(3);
+
+        if (showTopTable) {
+            NinjabrainManualSectionPlacement placement = {
+                parseManualAnchor(nb.resultsAnchor), nb.resultsOffsetX * scale, nb.resultsOffsetY * scale,
+                nb.resultsDrawOrder, resultsSectionW, resultsSectionH
+            };
+            float sectionX = 0.0f;
+            float sectionY = 0.0f;
+            computeManualSectionOrigin(placement, contentLeft, contentTop, contentW, contentH, sectionX, sectionY);
+            drawSections.push_back({ placement.drawOrder, [=, &drawCenteredSegmentedText, &drawList]() {
+                const float surfaceLeft = sectionX;
+                const float surfaceRight = sectionX + resultsSectionW;
+                const float headerBandY = sectionY + resultsMarginTop;
+                const float headerY = headerBandY + (headerBandH - lineH) * 0.5f;
+                const float headerSeparatorY = headerBandY + headerBandH;
+                const float tableX = sectionX + resultsMarginLeft;
+
+                drawRoundedBand(ImVec2(surfaceLeft, headerBandY), ImVec2(surfaceRight, headerSeparatorY), headerFillCol,
+                                touchesPanelEdge(headerBandY, oy), false);
+
+                float cx = tableX;
+                for (int ci = 0; ci < numCols; ++ci) {
+                    Col& col = const_cast<Col&>(cols[ci]);
+                    drawCenteredSegmentedText(cx, col.width, headerY, col.header, textCol, 0.0f, textCol, false, false);
+                    cx += col.width + (ci < numCols - 1 ? colGap : 0.0f);
+                }
+
+                drawList->AddLine(ImVec2(surfaceLeft, headerSeparatorY), ImVec2(surfaceRight, headerSeparatorY), headerDividerCol, 1.0f);
+
+                for (int ri = 0; ri < maxRows; ++ri) {
+                    const float rowTop = headerSeparatorY + rowH * (float)ri;
+                    const bool isLastRow = ri + 1 == maxRows;
+                    const float rowBottom = rowTop + (isLastRow ? resultsLastRowH : rowH);
+                    const float rowTextY = rowTop + resultsTextOffsetY;
+
+                    drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), resultsDividerCol, 1.0f);
+
+                    float rowX = tableX;
+                    for (int ci = 0; ci < numCols; ++ci) {
+                        Col& col = const_cast<Col&>(cols[ci]);
+                        if (ri < col.rowCount) {
+                            if (col.isBoatIcon && ri == 0) {
+                                float iconSz = isLastRow ? resultsLastRowH : rowH;
+                                float ix = rowX + (col.width - iconSz) / 2.0f;
+                                ImU32 iconTint = IM_COL32(255, 255, 255, (int)(255 * opacityMul));
+                                drawList->AddImage((ImTextureID)(intptr_t)boatTex, ImVec2(ix, rowTextY), ImVec2(ix + iconSz, rowTextY + iconSz),
+                                                   ImVec2(0, 0), ImVec2(1, 1), iconTint);
+                            } else {
+                                drawCenteredSegmentedText(rowX, col.width, rowTextY, col.rows[ri].text, col.rows[ri].color,
+                                                         col.rows[ri].xOffset, col.rows[ri].part1Color, col.rows[ri].centerOnPart1, col.leftAlign);
+                            }
+                        }
+                        rowX += col.width + (ci < numCols - 1 ? colGap : 0.0f);
+                    }
+                }
+            } });
+        }
+
+        if (hasInformationMessages) {
+            NinjabrainManualSectionPlacement placement = {
+                parseManualAnchor(nb.informationMessagesAnchor), nb.informationMessagesOffsetX * scale,
+                nb.informationMessagesOffsetY * scale, nb.informationMessagesDrawOrder, infoSectionW, infoSectionH
+            };
+            float sectionX = 0.0f;
+            float sectionY = 0.0f;
+            computeManualSectionOrigin(placement, contentLeft, contentTop, contentW, contentH, sectionX, sectionY);
+            drawSections.push_back({ placement.drawOrder, [=, &drawInfoMessagesBlock]() {
+                drawInfoMessagesBlock(sectionX, sectionX + infoSectionW, sectionX + infoMarginLeft, sectionY,
+                                      infoSectionContentW, headerDividerCol, throwsTextCol);
+            } });
+        }
+
+        if (showDetailPanel) {
+            NinjabrainManualSectionPlacement placement = {
+                parseManualAnchor(nb.throwsAnchor), nb.throwsOffsetX * scale, nb.throwsOffsetY * scale,
+                nb.throwsDrawOrder, throwsSectionW, throwsSectionH
+            };
+            float sectionX = 0.0f;
+            float sectionY = 0.0f;
+            computeManualSectionOrigin(placement, contentLeft, contentTop, contentW, contentH, sectionX, sectionY);
+            drawSections.push_back({ placement.drawOrder, [=, &drawText, &drawCenteredSegmentedText, &drawList]() {
+                const float surfaceLeft = sectionX;
+                const float surfaceRight = sectionX + throwsSectionW;
+                const float sectionYTop = sectionY + throwsMarginTop;
+                const float sectionTextY = sectionYTop + (sectionHeaderH - lineH) * 0.5f;
+                const float detailTableX = sectionX + throwsMarginLeft;
+                const float detailHeaderY = sectionYTop + sectionHeaderH;
+                const float detailRowY = detailHeaderY + detailHeaderH;
+                const float detailRowsBottomY = detailRowY + detailRowH * (float)detailRenderRowCount;
+
+                drawRoundedBand(ImVec2(surfaceLeft, sectionYTop), ImVec2(surfaceRight, detailRowY), headerFillCol,
+                                touchesPanelEdge(sectionYTop, oy), false);
+                drawRoundedBand(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowsBottomY), throwsBgCol,
+                                false, touchesPanelEdge(detailRowsBottomY, oy + totalH));
+                drawText(fs, ImVec2(detailTableX, sectionTextY), dataCol, throwSectionTitle);
+
+                float detailX = detailTableX;
+                for (int fi = 0; fi < 4; ++fi) {
+                    drawCenteredSegmentedText(detailX, detailMinColWidths[fi], detailHeaderY + (detailHeaderH - lineH) * 0.5f,
+                                             detailHeaders[fi], textCol, 0.0f, textCol, false, false);
+                    detailX += detailMinColWidths[fi];
+                }
+
+                drawList->AddLine(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowY), headerDividerCol, 1.0f);
+                for (int ri = 0; ri < detailRenderRowCount; ++ri) {
+                    const float rowTop = detailRowY + detailRowH * (float)ri;
+                    const float rowBottom = rowTop + detailRowH;
+                    const float rowTextY = rowTop + (detailRowH - lineH) * 0.5f;
+                    float detailRowX = detailTableX;
+
+                    drawCenteredSegmentedText(detailRowX, detailMinColWidths[0], rowTextY, detailRows[ri].x, throwsTextCol, 0.0f, throwsTextCol, false, false);
+                    detailRowX += detailMinColWidths[0];
+                    drawCenteredSegmentedText(detailRowX, detailMinColWidths[1], rowTextY, detailRows[ri].z, throwsTextCol, 0.0f, throwsTextCol, false, false);
+                    detailRowX += detailMinColWidths[1];
+                    drawCenteredSegmentedText(detailRowX, detailMinColWidths[2], rowTextY, detailRows[ri].angle,
+                                             detailRows[ri].angleColor, detailRows[ri].angleSplitOffset,
+                                             detailRows[ri].anglePart1Color, detailRows[ri].angleCenterOnPart1, false);
+                    detailRowX += detailMinColWidths[2];
+                    drawCenteredSegmentedText(detailRowX, detailMinColWidths[3], rowTextY, detailRows[ri].error, throwsTextCol, 0.0f, throwsTextCol, false, false);
+
+                    drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), dividerCol, 1.0f);
+                }
+            } });
+        }
+
+        std::stable_sort(drawSections.begin(), drawSections.end(), [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
+        for (auto& drawSection : drawSections) {
+            drawSection.second();
+        }
+        return;
     }
+
+    float contentW = showTopTable ? (resultsMarginLeft + topTableW + resultsMarginRight) : 0.0f;
+    if (showDetailPanel) {
+        contentW = (std::max)(contentW, throwsMarginLeft + (std::max)(detailTableMinW, throwSectionTitleW) + throwsMarginRight);
+    }
+    if (hasInformationMessages) {
+        contentW = (std::max)(contentW, infoMarginLeft + infoPreferredContentW + infoMarginRight);
+    }
+    const float infoContentW = hasInformationMessages
+        ? (std::max)(infoPreferredContentW, contentW - infoMarginLeft - infoMarginRight)
+        : 0.0f;
+    const float infoBlockH = hasInformationMessages ? measureInfoMessagesBlock(infoContentW) : 0.0f;
+    const float detailContentW = showDetailPanel
+        ? (std::max)((std::max)(detailTableMinW, throwSectionTitleW), contentW - throwsMarginLeft - throwsMarginRight)
+        : 0.0f;
 
     float detailColWidths[4] = {};
     if (showDetailPanel) {
-        const float detailExtraPerCol = (std::max)(0.0f, contentW - detailTableMinW) / 4.0f;
+        const float detailExtraPerCol = (std::max)(0.0f, detailContentW - detailTableMinW) / 4.0f;
         for (int fi = 0; fi < 4; ++fi) {
             detailColWidths[fi] = detailMinColWidths[fi] + detailExtraPerCol;
         }
     }
 
     float totalW = (contentPadX + sidePadX) * 2.0f + contentW;
-    float totalH = titleBarH + headerBandH + rowH * (float)maxRows;
-    if (showDetailPanel) totalH += sectionGap + sectionHeaderH + detailHeaderH + detailRowH;
+    float totalH = titleBarH + contentPadTop;
+    if (hasInformationMessages && infoPlacement == "top") totalH += infoBlockH;
+    if (showTopTable) totalH += resultsMarginTop + headerBandH + resultsBodyH + resultsMarginBottom;
+    if (hasInformationMessages && infoPlacement == "middle") totalH += infoBlockH;
+    if (showDetailPanel) totalH += sectionGap + sectionHeaderH + detailHeaderH + detailRowH * (float)detailRenderRowCount + throwsMarginBottom;
+    if (hasInformationMessages && infoPlacement == "bottom") totalH += infoBlockH;
+    totalH += contentPadBottom;
 
     float ox = 0.0f;
     float oy = 0.0f;
     calculateOrigin(totalW, totalH, ox, oy);
 
-    const float surfaceAlpha = (nb.bgEnabled ? nb.bgOpacity * nb.overlayOpacity : nb.overlayOpacity);
-    const ImU32 panelBgCol = colorWithAlpha(nb.bgColor, nb.bgEnabled ? nb.bgOpacity * nb.overlayOpacity : 0.0f);
+    const float backgroundAlpha = nb.bgEnabled ? nb.bgOpacity * nb.overlayOpacity : 0.0f;
+    const float surfaceAlpha = backgroundAlpha;
+    const ImU32 panelBgCol = colorWithAlpha(nb.bgColor, backgroundAlpha);
     const ImU32 titleBarCol = colorWithAlpha(nb.chromeColor, surfaceAlpha);
     const ImU32 borderCol = colorWithAlpha(nb.headerDividerColor, nb.overlayOpacity);
-    const ImU32 dividerCol = colorWithAlpha(nb.dividerColor, nb.overlayOpacity);
-    const ImU32 headerDividerCol = colorWithAlpha(nb.headerDividerColor, nb.overlayOpacity);
+    const ImU32 dividerCol = colorWithAlpha(nb.dividerColor, backgroundAlpha);
+    const ImU32 resultsDividerCol = dividerCol;
+    const ImU32 headerDividerCol = colorWithAlpha(nb.headerDividerColor, backgroundAlpha);
     const ImU32 headerFillCol = colorWithAlpha(nb.headerFillColor, surfaceAlpha);
     const ImU32 throwsBgCol = colorWithAlpha(nb.throwsBackgroundColor, surfaceAlpha);
 
-    if (nb.bgEnabled) {
-        drawList->AddRectFilled(ImVec2(ox, oy), ImVec2(ox + totalW, oy + totalH), panelBgCol, nb.cornerRadius);
+    std::vector<std::pair<float, float>> backgroundCoveredBands;
+    if (showTitleBar) {
+        backgroundCoveredBands.push_back({ oy, oy + titleBarH });
     }
-
-    if (nb.borderWidth > 0) {
-        drawList->AddRect(ImVec2(ox, oy), ImVec2(ox + totalW, oy + totalH), borderCol, nb.cornerRadius, 0,
-                          (float)nb.borderWidth);
+    float coveredCursorY = oy + titleBarH + contentPadTop;
+    if (hasInformationMessages && infoPlacement == "top") {
+        coveredCursorY += infoBlockH;
     }
+    if (showTopTable) {
+        const float coveredHeaderTop = coveredCursorY + resultsMarginTop;
+        const float coveredHeaderBottom = coveredHeaderTop + headerBandH;
+        backgroundCoveredBands.push_back({ coveredHeaderTop, coveredHeaderBottom });
+        coveredCursorY = coveredHeaderBottom + resultsBodyH + resultsMarginBottom;
+    }
+    if (hasInformationMessages && infoPlacement == "middle") {
+        coveredCursorY += infoBlockH;
+    }
+    if (showDetailPanel) {
+        const float coveredSectionTop = coveredCursorY + sectionGap;
+        const float coveredSectionBottom = coveredSectionTop + sectionHeaderH + detailHeaderH + detailRowH * (float)detailRenderRowCount;
+        backgroundCoveredBands.push_back({ coveredSectionTop, coveredSectionBottom });
+    }
+    drawOverlayBackgroundGaps(ox, oy, totalW, totalH, panelBgCol, std::move(backgroundCoveredBands));
+    drawOverlayBorder(ox, oy, totalW, totalH, borderCol);
 
     const float surfaceLeft = ox;
     const float surfaceRight = ox + totalW;
     const float contentAreaX = ox + contentPadX + sidePadX;
     const float contentAreaRight = surfaceRight - contentPadX - sidePadX;
-    const float tableX = contentAreaX + (contentW - topTableW) * 0.5f;
+    const float tableX = contentAreaX;
     const float titleBarY = oy;
-    const float headerBandY = oy + titleBarH;
-    const float headerY = headerBandY + (headerBandH - lineH) * 0.5f;
-    const float headerSeparatorY = headerBandY + headerBandH;
 
     if (showTitleBar) {
         const float titleTextY = titleBarY + (titleBarH - lineH) * 0.5f;
@@ -8684,72 +9691,138 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
         }
     }
 
-    drawList->AddRectFilled(ImVec2(surfaceLeft, headerBandY), ImVec2(surfaceRight, headerSeparatorY), headerFillCol,
-                            showTitleBar ? 0.0f : nb.cornerRadius,
-                            showTitleBar ? 0 : ImDrawFlags_RoundCornersTop);
-
-    float cx = tableX;
-    for (int ci = 0; ci < numCols; ++ci) {
-        Col& col = cols[ci];
-        drawCenteredSegmentedText(cx, col.width, headerY, col.header, textCol, 0.0f, textCol);
-        cx += col.width + (ci < numCols - 1 ? colGap : 0.0f);
+    float contentBottomY = oy + titleBarH + contentPadTop;
+    if (hasInformationMessages && infoPlacement == "top") {
+        contentBottomY = drawInfoMessagesBlock(
+            surfaceLeft,
+            surfaceRight,
+            contentAreaX + infoMarginLeft,
+            contentBottomY,
+            infoContentW,
+            headerDividerCol,
+            throwsTextCol);
     }
 
-    drawList->AddLine(ImVec2(surfaceLeft, headerSeparatorY), ImVec2(surfaceRight, headerSeparatorY), headerDividerCol, 1.0f);
+    if (showTopTable) {
+        contentBottomY += resultsMarginTop;
+        const float headerBandY = contentBottomY;
+        const float headerY = headerBandY + (headerBandH - lineH) * 0.5f;
+        const float headerSeparatorY = headerBandY + headerBandH;
+        const bool roundHeaderTopCorners = !showTitleBar && headerBandY <= oy + 0.5f;
+                const bool drawTrailingResultsDivider =
+                        !(showDetailPanel && !(hasInformationMessages && infoPlacement == "middle") &&
+                            resultsMarginBottom <= 0.0f && throwsMarginTop <= 0.0f);
+        const float tableX = contentAreaX + resultsMarginLeft;
+        drawList->AddRectFilled(ImVec2(surfaceLeft, headerBandY), ImVec2(surfaceRight, headerSeparatorY), headerFillCol,
+                                roundHeaderTopCorners ? nb.cornerRadius : 0.0f,
+                                roundHeaderTopCorners ? ImDrawFlags_RoundCornersTop : 0);
 
-    for (int ri = 0; ri < maxRows; ++ri) {
-        const float rowTop = headerSeparatorY + rowH * (float)ri;
-        const float rowBottom = rowTop + rowH;
-        const float rowTextY = rowTop + (rowH - lineH) * 0.5f;
-
-        drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), dividerCol, 1.0f);
-
-        float rowX = tableX;
+        float cx = tableX;
         for (int ci = 0; ci < numCols; ++ci) {
             Col& col = cols[ci];
-            if (ri < col.rowCount) {
-                if (col.isBoatIcon && ri == 0) {
-                    float iconSz = rowH;
-                    float ix = rowX + (col.width - iconSz) / 2.0f;
-                    ImU32 iconTint = IM_COL32(255, 255, 255, (int)(255 * opacityMul));
-                    drawList->AddImage((ImTextureID)(intptr_t)boatTex, ImVec2(ix, rowTextY), ImVec2(ix + iconSz, rowTextY + iconSz),
-                                       ImVec2(0, 0), ImVec2(1, 1), iconTint);
-                } else {
-                    drawCenteredSegmentedText(rowX, col.width, rowTextY, col.rows[ri].text, col.rows[ri].color,
-                                             col.rows[ri].xOffset, col.rows[ri].part1Color);
-                }
-            }
-            rowX += col.width + (ci < numCols - 1 ? colGap : 0.0f);
+            drawCenteredSegmentedText(cx, col.width, headerY, col.header, textCol, 0.0f, textCol, false, false);
+            cx += col.width + (ci < numCols - 1 ? colGap : 0.0f);
         }
+
+        drawList->AddLine(ImVec2(surfaceLeft, headerSeparatorY), ImVec2(surfaceRight, headerSeparatorY), headerDividerCol, 1.0f);
+
+        for (int ri = 0; ri < maxRows; ++ri) {
+            const float rowTop = headerSeparatorY + rowH * (float)ri;
+            const bool isLastRow = ri + 1 == maxRows;
+            const float rowBottom = rowTop + (isLastRow ? resultsLastRowH : rowH);
+            const float rowTextY = rowTop + resultsTextOffsetY;
+
+            if (ri + 1 < maxRows || drawTrailingResultsDivider) {
+                drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), resultsDividerCol, 1.0f);
+            }
+
+            float rowX = tableX;
+            for (int ci = 0; ci < numCols; ++ci) {
+                Col& col = cols[ci];
+                if (ri < col.rowCount) {
+                    if (col.isBoatIcon && ri == 0) {
+                        float iconSz = isLastRow ? resultsLastRowH : rowH;
+                        float ix = rowX + (col.width - iconSz) / 2.0f;
+                        ImU32 iconTint = IM_COL32(255, 255, 255, (int)(255 * opacityMul));
+                        drawList->AddImage((ImTextureID)(intptr_t)boatTex, ImVec2(ix, rowTextY), ImVec2(ix + iconSz, rowTextY + iconSz),
+                                           ImVec2(0, 0), ImVec2(1, 1), iconTint);
+                    } else {
+                        drawCenteredSegmentedText(rowX, col.width, rowTextY, col.rows[ri].text, col.rows[ri].color,
+                                                 col.rows[ri].xOffset, col.rows[ri].part1Color, col.rows[ri].centerOnPart1, col.leftAlign);
+                    }
+                }
+                rowX += col.width + (ci < numCols - 1 ? colGap : 0.0f);
+            }
+        }
+
+        contentBottomY = headerSeparatorY + resultsBodyH + resultsMarginBottom;
+    }
+
+    if (hasInformationMessages && infoPlacement == "middle") {
+        contentBottomY = drawInfoMessagesBlock(
+            surfaceLeft,
+            surfaceRight,
+            contentAreaX + infoMarginLeft,
+            contentBottomY,
+            infoContentW,
+            headerDividerCol,
+            throwsTextCol);
     }
 
     if (showDetailPanel) {
-        const float sectionY = oy + titleBarH + headerBandH + rowH * (float)maxRows + sectionGap;
+        const float sectionY = contentBottomY + sectionGap;
         const float sectionTextY = sectionY + (sectionHeaderH - lineH) * 0.5f;
-        const float detailTableX = contentAreaX;
+        const float detailTableX = contentAreaX + throwsMarginLeft;
         const float detailHeaderY = sectionY + sectionHeaderH;
         const float detailRowY = detailHeaderY + detailHeaderH;
+        const float detailRowsBottomY = detailRowY + detailRowH * (float)detailRenderRowCount;
 
-        drawList->AddRectFilled(ImVec2(surfaceLeft, sectionY), ImVec2(surfaceRight, detailRowY), headerFillCol, 0.0f);
-        drawList->AddRectFilled(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowY + detailRowH), throwsBgCol, 0.0f);
+        drawRoundedBand(ImVec2(surfaceLeft, sectionY), ImVec2(surfaceRight, detailRowY), headerFillCol,
+                touchesPanelEdge(sectionY, oy), false);
+        drawRoundedBand(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowsBottomY), throwsBgCol,
+                false, touchesPanelEdge(detailRowsBottomY, oy + totalH));
         drawText(fs, ImVec2(detailTableX, sectionTextY), dataCol, throwSectionTitle);
 
         float detailX = detailTableX;
         for (int fi = 0; fi < 4; ++fi) {
-            float headerW = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, detailFields[fi].header).x;
-            drawText(fs, ImVec2(detailX + (detailColWidths[fi] - headerW) * 0.5f, detailHeaderY + (detailHeaderH - lineH) * 0.5f),
-                     textCol, detailFields[fi].header);
-
-            drawCenteredSegmentedText(detailX, detailColWidths[fi], detailRowY + (detailRowH - lineH) * 0.5f,
-                                     detailFields[fi].value, detailFields[fi].color,
-                                     detailFields[fi].xOffset, detailFields[fi].part1Color);
+            drawCenteredSegmentedText(detailX, detailColWidths[fi], detailHeaderY + (detailHeaderH - lineH) * 0.5f,
+                                     detailHeaders[fi], textCol, 0.0f, textCol, false, false);
             detailX += detailColWidths[fi];
         }
 
         drawList->AddLine(ImVec2(surfaceLeft, sectionY), ImVec2(surfaceRight, sectionY), headerDividerCol, 1.0f);
         drawList->AddLine(ImVec2(surfaceLeft, detailRowY), ImVec2(surfaceRight, detailRowY), headerDividerCol, 1.0f);
-        drawList->AddLine(ImVec2(surfaceLeft, detailRowY + detailRowH), ImVec2(surfaceRight, detailRowY + detailRowH),
-                          dividerCol, 1.0f);
+        for (int ri = 0; ri < detailRenderRowCount; ++ri) {
+            const float rowTop = detailRowY + detailRowH * (float)ri;
+            const float rowBottom = rowTop + detailRowH;
+            const float rowTextY = rowTop + (detailRowH - lineH) * 0.5f;
+            float detailRowX = detailTableX;
+
+            drawCenteredSegmentedText(detailRowX, detailColWidths[0], rowTextY, detailRows[ri].x, throwsTextCol, 0.0f, throwsTextCol, false, false);
+            detailRowX += detailColWidths[0];
+            drawCenteredSegmentedText(detailRowX, detailColWidths[1], rowTextY, detailRows[ri].z, throwsTextCol, 0.0f, throwsTextCol, false, false);
+            detailRowX += detailColWidths[1];
+            drawCenteredSegmentedText(detailRowX, detailColWidths[2], rowTextY, detailRows[ri].angle,
+                                     detailRows[ri].angleColor, detailRows[ri].angleSplitOffset, detailRows[ri].anglePart1Color,
+                                     detailRows[ri].angleCenterOnPart1, false);
+            detailRowX += detailColWidths[2];
+            drawCenteredSegmentedText(detailRowX, detailColWidths[3], rowTextY, detailRows[ri].error, throwsTextCol, 0.0f, throwsTextCol, false, false);
+
+            drawList->AddLine(ImVec2(surfaceLeft, rowBottom), ImVec2(surfaceRight, rowBottom), dividerCol, 1.0f);
+        }
+
+        contentBottomY = detailRowsBottomY + throwsMarginBottom;
+    }
+
+    if (hasInformationMessages && infoPlacement == "bottom") {
+        drawInfoMessagesBlock(
+            surfaceLeft,
+            surfaceRight,
+            contentAreaX + infoMarginLeft,
+            contentBottomY,
+            infoContentW,
+            headerDividerCol,
+            throwsTextCol);
     }
 
 }

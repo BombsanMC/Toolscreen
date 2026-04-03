@@ -901,6 +901,146 @@ void RunModeImageOverlayRenderMpegTest(TestRunMode runMode = TestRunMode::Automa
     CleanupShaders();
 }
 
+void RunModeNinjabrainOverlayRenderTest(TestRunMode runMode = TestRunMode::Automated) {
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (!g_hasModernGL) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
+
+    const std::filesystem::path root = PrepareCaseDirectory("mode_ninjabrain_overlay_render");
+    ResetGlobalTestState(root);
+
+    constexpr char kModeId[] = "Ninjabrain Overlay Render Mode";
+
+    ModeConfig mode;
+    mode.id = kModeId;
+    mode.width = kWindowWidth;
+    mode.height = kWindowHeight;
+    mode.manualWidth = kWindowWidth;
+    mode.manualHeight = kWindowHeight;
+
+    g_config.defaultMode = kModeId;
+    g_config.modes = { mode };
+
+    auto& nb = g_config.ninjabrainOverlay;
+    nb.enabled = true;
+    nb.allowedModes = { kModeId };
+    nb.relativeTo = "topLeftScreen";
+    nb.x = 48;
+    nb.y = 40;
+    nb.overlayScale = 0.72f;
+    nb.overlayOpacity = 1.0f;
+    nb.bgEnabled = true;
+    nb.bgOpacity = 1.0f;
+    nb.showThrowDetails = true;
+    nb.staticColumnWidths = true;
+    nb.shownPredictions = 5;
+    nb.onlyOnMyScreen = false;
+    nb.onlyOnObs = false;
+
+    g_configLoaded.store(true, std::memory_order_release);
+    PublishConfigSnapshot();
+
+    NinjabrainData data;
+    data.resultType = "TRIANGULATION";
+    data.validPrediction = true;
+    data.predictionCount = 5;
+    data.eyeCount = 2;
+    data.hasPlayerPos = true;
+    data.playerX = 50.33;
+    data.playerZ = 319.07;
+    data.playerHorizontalAngle = 20.72;
+
+    data.predictions[0] = { -46, 148, 0.601, 2202.0 };
+    data.predictions[1] = { -32, 111, 0.399, 1569.0 };
+    data.predictions[2] = { -49, 156, 0.0, 2339.0 };
+    data.predictions[3] = { -35, 119, 0.0, 1706.0 };
+    data.predictions[4] = { -43, 140, 0.0, 2065.0 };
+
+    data.predictionAngles[0] = { 20.26, -106.8, true };
+    data.predictionAngles[1] = { 20.07, -106.9, true };
+    data.predictionAngles[2] = { 20.27, -106.7, true };
+    data.predictionAngles[3] = { 20.11, -106.9, true };
+    data.predictionAngles[4] = { 20.24, -106.8, true };
+
+    data.throws[0].xInOverworld = 50.33;
+    data.throws[0].zInOverworld = 319.07;
+    data.throws[0].hasPosition = true;
+    data.throws[0].angle = 20.97;
+    data.throws[0].angleWithoutCorrection = 20.72;
+    data.throws[0].correction = 0.25;
+    data.throws[0].error = -0.0032;
+    data.throws[0].correctionIncrements = 2;
+    data.throws[0].hasCorrectionIncrements = true;
+    data.throws[0].type = "NORMAL";
+
+    data.throws[1].xInOverworld = 59.91;
+    data.throws[1].zInOverworld = 470.84;
+    data.throws[1].hasPosition = true;
+    data.throws[1].angle = 21.34;
+    data.throws[1].angleWithoutCorrection = 21.09;
+    data.throws[1].correction = -0.25;
+    data.throws[1].error = 0.0015;
+    data.throws[1].correctionIncrements = -2;
+    data.throws[1].hasCorrectionIncrements = true;
+    data.throws[1].type = "NORMAL";
+
+    data.lastAngle = data.throws[1].angle;
+    data.prevAngle = data.throws[0].angle;
+    data.hasAngleChange = true;
+    data.lastAngleWithoutCorrection = data.throws[1].angleWithoutCorrection;
+    data.lastCorrection = data.throws[1].correction;
+    data.lastThrowError = data.throws[1].error;
+    data.hasCorrection = true;
+    data.hasThrowError = true;
+    data.hasNetherAngle = true;
+    data.netherAngle = data.throws[1].angle;
+    data.netherAngleDiff = data.throws[1].angle - data.throws[0].angle;
+    data.strongholdX = data.predictions[0].chunkX * 16 + 4;
+    data.strongholdZ = data.predictions[0].chunkZ * 16 + 4;
+    data.distance = data.predictions[0].overworldDistance;
+    data.certainty = data.predictions[0].certainty;
+
+    data.informationMessageCount = 2;
+    data.informationMessages[0].severity = "WARNING";
+    data.informationMessages[0].type = "MISMEASURE";
+    data.informationMessages[0].message =
+        "Detected unusually large errors, you probably mismeasured or your standard deviation is too low.";
+    data.informationMessages[1].severity = "INFO";
+    data.informationMessages[1].type = "NEXT_THROW_DIRECTION";
+    data.informationMessages[1].message =
+        "Go left 1 blocks, or right 1 blocks, for ~95% certainty after next measurement.";
+
+    PublishNinjabrainData(std::move(data));
+
+    const SurfaceSize surface = GetWindowClientSize(window.hwnd());
+    const int sampleX = nb.x + 24;
+    const int sampleY = nb.y + 24;
+
+    auto renderAndAssert = [&](DummyWindow& targetWindow) {
+        RenderModeOverlayFrame(targetWindow, g_config, g_config.modes.front());
+        if (runMode == TestRunMode::Automated) {
+            glFinish();
+            const Color sample = ReadFramebufferPixelColor(sampleX, sampleY, surface.height);
+            Expect(!IsColorNear(sample, kExpectedRenderSurfaceClear),
+                   "Expected the NinjaBrain overlay preview fixture to draw an opaque panel into the test surface.");
+        }
+    };
+
+    if (runMode == TestRunMode::Visual) {
+        RunVisualLoop(window, "mode-ninjabrain-overlay-render", [&](DummyWindow& visualWindow) {
+            renderAndAssert(visualWindow);
+            visualWindow.PresentSurface();
+        });
+    } else {
+        renderAndAssert(window);
+    }
+
+    PublishNinjabrainData(NinjabrainData{});
+    CleanupBrowserOverlayCache();
+    CleanupWindowOverlayCache();
+    CleanupGPUResources();
+    CleanupShaders();
+}
+
 void RunRebindIndicatorRendersBelowSettingsGuiTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
     if (!g_hasModernGL) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }

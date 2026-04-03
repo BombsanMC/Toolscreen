@@ -7,6 +7,7 @@
 
 inline constexpr size_t kNinjabrainPredictionLimit = 5;
 inline constexpr size_t kNinjabrainThrowLimit = 8;
+inline constexpr size_t kNinjabrainInformationMessageLimit = 8;
 
 struct NinjabrainPrediction {
     int chunkX = 0;
@@ -16,6 +17,9 @@ struct NinjabrainPrediction {
 };
 
 struct NinjabrainThrow {
+    double xInOverworld = 0.0;
+    double zInOverworld = 0.0;
+    bool hasPosition = false;
     double angle = 0.0;
     double angleWithoutCorrection = 0.0;
     double correction = 0.0;
@@ -29,6 +33,12 @@ struct NinjabrainPredictionAngle {
     double actualAngle = 0.0;
     double neededCorrection = 0.0;
     bool valid = false;
+};
+
+struct NinjabrainInformationMessage {
+    std::string severity;
+    std::string type;
+    std::string message;
 };
 
 struct NinjabrainData {
@@ -63,6 +73,9 @@ struct NinjabrainData {
     double playerHorizontalAngle = 0.0;
     bool playerInNether = false;
     bool hasPlayerPos = false;
+
+    std::array<NinjabrainInformationMessage, kNinjabrainInformationMessageLimit> informationMessages{};
+    int informationMessageCount = 0;
 
     // For NB 1.5.1 increment recovery: integer counter incremented/decremented by 1
     // per SSE event (one event = one hotkey press = one click). Never uses division.

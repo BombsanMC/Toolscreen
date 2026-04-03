@@ -2037,6 +2037,7 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("showTitleBar",         o.showTitleBar);
         nb.insert("showWindowControls",   o.showWindowControls);
         nb.insert("showThrowDetails",     o.showThrowDetails);
+        nb.insert("showDirectionToStronghold", o.showDirectionToStronghold);
         nb.insert("staticColumnWidths",   o.staticColumnWidths);
         nb.insert("showSeparators",       o.showSeparators);
         nb.insert("showRowStripes",       o.showRowStripes);
@@ -2058,8 +2059,8 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("divineTextColor",      ColorToTomlArray(o.divineTextColor));
         nb.insert("versionTextColor",     ColorToTomlArray(o.versionTextColor));
         nb.insert("throwsBackgroundColor", ColorToTomlArray(o.throwsBackgroundColor));
-        nb.insert("negCoordColor",        ColorToTomlArray(o.negCoordColor));
-        nb.insert("negCoordColorEnabled", o.negCoordColorEnabled);
+        nb.insert("coordPositiveColor",   ColorToTomlArray(o.coordPositiveColor));
+        nb.insert("coordNegativeColor",   ColorToTomlArray(o.coordNegativeColor));
         nb.insert("certaintyColor",       ColorToTomlArray(o.certaintyColor));
         nb.insert("certaintyMidColor",    ColorToTomlArray(o.certaintyMidColor));
         nb.insert("certaintyLowColor",    ColorToTomlArray(o.certaintyLowColor));
@@ -2070,9 +2071,55 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("showAllPreds",         o.showAllPreds);
         nb.insert("alwaysShowBoat",       o.alwaysShowBoat);
         nb.insert("angleDisplay",         o.angleDisplay);
+        nb.insert("fontAntialiasing",     o.fontAntialiasing);
         nb.insert("rowSpacing",           o.rowSpacing);
         nb.insert("colSpacing",           o.colSpacing);
         nb.insert("sidePadding",          o.sidePadding);
+        nb.insert("sectionLayoutMode",    o.sectionLayoutMode);
+        nb.insert("contentPaddingTop",    o.contentPaddingTop);
+        nb.insert("contentPaddingBottom", o.contentPaddingBottom);
+        nb.insert("resultsMarginLeft",    o.resultsMarginLeft);
+        nb.insert("resultsMarginRight",   o.resultsMarginRight);
+        nb.insert("resultsMarginTop",     o.resultsMarginTop);
+        nb.insert("resultsMarginBottom",  o.resultsMarginBottom);
+        nb.insert("resultsHeaderPaddingY", o.resultsHeaderPaddingY);
+        nb.insert("resultsColumnGap",     o.resultsColumnGap);
+        nb.insert("resultsAnchor",        o.resultsAnchor);
+        nb.insert("resultsOffsetX",       o.resultsOffsetX);
+        nb.insert("resultsOffsetY",       o.resultsOffsetY);
+        nb.insert("resultsDrawOrder",     o.resultsDrawOrder);
+        nb.insert("informationMessagesPlacement",   o.informationMessagesPlacement);
+        nb.insert("informationMessagesFontScale",   o.informationMessagesFontScale);
+        nb.insert("informationMessagesMinWidth",    o.informationMessagesMinWidth);
+        nb.insert("informationMessagesMarginLeft",  o.informationMessagesMarginLeft);
+        nb.insert("informationMessagesMarginRight", o.informationMessagesMarginRight);
+        nb.insert("informationMessagesMarginTop",   o.informationMessagesMarginTop);
+        nb.insert("informationMessagesMarginBottom", o.informationMessagesMarginBottom);
+        nb.insert("informationMessagesIconTextMargin", o.informationMessagesIconTextMargin);
+        nb.insert("informationMessagesIconScale", o.informationMessagesIconScale);
+        nb.insert("informationMessagesAnchor",      o.informationMessagesAnchor);
+        nb.insert("informationMessagesOffsetX",     o.informationMessagesOffsetX);
+        nb.insert("informationMessagesOffsetY",     o.informationMessagesOffsetY);
+        nb.insert("informationMessagesDrawOrder",   o.informationMessagesDrawOrder);
+        nb.insert("throwsMarginLeft",     o.throwsMarginLeft);
+        nb.insert("throwsMarginRight",    o.throwsMarginRight);
+        nb.insert("throwsMarginTop",      o.throwsMarginTop);
+        nb.insert("throwsMarginBottom",   o.throwsMarginBottom);
+        nb.insert("throwsHeaderPaddingY", o.throwsHeaderPaddingY);
+        nb.insert("throwsRowPaddingY",    o.throwsRowPaddingY);
+        nb.insert("throwsAnchor",         o.throwsAnchor);
+        nb.insert("throwsOffsetX",        o.throwsOffsetX);
+        nb.insert("throwsOffsetY",        o.throwsOffsetY);
+        nb.insert("throwsDrawOrder",      o.throwsDrawOrder);
+        nb.insert("failureMarginLeft",    o.failureMarginLeft);
+        nb.insert("failureMarginRight",   o.failureMarginRight);
+        nb.insert("failureMarginTop",     o.failureMarginTop);
+        nb.insert("failureMarginBottom",  o.failureMarginBottom);
+        nb.insert("failureLineGap",       o.failureLineGap);
+        nb.insert("failureAnchor",        o.failureAnchor);
+        nb.insert("failureOffsetX",       o.failureOffsetX);
+        nb.insert("failureOffsetY",       o.failureOffsetY);
+        nb.insert("failureDrawOrder",     o.failureDrawOrder);
         nb.insert("customFontPath",       o.customFontPath);
         nb.insert("overlayOpacity",       o.overlayOpacity);
         nb.insert("overlayScale",         o.overlayScale);
@@ -2255,9 +2302,10 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.layoutStyle          = GetStringOr(*nb, "layoutStyle",          "compact");
         c.layoutStyle          = "compact";
         c.titleText            = GetStringOr(*nb, "titleText",            "Ninjabrain Bot");
-        c.showTitleBar         = false;
+        c.showTitleBar         = GetOr(*nb, "showTitleBar",         false);
         c.showWindowControls   = GetOr(*nb, "showWindowControls",   false);
         c.showThrowDetails     = GetOr(*nb, "showThrowDetails",     true);
+        c.showDirectionToStronghold = GetOr(*nb, "showDirectionToStronghold", true);
         c.staticColumnWidths   = GetOr(*nb, "staticColumnWidths",   true);
         c.showSeparators       = GetOr(*nb, "showSeparators",       true);
         c.showRowStripes       = GetOr(*nb, "showRowStripes",       true);
@@ -2287,8 +2335,11 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.divineTextColor      = ColorFromTomlArray(nb->get_as<toml::array>("divineTextColor"), c.dataColor);
         c.versionTextColor     = ColorFromTomlArray(nb->get_as<toml::array>("versionTextColor"), c.textColor);
         c.throwsBackgroundColor = ColorFromTomlArray(nb->get_as<toml::array>("throwsBackgroundColor"), c.bgColor);
-        c.negCoordColor        = ColorFromTomlArray(nb->get_as<toml::array>("negCoordColor"),  Color{1.0f,0.45f,0.45f,1.0f});
-        c.negCoordColorEnabled = GetOr(*nb, "negCoordColorEnabled", true);
+        const Color legacyNegCoordColor = ColorFromTomlArray(nb->get_as<toml::array>("negCoordColor"), Color{1.0f,0.45f,0.45f,1.0f});
+        const bool legacyNegCoordEnabled = GetOr(*nb, "negCoordColorEnabled", true);
+        c.coordPositiveColor   = ColorFromTomlArray(nb->get_as<toml::array>("coordPositiveColor"), c.dataColor);
+        c.coordNegativeColor   = ColorFromTomlArray(nb->get_as<toml::array>("coordNegativeColor"),
+                                legacyNegCoordEnabled ? legacyNegCoordColor : c.dataColor);
         c.certaintyColor       = ColorFromTomlArray(nb->get_as<toml::array>("certaintyColor"), Color{0.31f,0.86f,0.31f,1.0f});
         c.certaintyMidColor    = ColorFromTomlArray(nb->get_as<toml::array>("certaintyMidColor"), Color{1.0f,0.74f,0.17f,1.0f});
         c.certaintyLowColor    = ColorFromTomlArray(nb->get_as<toml::array>("certaintyLowColor"), Color{0.97f,0.20f,0.20f,1.0f});
@@ -2299,9 +2350,72 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.showAllPreds         = GetOr(*nb, "showAllPreds",         false);
         c.alwaysShowBoat       = GetOr(*nb, "alwaysShowBoat",       false);
         c.angleDisplay         = GetOr(*nb, "angleDisplay",         1);
+        c.fontAntialiasing     = GetOr(*nb, "fontAntialiasing",     true);
         c.rowSpacing           = GetOr(*nb, "rowSpacing",           4.0f);
         c.colSpacing           = GetOr(*nb, "colSpacing",           12.0f);
         c.sidePadding          = GetOr(*nb, "sidePadding",          0.0f);
+        c.sectionLayoutMode    = GetStringOr(*nb, "sectionLayoutMode", "flow");
+        c.contentPaddingTop    = GetOr(*nb, "contentPaddingTop",    0.0f);
+        c.contentPaddingBottom = GetOr(*nb, "contentPaddingBottom", 0.0f);
+        const float legacyResultsIndentX = GetOr(*nb, "resultsIndentX", 0.0f);
+        c.resultsMarginLeft    = GetOr(*nb, "resultsMarginLeft",    0.0f) + (nb->contains("resultsIndentX") ? legacyResultsIndentX : 0.0f);
+        c.resultsMarginRight   = GetOr(*nb, "resultsMarginRight",   0.0f);
+        c.resultsMarginTop     = GetOr(*nb, "resultsMarginTop",     0.0f);
+        c.resultsMarginBottom  = GetOr(*nb, "resultsMarginBottom",  0.0f);
+        c.resultsHeaderPaddingY = GetOr(*nb, "resultsHeaderPaddingY", 2.0f);
+        c.resultsColumnGap     = GetOr(*nb, "resultsColumnGap",     0.0f);
+        c.resultsAnchor        = GetStringOr(*nb, "resultsAnchor", "topLeft");
+        c.resultsOffsetX       = GetOr(*nb, "resultsOffsetX", 0.0f);
+        c.resultsOffsetY       = GetOr(*nb, "resultsOffsetY", 0.0f);
+        c.resultsDrawOrder     = GetOr(*nb, "resultsDrawOrder", 0);
+        c.informationMessagesPlacement = GetStringOr(*nb, "informationMessagesPlacement", "middle");
+        const float legacyInformationMessagesIndentX = GetOr(*nb, "informationMessagesIndentX", 0.0f);
+        const float legacyInformationMessagesPaddingX = GetOr(*nb, "informationMessagesPaddingX", 0.0f);
+        const float legacyInformationMessagesPaddingY = GetOr(*nb, "informationMessagesPaddingY", 0.0f);
+        c.informationMessagesFontScale = GetOr(*nb, "informationMessagesFontScale", 1.0f);
+        c.informationMessagesMinWidth = GetOr(*nb, "informationMessagesMinWidth", 420.0f);
+        c.informationMessagesMarginLeft = GetOr(*nb, "informationMessagesMarginLeft", 0.0f)
+            + (nb->contains("informationMessagesIndentX") ? legacyInformationMessagesIndentX : 0.0f)
+            + (nb->contains("informationMessagesPaddingX") ? legacyInformationMessagesPaddingX : 0.0f);
+        c.informationMessagesMarginRight = GetOr(*nb, "informationMessagesMarginRight", 0.0f)
+            + (nb->contains("informationMessagesPaddingX") ? legacyInformationMessagesPaddingX : 0.0f);
+        c.informationMessagesMarginTop = GetOr(*nb, "informationMessagesMarginTop", 0.0f)
+            + (nb->contains("informationMessagesPaddingY") ? legacyInformationMessagesPaddingY : 0.0f);
+        c.informationMessagesMarginBottom = GetOr(*nb, "informationMessagesMarginBottom", 0.0f)
+            + (nb->contains("informationMessagesPaddingY") ? legacyInformationMessagesPaddingY : 0.0f);
+        c.informationMessagesIconTextMargin = GetOr(*nb, "informationMessagesIconTextMargin", 8.0f);
+        c.informationMessagesIconScale = GetOr(*nb, "informationMessagesIconScale", 1.0f);
+        c.informationMessagesAnchor = GetStringOr(*nb, "informationMessagesAnchor", "topLeft");
+        c.informationMessagesOffsetX = GetOr(*nb, "informationMessagesOffsetX", 0.0f);
+        c.informationMessagesOffsetY = GetOr(*nb, "informationMessagesOffsetY", 0.0f);
+        c.informationMessagesDrawOrder = GetOr(*nb, "informationMessagesDrawOrder", 1);
+        const float legacyThrowsIndentX = GetOr(*nb, "throwsIndentX", 0.0f);
+        const float legacyThrowsSectionPaddingY = GetOr(*nb, "throwsSectionPaddingY", 0.0f);
+        c.throwsMarginLeft     = GetOr(*nb, "throwsMarginLeft",     0.0f) + (nb->contains("throwsIndentX") ? legacyThrowsIndentX : 0.0f);
+        c.throwsMarginRight    = GetOr(*nb, "throwsMarginRight",    0.0f);
+        c.throwsMarginTop      = GetOr(*nb, "throwsMarginTop",      4.0f)
+            + (nb->contains("throwsSectionPaddingY") ? legacyThrowsSectionPaddingY : 0.0f);
+        c.throwsMarginBottom   = GetOr(*nb, "throwsMarginBottom",   0.0f)
+            + (nb->contains("throwsSectionPaddingY") ? legacyThrowsSectionPaddingY : 0.0f);
+        c.throwsHeaderPaddingY = GetOr(*nb, "throwsHeaderPaddingY", 3.0f);
+        c.throwsRowPaddingY    = GetOr(*nb, "throwsRowPaddingY",    3.0f);
+        c.throwsAnchor         = GetStringOr(*nb, "throwsAnchor", "topLeft");
+        c.throwsOffsetX        = GetOr(*nb, "throwsOffsetX", 0.0f);
+        c.throwsOffsetY        = GetOr(*nb, "throwsOffsetY", 0.0f);
+        c.throwsDrawOrder      = GetOr(*nb, "throwsDrawOrder", 2);
+        const float legacyFailureIndentX = GetOr(*nb, "failureIndentX", 0.0f);
+        const float legacyFailurePaddingY = GetOr(*nb, "failurePaddingY", 0.0f);
+        c.failureMarginLeft    = GetOr(*nb, "failureMarginLeft",    0.0f) + (nb->contains("failureIndentX") ? legacyFailureIndentX : 0.0f);
+        c.failureMarginRight   = GetOr(*nb, "failureMarginRight",   0.0f);
+        c.failureMarginTop     = GetOr(*nb, "failureMarginTop",     0.0f)
+            + (nb->contains("failurePaddingY") ? legacyFailurePaddingY : 0.0f);
+        c.failureMarginBottom  = GetOr(*nb, "failureMarginBottom",  0.0f)
+            + (nb->contains("failurePaddingY") ? legacyFailurePaddingY : 0.0f);
+        c.failureLineGap       = GetOr(*nb, "failureLineGap",       8.0f);
+        c.failureAnchor        = GetStringOr(*nb, "failureAnchor", "topLeft");
+        c.failureOffsetX       = GetOr(*nb, "failureOffsetX", 0.0f);
+        c.failureOffsetY       = GetOr(*nb, "failureOffsetY", 0.0f);
+        c.failureDrawOrder     = GetOr(*nb, "failureDrawOrder", 0);
         c.customFontPath       = GetStringOr(*nb, "customFontPath", "");
         c.overlayOpacity       = GetOr(*nb, "overlayOpacity",       1.0f);
         c.overlayScale         = GetOr(*nb, "overlayScale",         0.24f);
@@ -2316,6 +2430,63 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         if (c.coordsDisplay != "block" && c.coordsDisplay != "chunk") { c.coordsDisplay = "chunk"; }
         if (c.sidePadding < 0.0f) { c.sidePadding = 0.0f; }
         if (c.sidePadding > 200.0f) { c.sidePadding = 200.0f; }
+        if (c.sectionLayoutMode != "flow" && c.sectionLayoutMode != "manual") { c.sectionLayoutMode = "flow"; }
+        c.contentPaddingTop = std::clamp(c.contentPaddingTop, 0.0f, 160.0f);
+        c.contentPaddingBottom = std::clamp(c.contentPaddingBottom, 0.0f, 160.0f);
+        c.resultsMarginLeft = std::clamp(c.resultsMarginLeft, 0.0f, 400.0f);
+        c.resultsMarginRight = std::clamp(c.resultsMarginRight, 0.0f, 400.0f);
+        c.resultsMarginTop = std::clamp(c.resultsMarginTop, 0.0f, 160.0f);
+        c.resultsMarginBottom = std::clamp(c.resultsMarginBottom, 0.0f, 160.0f);
+        c.resultsHeaderPaddingY = std::clamp(c.resultsHeaderPaddingY, 0.0f, 48.0f);
+        c.resultsColumnGap = std::clamp(c.resultsColumnGap, 0.0f, 200.0f);
+        if (c.resultsAnchor != "topLeft" && c.resultsAnchor != "topRight" && c.resultsAnchor != "bottomLeft" && c.resultsAnchor != "bottomRight") {
+            c.resultsAnchor = "topLeft";
+        }
+        c.resultsOffsetX = std::clamp(c.resultsOffsetX, 0.0f, 1000.0f);
+        c.resultsOffsetY = std::clamp(c.resultsOffsetY, 0.0f, 1000.0f);
+        c.resultsDrawOrder = std::clamp(c.resultsDrawOrder, 0, 32);
+        if (c.informationMessagesPlacement != "top" && c.informationMessagesPlacement != "middle" &&
+            c.informationMessagesPlacement != "bottom") {
+            c.informationMessagesPlacement = "middle";
+        }
+        c.informationMessagesFontScale = std::clamp(c.informationMessagesFontScale, 0.4f, 3.0f);
+        c.informationMessagesMinWidth = std::clamp(c.informationMessagesMinWidth, 120.0f, 1200.0f);
+        c.informationMessagesMarginLeft = std::clamp(c.informationMessagesMarginLeft, 0.0f, 400.0f);
+        c.informationMessagesMarginRight = std::clamp(c.informationMessagesMarginRight, 0.0f, 400.0f);
+        c.informationMessagesMarginTop = std::clamp(c.informationMessagesMarginTop, 0.0f, 160.0f);
+        c.informationMessagesMarginBottom = std::clamp(c.informationMessagesMarginBottom, 0.0f, 160.0f);
+        c.informationMessagesIconTextMargin = std::clamp(c.informationMessagesIconTextMargin, 0.0f, 96.0f);
+        c.informationMessagesIconScale = std::clamp(c.informationMessagesIconScale, 0.25f, 4.0f);
+        if (c.informationMessagesAnchor != "topLeft" && c.informationMessagesAnchor != "topRight" &&
+            c.informationMessagesAnchor != "bottomLeft" && c.informationMessagesAnchor != "bottomRight") {
+            c.informationMessagesAnchor = "topLeft";
+        }
+        c.informationMessagesOffsetX = std::clamp(c.informationMessagesOffsetX, 0.0f, 1000.0f);
+        c.informationMessagesOffsetY = std::clamp(c.informationMessagesOffsetY, 0.0f, 1000.0f);
+        c.informationMessagesDrawOrder = std::clamp(c.informationMessagesDrawOrder, 0, 32);
+        c.throwsMarginLeft = std::clamp(c.throwsMarginLeft, 0.0f, 400.0f);
+        c.throwsMarginRight = std::clamp(c.throwsMarginRight, 0.0f, 400.0f);
+        c.throwsMarginTop = std::clamp(c.throwsMarginTop, 0.0f, 160.0f);
+        c.throwsMarginBottom = std::clamp(c.throwsMarginBottom, 0.0f, 160.0f);
+        c.throwsHeaderPaddingY = std::clamp(c.throwsHeaderPaddingY, 0.0f, 48.0f);
+        c.throwsRowPaddingY = std::clamp(c.throwsRowPaddingY, 0.0f, 48.0f);
+        if (c.throwsAnchor != "topLeft" && c.throwsAnchor != "topRight" && c.throwsAnchor != "bottomLeft" && c.throwsAnchor != "bottomRight") {
+            c.throwsAnchor = "topLeft";
+        }
+        c.throwsOffsetX = std::clamp(c.throwsOffsetX, 0.0f, 1000.0f);
+        c.throwsOffsetY = std::clamp(c.throwsOffsetY, 0.0f, 1000.0f);
+        c.throwsDrawOrder = std::clamp(c.throwsDrawOrder, 0, 32);
+        c.failureMarginLeft = std::clamp(c.failureMarginLeft, 0.0f, 400.0f);
+        c.failureMarginRight = std::clamp(c.failureMarginRight, 0.0f, 400.0f);
+        c.failureMarginTop = std::clamp(c.failureMarginTop, 0.0f, 160.0f);
+        c.failureMarginBottom = std::clamp(c.failureMarginBottom, 0.0f, 160.0f);
+        c.failureLineGap = std::clamp(c.failureLineGap, 0.0f, 96.0f);
+        if (c.failureAnchor != "topLeft" && c.failureAnchor != "topRight" && c.failureAnchor != "bottomLeft" && c.failureAnchor != "bottomRight") {
+            c.failureAnchor = "topLeft";
+        }
+        c.failureOffsetX = std::clamp(c.failureOffsetX, 0.0f, 1000.0f);
+        c.failureOffsetY = std::clamp(c.failureOffsetY, 0.0f, 1000.0f);
+        c.failureDrawOrder = std::clamp(c.failureDrawOrder, 0, 32);
         if (auto* arr = nb->get_as<toml::array>("allowedModes")) {
             c.allowedModes.clear();
             for (auto& el : *arr) { if (auto* s = el.as_string()) c.allowedModes.push_back(s->get()); }

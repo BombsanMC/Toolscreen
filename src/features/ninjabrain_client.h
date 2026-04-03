@@ -6,4 +6,5 @@ void StartNinjabrainClient();
 void StopNinjabrainClient();
 void StopNinjabrainClientAsync();
 void RestartNinjabrainClient();
+void RestartNinjabrainClientAsync();
 NinjabrainApiStatus GetNinjabrainClientStatus();
