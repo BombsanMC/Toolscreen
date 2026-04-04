@@ -8,7 +8,7 @@
 
 inline nlohmann::json                               g_langsJson;
 inline nlohmann::json                               g_translationJson;
-inline std::unordered_map<const char*, std::string> g_translationCache;
+inline std::unordered_map<std::string, std::string> g_translationCache;
 inline std::atomic<uint64_t>                        g_translationGeneration{ 0 };
 
 void LoadLangs() {

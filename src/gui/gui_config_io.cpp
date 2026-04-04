@@ -502,6 +502,7 @@ void LoadConfig() {
 
     BackupConfigFile();
     ExtractBundledFontAssets(std::filesystem::path(g_toolscreenPath), &LoadConfig);
+    LoadSystemFontAssets();
 
     try {
         g_config = Config();

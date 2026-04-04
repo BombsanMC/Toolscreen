@@ -2035,7 +2035,6 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("y",                    o.y);
         nb.insert("relativeTo",           o.relativeTo);
         nb.insert("apiBaseUrl",           o.apiBaseUrl);
-        nb.insert("fontSize",             o.fontSize);
         nb.insert("bgEnabled",            o.bgEnabled);
         nb.insert("bgOpacity",            o.bgOpacity);
         nb.insert("bgColor",              ColorToTomlArray(o.bgColor));
@@ -2302,7 +2301,6 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.y                    = GetOr(*nb, "y",                    -5);
         c.relativeTo           = GetStringOr(*nb, "relativeTo",     "bottomLeftScreen");
         c.apiBaseUrl           = GetStringOr(*nb, "apiBaseUrl",     ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL);
-        c.fontSize             = GetOr(*nb, "fontSize",             56.0f);
         c.bgEnabled            = GetOr(*nb, "bgEnabled",            true);
         c.bgOpacity            = GetOr(*nb, "bgOpacity",            0.92f);
         c.bgColor              = ColorFromTomlArray(nb->get_as<toml::array>("bgColor"),        Color{0.15f,0.16f,0.17f,1.0f});
@@ -2425,13 +2423,12 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.failureDrawOrder     = GetOr(*nb, "failureDrawOrder", 0);
         c.customFontPath       = GetStringOr(*nb, "customFontPath", "");
         c.overlayOpacity       = GetOr(*nb, "overlayOpacity",       1.0f);
-        c.overlayScale         = GetOr(*nb, "overlayScale",         0.24f);
+        c.overlayScale         = GetOr(*nb, "overlayScale",         c.overlayScale);
         c.onlyOnMyScreen       = GetOr(*nb, "onlyOnMyScreen",       false);
         c.onlyOnObs            = GetOr(*nb, "onlyOnObs",            false);
         if (c.layoutStyle != "compact" && c.layoutStyle != "classicWindow") { c.layoutStyle = "compact"; }
         if (c.apiBaseUrl.empty()) { c.apiBaseUrl = ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL; }
         if (c.titleText.empty()) { c.titleText = "Ninjabrain Bot"; }
-        if (c.fontSize < 16.0f) { c.fontSize = 16.0f; }
         if (c.borderWidth < 0) { c.borderWidth = 0; }
         if (c.cornerRadius < 0.0f) { c.cornerRadius = 0.0f; }
         if (c.coordsDisplay != "block" && c.coordsDisplay != "chunk") { c.coordsDisplay = "chunk"; }

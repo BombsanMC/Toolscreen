@@ -14,7 +14,27 @@ if (BeginSelectableSettingsNestedTabItem(trc("ninjabrain.title"))) {
             changed = true;
         }
 
-        const std::vector<NinjabrainPresetDefinition> ninjabrainPresets = GetEmbeddedNinjabrainPresets();
+        std::vector<NinjabrainPresetDefinition> ninjabrainPresets = GetEmbeddedNinjabrainPresets();
+        std::stable_sort(ninjabrainPresets.begin(), ninjabrainPresets.end(),
+                         [](const NinjabrainPresetDefinition& left, const NinjabrainPresetDefinition& right) {
+                             auto presetRank = [](const std::string& presetId) {
+                                 if (presetId == "compact") return 0;
+                                 if (presetId == "ninjabrainbot") return 1;
+                                 return 100;
+                             };
+
+                             const int leftRank = presetRank(left.id);
+                             const int rightRank = presetRank(right.id);
+                             if (leftRank != rightRank) {
+                                 return leftRank < rightRank;
+                             }
+
+                             if (left.translationKey != right.translationKey) {
+                                 return left.translationKey < right.translationKey;
+                             }
+
+                             return left.id < right.id;
+                         });
 
         auto applyNinjabrainPreset = [&](const NinjabrainPresetDefinition& presetDefinition) {
             const bool enabled = nb.enabled;
@@ -197,15 +217,6 @@ if (BeginSelectableSettingsNestedTabItem(trc("ninjabrain.title"))) {
             ImGui::Text("%s", trc("ninjabrain.pos_y"));
             ImGui::NextColumn();
             if (Spinner("##nb_y", &nb.y)) changed = true;
-            ImGui::NextColumn();
-
-            ImGui::Text("%s", trc("ninjabrain.font_size"));
-            ImGui::NextColumn();
-            ImGui::SetNextItemWidth(250);
-            if (ImGui::SliderFloat("##nbFontSize", &nb.fontSize, 24.0f, 96.0f, "%.0f px")) {
-                changed = true;
-                g_eyeZoomFontNeedsReload.store(true);
-            }
             ImGui::NextColumn();
 
             ImGui::Text("%s", trc("ninjabrain.font"));
@@ -474,10 +485,10 @@ if (BeginSelectableSettingsNestedTabItem(trc("ninjabrain.title"))) {
             ImGui::Text("%s", trc("ninjabrain.info_messages_font_size"));
             ImGui::NextColumn();
             {
-                float infoFontSize = nb.fontSize * nb.informationMessagesFontScale;
+                const float baseFontSize = (std::max)(1.0f, kNinjabrainOverlayBaseFontSize * ((nb.overlayScale > 0.01f) ? nb.overlayScale : 1.0f));
+                float infoFontSize = baseFontSize * nb.informationMessagesFontScale;
                 ImGui::SetNextItemWidth(250);
                 if (ImGui::SliderFloat("##nbInfoMessagesFontSize", &infoFontSize, 12.0f, 160.0f, "%.0f px")) {
-                    const float baseFontSize = (std::max)(1.0f, nb.fontSize);
                     nb.informationMessagesFontScale = infoFontSize / baseFontSize;
                     changed = true;
                 }
@@ -487,7 +498,8 @@ if (BeginSelectableSettingsNestedTabItem(trc("ninjabrain.title"))) {
             ImGui::Text("%s", trc("ninjabrain.info_messages_icon_size"));
             ImGui::NextColumn();
             {
-                const float baseIconSize = (std::max)(1.0f, nb.fontSize * nb.informationMessagesFontScale * 1.2f * 0.82f);
+                const float baseFontSize = (std::max)(1.0f, kNinjabrainOverlayBaseFontSize * ((nb.overlayScale > 0.01f) ? nb.overlayScale : 1.0f));
+                const float baseIconSize = (std::max)(1.0f, baseFontSize * nb.informationMessagesFontScale * 1.2f * 0.82f);
                 float infoIconSize = baseIconSize * nb.informationMessagesIconScale;
                 ImGui::SetNextItemWidth(250);
                 if (ImGui::SliderFloat("##nbInfoMessagesIconSize", &infoIconSize, 8.0f, 160.0f, "%.0f px")) {

@@ -4311,7 +4311,9 @@ static void RenderSameThreadImGui(const SameThreadOverlayState& request, bool re
     if (renderNinjabrainOverlay) {
         PROFILE_SCOPE_CAT("ImGui Ninjabrain Overlay", "ImGui");
         auto nbCfg = GetConfigSnapshot();
-        if (nbCfg) RenderNinjabrainOverlay(nbCfg->ninjabrainOverlay, GetNinjabrainFont(), request.modeId);
+        if (nbCfg) {
+            RenderNinjabrainOverlay(nbCfg->ninjabrainOverlay, GetNinjabrainFont(), request.modeId, request.shouldRenderGui);
+        }
     }
 
     if (request.showProfiler) {
@@ -7986,9 +7988,8 @@ static ImFont* NB_SafeAddFontFromFileTTF(ImFontAtlas* atlas, const char* path, f
 
 void LoadNinjabrainFont(ImFontAtlas* atlas, const NinjabrainOverlayConfig& overlay, float scaleFactor) {
     if (!atlas) return;
-    const float requestedFontSize = (overlay.fontSize > 1.0f) ? overlay.fontSize : 56.0f;
     const float overlayScale = (overlay.overlayScale > 0.01f) ? overlay.overlayScale : 1.0f;
-    const float nbSize = (std::max)(1.0f, requestedFontSize * overlayScale * scaleFactor);
+    const float nbSize = (std::max)(1.0f, kNinjabrainOverlayBaseFontSize * overlayScale * scaleFactor);
 
     ImFontConfig fontCfg;
     fontCfg.OversampleH = overlay.fontAntialiasing ? 2 : 1;
@@ -8190,7 +8191,8 @@ static void EnsureNinjabrainOverlayIconsLoaded()
 }
 #include <algorithm>
 
-void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, const std::string& modeId)
+void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, const std::string& modeId,
+                             bool renderBehindImGuiWindows)
 {
     if (!ImGui::GetCurrentContext()) return;
 
@@ -8210,7 +8212,7 @@ void RenderNinjabrainOverlay(const NinjabrainOverlayConfig& nb, ImFont* font, co
     if (!HasNinjabrainOverlayContent(nb, data, &hasTriangulation, &showForBoat)) return;
     const bool showPredictionTable = hasTriangulation || showForBoat;
 
-    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    ImDrawList* drawList = renderBehindImGuiWindows ? ImGui::GetBackgroundDrawList() : ImGui::GetForegroundDrawList();
     const float scale = (nb.overlayScale > 0.01f) ? nb.overlayScale : 1.0f;
     const float fs = GetNinjabrainFontSize();
     if (!font || !font->IsLoaded()) font = ImGui::GetFont();

@@ -560,6 +560,8 @@ struct NinjabrainColumn {
     int staticWidth = 0;
 };
 
+constexpr float kNinjabrainOverlayBaseFontSize = 64.0f;
+
 struct NinjabrainOverlayConfig {
     bool enabled = true;
     int x = 4;
@@ -567,7 +569,6 @@ struct NinjabrainOverlayConfig {
     std::string relativeTo = "bottomLeftScreen";
     std::string customFontPath = ConfigDefaults::CONFIG_FONT_PATH;
     std::string apiBaseUrl = ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL;
-    float fontSize = 36.0f;
     bool fontAntialiasing = true;
     bool bgEnabled = true;
     float bgOpacity = 1.0f;

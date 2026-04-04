@@ -6,7 +6,6 @@ y = 0
 relativeTo = 'topLeftScreen'
 customFontPath = 'fonts/OpenSans-Regular.ttf'
 apiBaseUrl = 'http://127.0.0.1:52533'
-fontSize = 64.0
 fontAntialiasing = false
 bgEnabled = true
 bgOpacity = 1.0

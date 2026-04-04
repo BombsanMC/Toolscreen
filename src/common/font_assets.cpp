@@ -4,13 +4,361 @@
 #include "platform/resource.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cwctype>
 #include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <optional>
 #include <system_error>
 
 namespace {
 
+std::vector<SystemFontAsset> s_systemFontAssets;
+std::once_flag s_systemFontAssetsOnce;
+
 std::filesystem::path Utf8Path(std::string_view path) {
     return std::filesystem::path(Utf8ToWide(std::string(path)));
+}
+
+std::wstring TrimWide(std::wstring value) {
+    const auto isSpace = [](wchar_t ch) { return std::iswspace(static_cast<wint_t>(ch)) != 0; };
+
+    while (!value.empty() && isSpace(value.front())) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && isSpace(value.back())) {
+        value.pop_back();
+    }
+
+    return value;
+}
+
+bool EqualsIgnoreCaseWide(std::wstring_view left, std::wstring_view right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    for (size_t index = 0; index < left.size(); ++index) {
+        if (std::towlower(static_cast<wint_t>(left[index])) != std::towlower(static_cast<wint_t>(right[index]))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool EndsWithIgnoreCaseWide(std::wstring_view value, std::wstring_view suffix) {
+    if (suffix.size() > value.size()) {
+        return false;
+    }
+
+    return EqualsIgnoreCaseWide(value.substr(value.size() - suffix.size()), suffix);
+}
+
+std::wstring TitleCaseWide(std::wstring value) {
+    bool startOfWord = true;
+
+    for (wchar_t& ch : value) {
+        if (std::iswalnum(static_cast<wint_t>(ch)) != 0) {
+            ch = startOfWord
+                ? static_cast<wchar_t>(std::towupper(static_cast<wint_t>(ch)))
+                : static_cast<wchar_t>(std::towlower(static_cast<wint_t>(ch)));
+            startOfWord = false;
+            continue;
+        }
+
+        if (ch == L'_' || ch == L'/') {
+            ch = L' ';
+        }
+        startOfWord = true;
+    }
+
+    return value;
+}
+
+std::wstring NormalizeDisplayWide(std::wstring value) {
+    value = TrimWide(std::move(value));
+    if (value.empty()) {
+        return value;
+    }
+
+    std::wstring compacted;
+    compacted.reserve(value.size());
+    bool previousWasSpace = false;
+    for (wchar_t ch : value) {
+        const bool isSpace = std::iswspace(static_cast<wint_t>(ch)) != 0;
+        if (isSpace) {
+            if (!previousWasSpace) {
+                compacted.push_back(L' ');
+            }
+            previousWasSpace = true;
+        } else {
+            compacted.push_back(ch);
+            previousWasSpace = false;
+        }
+    }
+
+    return TitleCaseWide(TrimWide(std::move(compacted)));
+}
+
+bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& outBytes) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input.is_open()) {
+        return false;
+    }
+
+    const std::streamoff size = input.tellg();
+    if (size <= 0) {
+        return false;
+    }
+
+    input.seekg(0, std::ios::beg);
+    outBytes.resize(static_cast<size_t>(size));
+    input.read(reinterpret_cast<char*>(outBytes.data()), static_cast<std::streamsize>(outBytes.size()));
+    return input.good() || static_cast<size_t>(input.gcount()) == outBytes.size();
+}
+
+bool TryReadBigEndianU16(const std::vector<uint8_t>& bytes, size_t offset, uint16_t& outValue) {
+    if (offset + 2 > bytes.size()) {
+        return false;
+    }
+
+    outValue = static_cast<uint16_t>((static_cast<uint16_t>(bytes[offset]) << 8) | static_cast<uint16_t>(bytes[offset + 1]));
+    return true;
+}
+
+bool TryReadBigEndianU32(const std::vector<uint8_t>& bytes, size_t offset, uint32_t& outValue) {
+    if (offset + 4 > bytes.size()) {
+        return false;
+    }
+
+    outValue = (static_cast<uint32_t>(bytes[offset]) << 24) |
+               (static_cast<uint32_t>(bytes[offset + 1]) << 16) |
+               (static_cast<uint32_t>(bytes[offset + 2]) << 8) |
+               static_cast<uint32_t>(bytes[offset + 3]);
+    return true;
+}
+
+std::wstring DecodeSfntNameString(const std::vector<uint8_t>& bytes, size_t offset, uint16_t length, uint16_t platformId) {
+    if (offset + length > bytes.size()) {
+        return {};
+    }
+
+    std::wstring decoded;
+    if (platformId == 0 || platformId == 3) {
+        if ((length % 2) != 0) {
+            return {};
+        }
+
+        decoded.reserve(length / 2);
+        for (size_t index = 0; index < length; index += 2) {
+            const wchar_t ch = static_cast<wchar_t>((static_cast<uint16_t>(bytes[offset + index]) << 8) |
+                                                    static_cast<uint16_t>(bytes[offset + index + 1]));
+            if (ch != L'\0') {
+                decoded.push_back(ch);
+            }
+        }
+    } else {
+        decoded.reserve(length);
+        for (size_t index = 0; index < length; ++index) {
+            const uint8_t ch = bytes[offset + index];
+            if (ch != 0) {
+                decoded.push_back(static_cast<wchar_t>(ch));
+            }
+        }
+    }
+
+    return TrimWide(std::move(decoded));
+}
+
+struct SfntNameCandidate {
+    std::wstring value;
+    int score = -1;
+};
+
+struct ParsedSfntNames {
+    std::wstring family;
+    std::wstring subfamily;
+    std::wstring fullName;
+    std::wstring preferredFamily;
+    std::wstring preferredSubfamily;
+};
+
+void UpdateSfntNameCandidate(SfntNameCandidate& candidate, const std::wstring& value, int score) {
+    if (value.empty() || score < candidate.score) {
+        return;
+    }
+
+    candidate.value = value;
+    candidate.score = score;
+}
+
+int ComputeSfntNameScore(uint16_t platformId, uint16_t encodingId, uint16_t languageId) {
+    int score = 0;
+    if (platformId == 3) {
+        score += 100;
+    } else if (platformId == 0) {
+        score += 80;
+    } else if (platformId == 1) {
+        score += 40;
+    }
+
+    if (languageId == 0x0409) {
+        score += 20;
+    } else if (languageId == 0) {
+        score += 10;
+    }
+
+    if (encodingId == 1 || encodingId == 10 || encodingId == 0) {
+        score += 5;
+    }
+
+    return score;
+}
+
+std::optional<ParsedSfntNames> TryReadSfntNames(const std::filesystem::path& path) {
+    std::vector<uint8_t> bytes;
+    if (!ReadFileBytes(path, bytes) || bytes.size() < 12) {
+        return std::nullopt;
+    }
+
+    uint16_t numTables = 0;
+    if (!TryReadBigEndianU16(bytes, 4, numTables)) {
+        return std::nullopt;
+    }
+
+    uint32_t nameTableOffset = 0;
+    uint32_t nameTableLength = 0;
+    bool foundNameTable = false;
+    for (uint16_t tableIndex = 0; tableIndex < numTables; ++tableIndex) {
+        const size_t recordOffset = 12u + static_cast<size_t>(tableIndex) * 16u;
+        uint32_t tag = 0;
+        uint32_t offset = 0;
+        uint32_t length = 0;
+        if (!TryReadBigEndianU32(bytes, recordOffset, tag) ||
+            !TryReadBigEndianU32(bytes, recordOffset + 8, offset) ||
+            !TryReadBigEndianU32(bytes, recordOffset + 12, length)) {
+            return std::nullopt;
+        }
+
+        if (tag == 0x6E616D65u) {
+            nameTableOffset = offset;
+            nameTableLength = length;
+            foundNameTable = true;
+            break;
+        }
+    }
+
+    if (!foundNameTable || static_cast<size_t>(nameTableOffset) + static_cast<size_t>(nameTableLength) > bytes.size() || nameTableLength < 6) {
+        return std::nullopt;
+    }
+
+    uint16_t recordCount = 0;
+    uint16_t stringStorageOffset = 0;
+    if (!TryReadBigEndianU16(bytes, nameTableOffset + 2, recordCount) ||
+        !TryReadBigEndianU16(bytes, nameTableOffset + 4, stringStorageOffset)) {
+        return std::nullopt;
+    }
+
+    const size_t recordsOffset = static_cast<size_t>(nameTableOffset) + 6u;
+    const size_t stringsOffset = static_cast<size_t>(nameTableOffset) + static_cast<size_t>(stringStorageOffset);
+    SfntNameCandidate family;
+    SfntNameCandidate subfamily;
+    SfntNameCandidate fullName;
+    SfntNameCandidate preferredFamily;
+    SfntNameCandidate preferredSubfamily;
+
+    for (uint16_t recordIndex = 0; recordIndex < recordCount; ++recordIndex) {
+        const size_t recordOffset = recordsOffset + static_cast<size_t>(recordIndex) * 12u;
+        uint16_t platformId = 0;
+        uint16_t encodingId = 0;
+        uint16_t languageId = 0;
+        uint16_t nameId = 0;
+        uint16_t length = 0;
+        uint16_t offset = 0;
+        if (!TryReadBigEndianU16(bytes, recordOffset, platformId) ||
+            !TryReadBigEndianU16(bytes, recordOffset + 2, encodingId) ||
+            !TryReadBigEndianU16(bytes, recordOffset + 4, languageId) ||
+            !TryReadBigEndianU16(bytes, recordOffset + 6, nameId) ||
+            !TryReadBigEndianU16(bytes, recordOffset + 8, length) ||
+            !TryReadBigEndianU16(bytes, recordOffset + 10, offset)) {
+            return std::nullopt;
+        }
+
+        if (nameId != 1 && nameId != 2 && nameId != 4 && nameId != 16 && nameId != 17) {
+            continue;
+        }
+
+        const std::wstring value = DecodeSfntNameString(bytes, stringsOffset + offset, length, platformId);
+        if (value.empty()) {
+            continue;
+        }
+
+        const int score = ComputeSfntNameScore(platformId, encodingId, languageId);
+        switch (nameId) {
+            case 1:
+                UpdateSfntNameCandidate(family, value, score);
+                break;
+            case 2:
+                UpdateSfntNameCandidate(subfamily, value, score);
+                break;
+            case 4:
+                UpdateSfntNameCandidate(fullName, value, score);
+                break;
+            case 16:
+                UpdateSfntNameCandidate(preferredFamily, value, score);
+                break;
+            case 17:
+                UpdateSfntNameCandidate(preferredSubfamily, value, score);
+                break;
+        }
+    }
+
+    if (family.value.empty() && preferredFamily.value.empty() && fullName.value.empty()) {
+        return std::nullopt;
+    }
+
+    return ParsedSfntNames{ family.value, subfamily.value, fullName.value, preferredFamily.value, preferredSubfamily.value };
+}
+
+bool IsRegularStyleName(std::wstring_view styleName) {
+    return EqualsIgnoreCaseWide(styleName, L"regular") ||
+           EqualsIgnoreCaseWide(styleName, L"normal") ||
+           EqualsIgnoreCaseWide(styleName, L"roman") ||
+           EqualsIgnoreCaseWide(styleName, L"book");
+}
+
+std::wstring SimplifyFontFamilyName(std::wstring familyName) {
+    familyName = TrimWide(std::move(familyName));
+    if (EndsWithIgnoreCaseWide(familyName, L" MT")) {
+        familyName.resize(familyName.size() - 3);
+        familyName = TrimWide(std::move(familyName));
+    }
+
+    return familyName;
+}
+
+std::string BuildDisplayNameFromSfntNames(const ParsedSfntNames& names) {
+    std::wstring familyName = names.preferredFamily.empty() ? names.family : names.preferredFamily;
+    std::wstring subfamilyName = names.preferredSubfamily.empty() ? names.subfamily : names.preferredSubfamily;
+    std::wstring displayName;
+
+    familyName = SimplifyFontFamilyName(std::move(familyName));
+    if (!familyName.empty()) {
+        displayName = familyName;
+        subfamilyName = TrimWide(std::move(subfamilyName));
+        if (!subfamilyName.empty() && !IsRegularStyleName(subfamilyName)) {
+            displayName += L" ";
+            displayName += subfamilyName;
+        }
+    } else {
+        displayName = names.fullName;
+    }
+
+    displayName = NormalizeDisplayWide(std::move(displayName));
+    return displayName.empty() ? std::string() : WideToUtf8(displayName);
 }
 
 std::string NormalizePathForComparison(const std::string& path) {
@@ -36,9 +384,97 @@ std::string NormalizePathForComparison(const std::string& path) {
     return normalized;
 }
 
+std::wstring GetWindowsFontsDirectory() {
+    wchar_t windowsDirectory[MAX_PATH] = {};
+    const UINT length = GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return L"C:\\Windows\\Fonts";
+    }
+
+    return (std::filesystem::path(windowsDirectory) / "Fonts").wstring();
+}
+
+bool HasTtfExtension(const std::filesystem::path& path) {
+    return EqualsIgnoreCase(WideToUtf8(path.extension().wstring()), ".ttf");
+}
+
+std::string BuildSystemFontDisplayName(const std::filesystem::path& path) {
+    if (const std::optional<ParsedSfntNames> parsedNames = TryReadSfntNames(path)) {
+        const std::string parsedDisplayName = BuildDisplayNameFromSfntNames(*parsedNames);
+        if (!parsedDisplayName.empty()) {
+            return parsedDisplayName;
+        }
+    }
+
+    const std::wstring stem = NormalizeDisplayWide(path.stem().wstring());
+    if (!stem.empty()) {
+        return WideToUtf8(stem);
+    }
+
+    return WideToUtf8(NormalizeDisplayWide(path.filename().wstring()));
+}
+
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+void PopulateSystemFontAssets() {
+    const std::filesystem::path fontsDirectory(GetWindowsFontsDirectory());
+    std::error_code iteratorError;
+    std::vector<SystemFontAsset> assets;
+
+    for (std::filesystem::directory_iterator it(fontsDirectory, iteratorError), end; !iteratorError && it != end; it.increment(iteratorError)) {
+        const std::filesystem::directory_entry& entry = *it;
+        std::error_code statusError;
+        if (!entry.is_regular_file(statusError) || statusError) {
+            continue;
+        }
+
+        if (!HasTtfExtension(entry.path())) {
+            continue;
+        }
+
+        assets.push_back({ BuildSystemFontDisplayName(entry.path()), WideToUtf8(entry.path().wstring()) });
+    }
+
+    if (iteratorError) {
+        Log("WARNING: Failed to enumerate Windows fonts from " + WideToUtf8(fontsDirectory.wstring()) + ": " + iteratorError.message());
+    }
+
+    std::sort(assets.begin(), assets.end(), [](const SystemFontAsset& left, const SystemFontAsset& right) {
+        const std::string leftLabel = ToLowerAscii(left.displayName);
+        const std::string rightLabel = ToLowerAscii(right.displayName);
+        if (leftLabel != rightLabel) {
+            return leftLabel < rightLabel;
+        }
+
+        return ToLowerAscii(left.path) < ToLowerAscii(right.path);
+    });
+
+    assets.erase(std::unique(assets.begin(), assets.end(), [](const SystemFontAsset& left, const SystemFontAsset& right) {
+                     return PathsEqualIgnoreCase(left.path, right.path);
+                 }),
+                 assets.end());
+
+    s_systemFontAssets = std::move(assets);
+    Log("Loaded " + std::to_string(s_systemFontAssets.size()) + " system .ttf fonts from " + WideToUtf8(fontsDirectory.wstring()) + ".");
+}
+
+void EnsureSystemFontAssetsLoaded() {
+    std::call_once(s_systemFontAssetsOnce, []() {
+        PopulateSystemFontAssets();
+    });
+}
+
+} // namespace
+
 bool PathsEqualIgnoreCase(const std::string& left, const std::string& right) {
     return EqualsIgnoreCase(NormalizePathForComparison(left), NormalizePathForComparison(right));
 }
+
+namespace {
 
 std::string BuildAbsoluteBundledFontPath(const std::filesystem::path& rootPath, const BundledFontAsset& asset) {
     return WideToUtf8((rootPath / Utf8Path(asset.relativePath)).wstring());
@@ -150,6 +586,15 @@ const std::vector<BundledFontAsset>& GetBundledFontAssets() {
     };
 
     return assets;
+}
+
+const std::vector<SystemFontAsset>& GetSystemFontAssets() {
+    EnsureSystemFontAssetsLoaded();
+    return s_systemFontAssets;
+}
+
+void LoadSystemFontAssets() {
+    EnsureSystemFontAssetsLoaded();
 }
 
 const BundledFontAsset* FindBundledFontAssetById(std::string_view id) {

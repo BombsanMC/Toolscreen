@@ -1,7 +1,6 @@
 [ninjabrainOverlay]
 layoutStyle = 'compact'
 showTitleBar = false
-fontSize = 64.0
 bgEnabled = true
 bgOpacity = 0.6
 bgColor = [ 0, 0, 0 ]

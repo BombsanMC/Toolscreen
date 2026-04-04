@@ -92,14 +92,25 @@ constexpr float kSettingsTopTabBounceOvershoot = 0.0f;
 constexpr float kSettingsTopTabBounceMinOffset = 0.0f;
 constexpr float kSettingsTopTabBounceLineHeightScale = 0.0f;
 
+enum class FontPickerOptionSection {
+    Special,
+    Bundled,
+    System,
+};
+
 struct FontPickerOption {
     std::string path;
     const char* labelKey = nullptr;
+    std::string label;
+    FontPickerOptionSection section = FontPickerOptionSection::Bundled;
 };
 
 struct FontPickerUiState {
     bool editingCustom = false;
     std::string customPath;
+    std::string searchQuery;
+    bool comboOpen = false;
+    bool focusSearch = false;
 };
 
 FontPickerUiState s_mainGuiFontPickerState;
@@ -166,12 +177,76 @@ void ApplySettingsTopTabBounceAnimation(const char* label) {
 }
 
 std::vector<FontPickerOption> BuildFontPickerOptions(std::initializer_list<FontPickerOption> leadingOptions = {}) {
-    std::vector<FontPickerOption> options(leadingOptions.begin(), leadingOptions.end());
-    options.reserve(options.size() + GetBundledFontAssets().size());
-    for (const BundledFontAsset& asset : GetBundledFontAssets()) {
-        options.push_back({ asset.relativePath, asset.translationKey });
+    const std::vector<SystemFontAsset>& systemFonts = GetSystemFontAssets();
+    const std::string& defaultGuiFontPath = ConfigDefaults::CONFIG_DEFAULT_GUI_FONT_PATH;
+
+    std::vector<FontPickerOption> options;
+    options.reserve(leadingOptions.size() + 1 + GetBundledFontAssets().size() + systemFonts.size());
+    for (const FontPickerOption& leadingOption : leadingOptions) {
+        FontPickerOption option = leadingOption;
+        option.section = FontPickerOptionSection::Special;
+        options.push_back(std::move(option));
     }
+
+    options.push_back({ defaultGuiFontPath, "font.preset.arial", {}, FontPickerOptionSection::Bundled });
+
+    for (const BundledFontAsset& asset : GetBundledFontAssets()) {
+        options.push_back({ asset.relativePath, asset.translationKey, {}, FontPickerOptionSection::Bundled });
+    }
+
+    for (const SystemFontAsset& asset : systemFonts) {
+        if (PathsEqualIgnoreCase(asset.path, defaultGuiFontPath)) {
+            continue;
+        }
+        options.push_back({ asset.path, nullptr, asset.displayName, FontPickerOptionSection::System });
+    }
+
     return options;
+}
+
+std::string GetFontPickerOptionLabel(const FontPickerOption& option) {
+    if (option.labelKey != nullptr) {
+        return tr(option.labelKey);
+    }
+
+    return option.label;
+}
+
+std::string GetFontPickerCustomPreviewLabel(const std::string& currentPath) {
+    if (currentPath.empty()) {
+        return tr("font.preset.custom");
+    }
+
+    try {
+        const std::filesystem::path path(Utf8ToWide(currentPath));
+        const std::wstring filename = path.filename().wstring();
+        if (!filename.empty()) {
+            return WideToUtf8(filename);
+        }
+    } catch (const std::exception&) {
+    }
+
+    return currentPath;
+}
+
+bool ContainsTextIgnoreCase(std::string_view haystack, std::string_view needle) {
+    if (needle.empty()) {
+        return true;
+    }
+
+    const auto it = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), [](char left, char right) {
+        return std::tolower(static_cast<unsigned char>(left)) == std::tolower(static_cast<unsigned char>(right));
+    });
+    return it != haystack.end();
+}
+
+bool DoesFontPickerOptionMatchSearch(const FontPickerOption& option, const std::string& searchQuery) {
+    if (searchQuery.empty()) {
+        return true;
+    }
+
+    const std::string label = GetFontPickerOptionLabel(option);
+    return ContainsTextIgnoreCase(label, searchQuery) || ContainsTextIgnoreCase(option.path, searchQuery);
 }
 
 const FontPickerOption* FindMatchingFontPickerOption(const std::vector<FontPickerOption>& options, const std::string& path) {
@@ -188,7 +263,7 @@ const FontPickerOption* FindMatchingFontPickerOption(const std::vector<FontPicke
         if (option.path.empty()) {
             continue;
         }
-        if (EqualsIgnoreCase(option.path, normalizedPath)) {
+        if (PathsEqualIgnoreCase(option.path, normalizedPath)) {
             return &option;
         }
     }
@@ -216,7 +291,12 @@ bool ApplyFontPickerPathValue(FontPickerUiState& state, const std::vector<FontPi
     state.customPath = normalizedPath;
     state.editingCustom = (FindMatchingFontPickerOption(options, normalizedPath) == nullptr);
 
-    if (targetPath == normalizedPath) {
+    if (PathsEqualIgnoreCase(targetPath, normalizedPath)) {
+        if (targetPath != normalizedPath) {
+            targetPath = normalizedPath;
+            onChanged();
+            return true;
+        }
         return false;
     }
 
@@ -314,9 +394,9 @@ std::optional<std::string> BrowseForFontPath(const char* dialogTitle, const std:
     }
 
     OPENFILENAMEW ofn = {};
-    WCHAR selectedFileBuffer[MAX_PATH] = {};
-    if (!selectedFile.empty()) {
-        wcsncpy_s(selectedFileBuffer, selectedFile.c_str(), MAX_PATH - 1);
+    std::vector<wchar_t> selectedFileBuffer(32768, L'\0');
+    if (!selectedFile.empty() && selectedFile.size() < selectedFileBuffer.size()) {
+        wcsncpy_s(selectedFileBuffer.data(), selectedFileBuffer.size(), selectedFile.c_str(), _TRUNCATE);
     }
 
     std::wstring dialogTitleWide = Utf8ToWide(dialogTitle == nullptr ? "Select Font" : std::string(dialogTitle));
@@ -324,8 +404,8 @@ std::optional<std::string> BrowseForFontPath(const char* dialogTitle, const std:
 
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = GetSafeFileDialogOwner(g_minecraftHwnd.load());
-    ofn.lpstrFile = selectedFileBuffer;
-    ofn.nMaxFile = static_cast<DWORD>(std::size(selectedFileBuffer));
+    ofn.lpstrFile = selectedFileBuffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(selectedFileBuffer.size());
     ofn.lpstrFilter = kFilter;
     ofn.nFilterIndex = 1;
     ofn.lpstrTitle = dialogTitleWide.c_str();
@@ -333,7 +413,14 @@ std::optional<std::string> BrowseForFontPath(const char* dialogTitle, const std:
     ofn.lpstrInitialDir = initialDir.empty() ? nullptr : initialDir.c_str();
 
     if (!GetOpenFileNameW(&ofn)) {
-        const DWORD dialogError = CommDlgExtendedError();
+        DWORD dialogError = CommDlgExtendedError();
+        if (dialogError == FNERR_INVALIDFILENAME && !selectedFileBuffer.empty() && selectedFileBuffer[0] != L'\0') {
+            selectedFileBuffer[0] = L'\0';
+            if (GetOpenFileNameW(&ofn)) {
+                return WideToUtf8(selectedFileBuffer.data());
+            }
+            dialogError = CommDlgExtendedError();
+        }
         if (dialogError != 0) {
             Log("Font picker dialog failed for '" + std::string(dialogTitle == nullptr ? "Select Font" : dialogTitle) +
                 "' with CommDlgExtendedError=" + std::to_string(dialogError));
@@ -341,7 +428,7 @@ std::optional<std::string> BrowseForFontPath(const char* dialogTitle, const std:
         return std::nullopt;
     }
 
-    return WideToUtf8(selectedFileBuffer);
+    return WideToUtf8(selectedFileBuffer.data());
 }
 
 bool RenderFontPickerCombo(const char* comboId, float width, const std::vector<FontPickerOption>& options, std::string& currentPath,
@@ -350,31 +437,86 @@ bool RenderFontPickerCombo(const char* comboId, float width, const std::vector<F
 
     const FontPickerOption* selectedOption = FindMatchingFontPickerOption(options, currentPath);
     const bool usingCustomSelection = IsFontPickerUsingCustomSelection(options, state, currentPath);
-    const char* previewLabelKey = usingCustomSelection || selectedOption == nullptr ? "font.preset.custom" : selectedOption->labelKey;
+    const std::string previewLabel = usingCustomSelection || selectedOption == nullptr
+        ? GetFontPickerCustomPreviewLabel(currentPath)
+        : GetFontPickerOptionLabel(*selectedOption);
 
     ImGui::SetNextItemWidth(width);
-    if (ImGui::BeginCombo(comboId, trc(previewLabelKey))) {
-        for (const FontPickerOption& option : options) {
-            const bool isSelected = !usingCustomSelection && selectedOption != nullptr && EqualsIgnoreCase(option.path, selectedOption->path);
-            if (ImGui::Selectable(trc(option.labelKey), isSelected)) {
-                ApplyFontPickerPathValue(state, options, currentPath, option.path, onChanged);
-            }
-            if (isSelected) {
-                ImGui::SetItemDefaultFocus();
-            }
+    const float popupWidth = (std::max)(width, 360.0f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(popupWidth, 0.0f), ImVec2(popupWidth, 420.0f));
+    if (ImGui::BeginCombo(comboId, previewLabel.c_str())) {
+        const bool comboJustOpened = !state.comboOpen;
+        state.comboOpen = true;
+        if (comboJustOpened) {
+            state.searchQuery.clear();
+            state.focusSearch = true;
         }
 
-        if (ImGui::Selectable(trc("font.preset.custom"), usingCustomSelection)) {
+        const std::string searchInputId = std::string("##FontPickerSearch") + comboId;
+        if (state.focusSearch) {
+            ImGui::SetKeyboardFocusHere();
+            state.focusSearch = false;
+        }
+
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        ImGui::InputTextWithHint(searchInputId.c_str(), trc("font.search_hint"), &state.searchQuery);
+        ImGui::Spacing();
+
+        bool anyFilteredOptions = false;
+
+        auto renderSection = [&](FontPickerOptionSection section, const char* headerKey) {
+            bool renderedHeader = false;
+
+            for (const FontPickerOption& option : options) {
+                if (option.section != section || !DoesFontPickerOptionMatchSearch(option, state.searchQuery)) {
+                    continue;
+                }
+
+                if (!renderedHeader) {
+                    ImGui::SeparatorText(trc(headerKey));
+                    renderedHeader = true;
+                }
+
+                anyFilteredOptions = true;
+                const bool isSelected = !usingCustomSelection && selectedOption != nullptr && PathsEqualIgnoreCase(option.path, selectedOption->path);
+                const std::string itemLabel = GetFontPickerOptionLabel(option);
+                const std::string selectableLabel = itemLabel + "##" + option.path;
+                if (ImGui::Selectable(selectableLabel.c_str(), isSelected, 0, ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+                    state.searchQuery.clear();
+                    ApplyFontPickerPathValue(state, options, currentPath, option.path, onChanged);
+                }
+                if (isSelected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+        };
+
+        renderSection(FontPickerOptionSection::Special, "font.section.special");
+        renderSection(FontPickerOptionSection::Bundled, "font.section.predefined");
+        renderSection(FontPickerOptionSection::System, "font.section.system");
+
+        if (!anyFilteredOptions && !state.searchQuery.empty()) {
+            ImGui::TextDisabled("%s", trc("font.search_no_results"));
+        }
+
+        ImGui::SeparatorText(trc("font.section.custom"));
+        if (ImGui::Selectable(trc("font.preset.custom"), usingCustomSelection, 0, ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+            state.searchQuery.clear();
             state.editingCustom = true;
             if (state.customPath.empty() && selectedOption == nullptr) {
                 state.customPath = currentPath;
             }
         }
+
         if (usingCustomSelection) {
             ImGui::SetItemDefaultFocus();
         }
 
         ImGui::EndCombo();
+    } else {
+        state.comboOpen = false;
+        state.focusSearch = false;
+        state.searchQuery.clear();
     }
 
     return IsFontPickerUsingCustomSelection(options, state, currentPath);

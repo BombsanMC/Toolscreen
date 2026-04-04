@@ -13,10 +13,18 @@ struct BundledFontAsset {
     WORD resourceId = 0;
 };
 
+struct SystemFontAsset {
+    std::string displayName;
+    std::string path;
+};
+
 const std::vector<BundledFontAsset>& GetBundledFontAssets();
 const BundledFontAsset* FindBundledFontAssetById(std::string_view id);
 const BundledFontAsset* FindBundledFontAssetByPath(const std::string& path, const std::wstring& toolscreenPath);
+const std::vector<SystemFontAsset>& GetSystemFontAssets();
+void LoadSystemFontAssets();
 
+bool PathsEqualIgnoreCase(const std::string& left, const std::string& right);
 std::string ResolveToolscreenRelativePath(const std::string& path, const std::wstring& toolscreenPath);
 std::string NormalizeBundledFontPath(const std::string& path, const std::wstring& toolscreenPath);
 bool NormalizeBundledFontPathInPlace(std::string& path, const std::wstring& toolscreenPath);
