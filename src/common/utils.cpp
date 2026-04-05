@@ -2796,8 +2796,12 @@ void ScreenshotToClipboard(int width, int height) {
     Log("Taking screenshot at " + std::to_string(width) + "x" + std::to_string(height) + " (" + FormatByteCount(bufferSize) + ").");
     std::vector<BYTE> pixels(bufferSize);
 
+    GLint previousPackRowLength = 0;
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &previousPackRowLength);
     glReadBuffer(GL_BACK);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glPixelStorei(GL_PACK_ROW_LENGTH, previousPackRowLength);
 
     for (size_t i = 0; i < bufferSize; i += 4) {
         std::swap(pixels[i + 0], pixels[i + 2]);

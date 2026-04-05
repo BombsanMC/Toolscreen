@@ -127,6 +127,7 @@ struct GLState {
     GLint blend_eq_rgb, blend_eq_alpha;
     GLint draw_buffer;
     GLint read_buffer;
+    GLint pack_row_length;
 
     GLint vp[4];
     GLint sb[4];

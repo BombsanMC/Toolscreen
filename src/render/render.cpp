@@ -739,12 +739,15 @@ static bool SubmitSameThreadVirtualCameraFrameSync(GLuint srcTexture, int width,
     GLint previousReadFbo = 0;
     GLint previousPackBuffer = 0;
     GLint previousPackAlignment = 0;
+    GLint previousPackRowLength = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFbo);
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer);
     glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &previousPackRowLength);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sameThreadVirtualCameraReadFBO);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_sameThreadVirtualCameraLumaTexture, 0);
@@ -755,6 +758,7 @@ static bool SubmitSameThreadVirtualCameraFrameSync(GLuint srcTexture, int width,
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, previousPackBuffer);
+    glPixelStorei(GL_PACK_ROW_LENGTH, previousPackRowLength);
     glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
 
     return WriteVirtualCameraFrameNV12Planes(yPlane.data(), uvPlane.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height),
@@ -1882,6 +1886,7 @@ void SaveGLState(GLState* s) {
         glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s->blend_eq_alpha);
         glGetIntegerv(GL_DRAW_BUFFER, &s->draw_buffer);
         glGetIntegerv(GL_READ_BUFFER, &s->read_buffer);
+        glGetIntegerv(GL_PACK_ROW_LENGTH, &s->pack_row_length);
 
         glGetIntegerv(GL_VIEWPORT, &s->vp[0]);
         glGetIntegerv(GL_SCISSOR_BOX, s->sb);
@@ -1965,6 +1970,7 @@ void RestoreGLState(const GLState& s) {
         glDepthMask(s.depth_mask);
         glDrawBuffer(s.draw_buffer);
         glReadBuffer(s.read_buffer);
+        glPixelStorei(GL_PACK_ROW_LENGTH, s.pack_row_length);
 
         if (oglViewport)
             oglViewport(s.vp[0], s.vp[1], s.vp[2], s.vp[3]);
@@ -4942,12 +4948,15 @@ void CaptureSameThreadVirtualCameraBackbufferFrame(int sourceW, int sourceH, boo
     GLint previousReadFbo = 0;
     GLint previousPackBuffer = 0;
     GLint previousPackAlignment = 0;
+    GLint previousPackRowLength = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFbo);
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer);
     glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &previousPackRowLength);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_sameThreadVirtualCameraReadFBO);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot->yTexture, 0);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, slot->yPbo);
@@ -4959,6 +4968,7 @@ void CaptureSameThreadVirtualCameraBackbufferFrame(int sourceW, int sourceH, boo
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, previousPackBuffer);
+    glPixelStorei(GL_PACK_ROW_LENGTH, previousPackRowLength);
     glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
 
     if (slot->fence && glIsSync(slot->fence)) { glDeleteSync(slot->fence); }

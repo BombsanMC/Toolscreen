@@ -2124,9 +2124,13 @@ static bool MT_DetectContentSynchronously(MirrorInstance* inst, GLuint sourceFbo
     }
 
     GLint previousReadFramebuffer = 0;
+    GLint previousPackRowLength = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &previousPackRowLength);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFbo);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
     glReadPixels(0, 0, sourceW, sourceH, GL_RGBA, GL_UNSIGNED_BYTE, inst->pixelBuffer.data());
+    glPixelStorei(GL_PACK_ROW_LENGTH, previousPackRowLength);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
 
     const unsigned char* pixels = inst->pixelBuffer.data();
@@ -2205,8 +2209,12 @@ static void MT_QueueContentReadback(MT_MirrorFbos& fb, GLuint sourceFbo, int sou
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
 
+    GLint previousPackRowLength = 0;
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &previousPackRowLength);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, fb.contentDetectionPBO);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
     glReadPixels(0, 0, detW, detH, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glPixelStorei(GL_PACK_ROW_LENGTH, previousPackRowLength);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
