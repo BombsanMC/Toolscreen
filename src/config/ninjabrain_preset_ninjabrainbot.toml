@@ -103,11 +103,11 @@ failureOffsetX = 0.0
 failureOffsetY = 0.0
 failureDrawOrder = 0
 alwaysShowBoat = false
+showBoatStateInTopBar = false
 columns = [
     { id = 'coords', header = 'Chunk', show = true, staticWidth = 0 },
     { id = 'certainty', header = '%', show = true, staticWidth = 0 },
     { id = 'distance', header = 'Dist.', show = true, staticWidth = 0 },
     { id = 'nether', header = 'Nether', show = true, staticWidth = 0 },
     { id = 'angle', header = 'Angle', show = true, staticWidth = 0 },
-    { id = 'boat', header = 'Boat', show = false, staticWidth = 0 },
 ]

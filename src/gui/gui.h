@@ -17,6 +17,7 @@
 
 #include "common/video_media.h"
 #include "config/config_defaults.h"
+#include "features/ninjabrain_data.h"
 #include "imgui.h"
 #include "version.h"
 
@@ -594,6 +595,7 @@ struct NinjabrainOverlayConfig {
     Color accentColor = { 0.0f, 1.0f, 0.0f, 1.0f };
     Color buttonColor = { 0.2314f, 0.2588f, 0.3020f, 1.0f };
     int outlineWidth = 0;
+    Color outlineColor = { 0.0f, 0.0f, 0.0f, 0.8627f };
     Color textColor = { 0.8980f, 0.8980f, 0.8980f, 1.0f };
     Color dataColor = { 1.0f, 1.0f, 1.0f, 1.0f };
     Color titleTextColor = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -653,6 +655,7 @@ struct NinjabrainOverlayConfig {
     float throwsMarginBottom = 0.0f;
     float throwsHeaderPaddingY = 3.0f;
     float throwsRowPaddingY = 3.0f;
+    int eyeThrowRows = 3;
     std::string throwsAnchor = "topLeft";
     float throwsOffsetX = 0.0f;
     float throwsOffsetY = 0.0f;
@@ -667,13 +670,16 @@ struct NinjabrainOverlayConfig {
     float failureOffsetY = 0.0f;
     int failureDrawOrder = 0;
     bool alwaysShowBoat = false;
+    bool showBoatStateInTopBar = false;
+    float boatStateSize = 20.0f;
+    float boatStateMarginRight = 8.0f;
+    float boatStateMarginY = 2.0f;
     std::vector<NinjabrainColumn> columns = {
         {"coords", "Chunk", true},
         {"certainty", "%",        true},
         {"distance", "Dist.", true},
         {"nether", "Nether", true},
         {"angle", "Angle", true},
-        {"boat", "Boat", false},
     };
 };
 struct Config {

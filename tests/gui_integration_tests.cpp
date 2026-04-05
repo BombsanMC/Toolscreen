@@ -1656,6 +1656,7 @@ void PopulateRichConfigFixture() {
     g_config.ninjabrainOverlay.versionTextColor = { 0.65f, 0.66f, 0.67f, 1.0f };
     g_config.ninjabrainOverlay.showDirectionToStronghold = false;
     g_config.ninjabrainOverlay.textColor = { 0.55f, 0.56f, 0.57f, 1.0f };
+    g_config.ninjabrainOverlay.outlineColor = { 0.08f, 0.09f, 0.10f, 0.72f };
     g_config.ninjabrainOverlay.certaintyColor = { 0.12f, 0.98f, 0.34f, 1.0f };
     g_config.ninjabrainOverlay.certaintyMidColor = { 0.94f, 0.88f, 0.20f, 1.0f };
     g_config.ninjabrainOverlay.certaintyLowColor = { 0.82f, 0.18f, 0.22f, 1.0f };
@@ -1672,6 +1673,11 @@ void PopulateRichConfigFixture() {
     g_config.ninjabrainOverlay.failureMarginLeft = 21.0f;
     g_config.ninjabrainOverlay.failureMarginRight = 13.0f;
     g_config.ninjabrainOverlay.sidePadding = 18.0f;
+    g_config.ninjabrainOverlay.eyeThrowRows = 6;
+    g_config.ninjabrainOverlay.showBoatStateInTopBar = true;
+    g_config.ninjabrainOverlay.boatStateSize = 26.0f;
+    g_config.ninjabrainOverlay.boatStateMarginRight = 14.0f;
+    g_config.ninjabrainOverlay.boatStateMarginY = 5.0f;
 
     MirrorConfig verifierMirror;
     verifierMirror.name = kVerifierMirrorName;
@@ -2197,6 +2203,7 @@ void VerifyRichWindowOverlays() {
     ExpectColorNear(ninjabrain.versionTextColor, { 0.65f, 0.66f, 0.67f, 1.0f }, "Expected Ninjabrain version text color to roundtrip.");
     Expect(!ninjabrain.showDirectionToStronghold, "Expected Ninjabrain direction-to-stronghold toggle to roundtrip.");
     ExpectColorNear(ninjabrain.textColor, { 0.55f, 0.56f, 0.57f, 1.0f }, "Expected Ninjabrain header text color to roundtrip.");
+    ExpectColorNear(ninjabrain.outlineColor, { 0.08f, 0.09f, 0.10f, 0.72f }, "Expected Ninjabrain text outline color to roundtrip.");
     ExpectColorNear(ninjabrain.certaintyColor, { 0.12f, 0.98f, 0.34f, 1.0f }, "Expected Ninjabrain certainty high color to roundtrip.");
     ExpectColorNear(ninjabrain.certaintyMidColor, { 0.94f, 0.88f, 0.20f, 1.0f }, "Expected Ninjabrain certainty mid color to roundtrip.");
     ExpectColorNear(ninjabrain.certaintyLowColor, { 0.82f, 0.18f, 0.22f, 1.0f }, "Expected Ninjabrain certainty low color to roundtrip.");
@@ -2213,6 +2220,11 @@ void VerifyRichWindowOverlays() {
     ExpectFloatNear(ninjabrain.failureMarginLeft, 21.0f, "Expected Ninjabrain failed-result left margin to roundtrip.");
     ExpectFloatNear(ninjabrain.failureMarginRight, 13.0f, "Expected Ninjabrain failed-result right margin to roundtrip.");
     ExpectFloatNear(ninjabrain.sidePadding, 18.0f, "Expected Ninjabrain sidePadding to roundtrip.");
+    Expect(ninjabrain.eyeThrowRows == 6, "Expected Ninjabrain eyeThrowRows to roundtrip.");
+    Expect(ninjabrain.showBoatStateInTopBar, "Expected Ninjabrain showBoatStateInTopBar to roundtrip.");
+    ExpectFloatNear(ninjabrain.boatStateSize, 26.0f, "Expected Ninjabrain boatStateSize to roundtrip.");
+    ExpectFloatNear(ninjabrain.boatStateMarginRight, 14.0f, "Expected Ninjabrain boatStateMarginRight to roundtrip.");
+    ExpectFloatNear(ninjabrain.boatStateMarginY, 5.0f, "Expected Ninjabrain boatStateMarginY to roundtrip.");
 }
 
 void VerifyRichBrowserOverlays() {

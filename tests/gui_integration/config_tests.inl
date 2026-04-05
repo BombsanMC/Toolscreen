@@ -115,8 +115,10 @@ void RunConfigLoadEmbeddedNinjabrainPresetsTest(TestRunMode runMode = TestRunMod
         "Expected the compact preset overlay to stay on the compact layout.");
     Expect(compactPreset->overlay.shownPredictions == 1,
         "Expected the compact preset to show a single prediction row.");
-    Expect(compactPreset->overlay.columns.size() == 6,
-        "Expected the compact preset to define the legacy six-column layout.");
+    Expect(compactPreset->overlay.columns.size() == 5,
+        "Expected the compact preset to define the current five-column layout.");
+    Expect(!compactPreset->overlay.showBoatStateInTopBar,
+        "Expected the compact preset to keep the top-bar boat state disabled by default.");
     Expect(compactPreset->overlay.columns.front().header == "Location",
         "Expected the compact preset to rename the coords column header to Location.");
 

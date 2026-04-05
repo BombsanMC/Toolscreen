@@ -30,6 +30,7 @@ subpixelNegativeColor = [ 204, 110, 114 ]
 outlineWidth = 1
 overlayScale = 0.30
 shownPredictions = 1
+showBoatStateInTopBar = false
 rowSpacing = 10.0
 colSpacing = 30.0
 sidePadding = 0.0
@@ -39,5 +40,4 @@ columns = [
     { id = 'distance', header = 'Dist.', show = true, staticWidth = 0 },
     { id = 'nether', header = 'Nether', show = true, staticWidth = 0 },
     { id = 'angle', header = 'Angle', show = true, staticWidth = 0 },
-    { id = 'boat', header = 'Boat', show = false, staticWidth = 0 },
 ]

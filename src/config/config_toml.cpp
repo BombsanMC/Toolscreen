@@ -2060,6 +2060,7 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("accentColor",          ColorToTomlArray(o.accentColor));
         nb.insert("buttonColor",          ColorToTomlArray(o.buttonColor));
         nb.insert("outlineWidth",         o.outlineWidth);
+        nb.insert("outlineColor",         ColorToTomlArray(o.outlineColor));
         nb.insert("textColor",            ColorToTomlArray(o.textColor));
         nb.insert("dataColor",            ColorToTomlArray(o.dataColor));
         nb.insert("titleTextColor",       ColorToTomlArray(o.titleTextColor));
@@ -2079,6 +2080,10 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("showAllPreds",         o.showAllPreds);
         nb.insert("alwaysShow",           o.alwaysShow);
         nb.insert("alwaysShowBoat",       o.alwaysShowBoat);
+        nb.insert("showBoatStateInTopBar", o.showBoatStateInTopBar);
+        nb.insert("boatStateSize",        o.boatStateSize);
+        nb.insert("boatStateMarginRight", o.boatStateMarginRight);
+        nb.insert("boatStateMarginY",     o.boatStateMarginY);
         nb.insert("angleDisplay",         o.angleDisplay);
         nb.insert("fontAntialiasing",     o.fontAntialiasing);
         nb.insert("rowSpacing",           o.rowSpacing);
@@ -2116,6 +2121,7 @@ void ConfigToToml(const Config& config, toml::table& out) {
         nb.insert("throwsMarginBottom",   o.throwsMarginBottom);
         nb.insert("throwsHeaderPaddingY", o.throwsHeaderPaddingY);
         nb.insert("throwsRowPaddingY",    o.throwsRowPaddingY);
+        nb.insert("eyeThrowRows",         o.eyeThrowRows);
         nb.insert("throwsAnchor",         o.throwsAnchor);
         nb.insert("throwsOffsetX",        o.throwsOffsetX);
         nb.insert("throwsOffsetY",        o.throwsOffsetY);
@@ -2337,6 +2343,7 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.accentColor          = ColorFromTomlArray(nb->get_as<toml::array>("accentColor"),    Color{0.31f,0.86f,0.31f,1.0f});
         c.buttonColor          = ColorFromTomlArray(nb->get_as<toml::array>("buttonColor"),    Color{0.23f,0.26f,0.30f,1.0f});
         c.outlineWidth         = GetOr(*nb, "outlineWidth",         0);
+        c.outlineColor         = ColorFromTomlArray(nb->get_as<toml::array>("outlineColor"),   Color{0.0f,0.0f,0.0f,0.8627f});
         c.textColor            = ColorFromTomlArray(nb->get_as<toml::array>("textColor"),      Color{0.76f,0.76f,0.76f,1.0f});
         c.dataColor            = ColorFromTomlArray(nb->get_as<toml::array>("dataColor"),      Color{1.0f,1.0f,1.0f,1.0f});
         c.titleTextColor       = ColorFromTomlArray(nb->get_as<toml::array>("titleTextColor"), c.dataColor);
@@ -2357,8 +2364,12 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.showEyeOverlay       = GetOr(*nb, "showEyeOverlay",       true);
         c.shownPredictions     = GetOr(*nb, "shownPredictions",     5);
         c.showAllPreds         = GetOr(*nb, "showAllPreds",         false);
-        c.alwaysShow          = GetOr(*nb, "alwaysShow",           false);
+        c.alwaysShow           = GetOr(*nb, "alwaysShow",           false);
         c.alwaysShowBoat       = GetOr(*nb, "alwaysShowBoat",       false);
+        c.showBoatStateInTopBar = GetOr(*nb, "showBoatStateInTopBar", false);
+        c.boatStateSize        = GetOr(*nb, "boatStateSize",        20.0f);
+        c.boatStateMarginRight = GetOr(*nb, "boatStateMarginRight", 8.0f);
+        c.boatStateMarginY     = GetOr(*nb, "boatStateMarginY",     2.0f);
         c.angleDisplay         = GetOr(*nb, "angleDisplay",         1);
         c.fontAntialiasing     = GetOr(*nb, "fontAntialiasing",     true);
         c.rowSpacing           = GetOr(*nb, "rowSpacing",           4.0f);
@@ -2409,6 +2420,7 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
             + (nb->contains("throwsSectionPaddingY") ? legacyThrowsSectionPaddingY : 0.0f);
         c.throwsHeaderPaddingY = GetOr(*nb, "throwsHeaderPaddingY", 3.0f);
         c.throwsRowPaddingY    = GetOr(*nb, "throwsRowPaddingY",    3.0f);
+        c.eyeThrowRows         = GetOr(*nb, "eyeThrowRows",         3);
         c.throwsAnchor         = GetStringOr(*nb, "throwsAnchor", "topLeft");
         c.throwsOffsetX        = GetOr(*nb, "throwsOffsetX", 0.0f);
         c.throwsOffsetY        = GetOr(*nb, "throwsOffsetY", 0.0f);
@@ -2455,6 +2467,9 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.resultsOffsetX = std::clamp(c.resultsOffsetX, 0.0f, 1000.0f);
         c.resultsOffsetY = std::clamp(c.resultsOffsetY, 0.0f, 1000.0f);
         c.resultsDrawOrder = std::clamp(c.resultsDrawOrder, 0, 32);
+        c.boatStateSize = std::clamp(c.boatStateSize, 8.0f, 128.0f);
+        c.boatStateMarginRight = std::clamp(c.boatStateMarginRight, 0.0f, 160.0f);
+        c.boatStateMarginY = std::clamp(c.boatStateMarginY, 0.0f, 48.0f);
         if (c.informationMessagesPlacement != "top" && c.informationMessagesPlacement != "middle" &&
             c.informationMessagesPlacement != "bottom") {
             c.informationMessagesPlacement = "middle";
@@ -2480,6 +2495,7 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         c.throwsMarginBottom = std::clamp(c.throwsMarginBottom, 0.0f, 160.0f);
         c.throwsHeaderPaddingY = std::clamp(c.throwsHeaderPaddingY, 0.0f, 48.0f);
         c.throwsRowPaddingY = std::clamp(c.throwsRowPaddingY, 0.0f, 48.0f);
+        c.eyeThrowRows = std::clamp(c.eyeThrowRows, 1, static_cast<int>(kNinjabrainThrowLimit));
         if (c.throwsAnchor != "topLeft" && c.throwsAnchor != "topRight" && c.throwsAnchor != "bottomLeft" && c.throwsAnchor != "bottomRight") {
             c.throwsAnchor = "topLeft";
         }
@@ -2504,6 +2520,7 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
         }
         if (auto cols = nb->get_as<toml::array>("columns")) {
             c.columns.clear();
+            bool legacyBoatColumnEnabled = false;
             for (auto& elem : *cols) {
                 if (auto ct = elem.as_table()) {
                     NinjabrainColumn col;
@@ -2511,8 +2528,15 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
                     if (auto v = ct->get_as<std::string>("header")) col.header = v->get();
                     col.show = GetOr(*ct, "show", true);
                     col.staticWidth = (std::max)(0, GetOr(*ct, "staticWidth", 0));
+                    if (col.id == "boat") {
+                        legacyBoatColumnEnabled = legacyBoatColumnEnabled || col.show;
+                        continue;
+                    }
                     c.columns.push_back(col);
                 }
+            }
+            if (!nb->contains("showBoatStateInTopBar") && legacyBoatColumnEnabled) {
+                c.showBoatStateInTopBar = true;
             }
         }
         if (c.columns.empty()) {
@@ -2522,7 +2546,6 @@ void ConfigFromToml(const toml::table& tbl, Config& config) {
                 {"distance",  "Dist.",    true},
                 {"nether",    "Nether",   true},
                 {"angle",     "Angle",    true},
-                {"boat",      "Boat",     false},
             };
         }
     }
