@@ -96,6 +96,67 @@ void RunSettingsGuiAdvancedTest(TestRunMode runMode = TestRunMode::Automated) {
     }
 }
 
+void RunSettingsSearchSubcategoryFilteringTest(TestRunMode runMode = TestRunMode::Automated) {
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    PrepareDefaultConfigForGui("settings_search_subcategory_filtering", false);
+
+    if (runMode == TestRunMode::Visual) {
+        RunVisualLoopWithNinjabrainPreview(window, "settings-search-subcategory-filtering", [&](DummyWindow& visualWindow) {
+            RenderSettingsSearchFrame(visualWindow, trc("inputs.cursor_configuration"), tr("tabs.inputs").c_str(), tr("inputs.mouse").c_str());
+        });
+        return;
+    }
+
+    RenderSettingsSearchFrame(window, trc("settings.capture_streaming"), tr("tabs.other").c_str());
+    ExpectGuiInteractionRectPresence("config.search_bar", true, "Expected the config search bar to be rendered while filtering settings.");
+    ExpectGuiInteractionRectPresence("config.section.settings.capture_streaming", true,
+                                     "Expected capture and streaming settings to remain visible for the matching section query.");
+    ExpectGuiInteractionRectPresence("config.section.settings.performance", false,
+                                     "Expected unrelated settings sections to be hidden for a capture and streaming query.");
+
+    RenderSettingsSearchFrame(window, trc("inputs.cursor_configuration"), tr("tabs.inputs").c_str(), tr("inputs.mouse").c_str());
+    ExpectGuiInteractionRectPresence("config.section.inputs.mouse.cursor_configuration", true,
+                                     "Expected the mouse cursor configuration section to remain visible for a matching query.");
+    ExpectGuiInteractionRectPresence("config.section.inputs.keyboard.key_rebinding", false,
+                                     "Expected keyboard sections to be hidden while filtering to mouse cursor configuration.");
+
+    RenderSettingsSearchFrame(window, trc("appearance.title_bar"), tr("tabs.appearance").c_str());
+    ExpectGuiInteractionRectPresence("config.section.appearance.title_bar", true,
+                                     "Expected the appearance title bar color section to remain visible for a matching appearance subsection query.");
+    ExpectGuiInteractionRectPresence("config.section.appearance.sliders_scrollbars", false,
+                                     "Expected unrelated appearance sections to be hidden for a title bar subsection query.");
+}
+
+void RunSettingsSearchSpecificOptionsTest(TestRunMode runMode = TestRunMode::Automated) {
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    PrepareDefaultConfigForGui("settings_search_specific_options", false);
+
+    if (runMode == TestRunMode::Visual) {
+        RunVisualLoopWithNinjabrainPreview(window, "settings-search-specific-options", [&](DummyWindow& visualWindow) {
+            RenderSettingsSearchFrame(visualWindow, trc("appearance.slider_grab_active"), tr("tabs.appearance").c_str());
+        });
+        return;
+    }
+
+    RenderSettingsSearchFrame(window, trc("label.fps_limit"), tr("tabs.other").c_str());
+    ExpectGuiInteractionRectPresence("config.section.settings.performance", true,
+                                     "Expected the performance section to remain visible for the FPS limit option query.");
+    ExpectGuiInteractionRectPresence("config.section.settings.capture_streaming", false,
+                                     "Expected non-matching settings sections to be hidden for the FPS limit option query.");
+
+    RenderSettingsSearchFrame(window, trc("inputs.enable_key_rebinding"), tr("tabs.inputs").c_str(), tr("inputs.keyboard").c_str());
+    ExpectGuiInteractionRectPresence("config.section.inputs.keyboard.key_rebinding", true,
+                                     "Expected the keyboard rebind section to remain visible for the enable key rebinding option query.");
+    ExpectGuiInteractionRectPresence("config.section.inputs.keyboard.key_repeat_rate", false,
+                                     "Expected key repeat controls to be hidden for the enable key rebinding option query.");
+
+    RenderSettingsSearchFrame(window, trc("appearance.slider_grab_active"), tr("tabs.appearance").c_str());
+    ExpectGuiInteractionRectPresence("config.section.appearance.sliders_scrollbars", true,
+                                     "Expected the sliders and scrollbars section to remain visible for the slider grab active option query.");
+    ExpectGuiInteractionRectPresence("config.section.appearance.window", false,
+                                     "Expected unrelated appearance sections to be hidden for the slider grab active option query.");
+}
+
 void RunProfilerUnspecifiedBreakdownTest(TestRunMode runMode = TestRunMode::Automated) {
     (void)runMode;
 

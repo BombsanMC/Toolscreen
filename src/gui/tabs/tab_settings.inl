@@ -25,77 +25,170 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.other"))) {
 
     SliderCtrlClickTip();
 
-    ImGui::Spacing();
-    ImGui::SeparatorText(trc("settings.capture_streaming"));
-    if (ImGui::Checkbox(trc("settings.hide_animations_in_game"), &g_config.hideAnimationsInGame)) { g_configIsDirty = true; }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.hide_animations_in_game"));
+    const bool showAllSettingsSections = MatchesConfigTopTabCategorySearch(ConfigTopTabId::Settings, s_configGuiSearchState.query);
+    const bool showCaptureStreamingSection = ShouldRenderConfigSearchSection(showAllSettingsSections, {
+        trc("settings.capture_streaming"),
+        trc("settings.hide_animations_in_game"),
+        trc("settings.enable_virtual_camera"),
+        "capture",
+        "streaming",
+        "virtual camera"
+    });
+    const bool showAdvancedSettingsSection = ShouldRenderConfigSearchSection(showAllSettingsSections, {
+        trc("config_mode.advanced"),
+        trc("settings.auto_borderless"),
+        trc("settings.restore_windowed_mode_on_fullscreen_exit"),
+        "advanced",
+        "borderless",
+        "fullscreen"
+    });
+    const bool showPerformanceSection = ShouldRenderConfigSearchSection(showAllSettingsSections, {
+        trc("settings.performance"),
+        trc("label.fps_limit"),
+        trc("settings.video_cache_budget_mib"),
+        "performance",
+        "fps",
+        "fps limit",
+        "video cache"
+    });
+    const bool showFontSection = ShouldRenderConfigSearchSection(showAllSettingsSections, {
+        trc("label.font"),
+        trc("label.font_path"),
+        trc("label.scale"),
+        "font",
+        "font path",
+        "gui scale"
+    });
+    const bool showAllDebugSections = showAllSettingsSections ||
+                                      (IsConfigGuiSearchActive() && DoesActiveConfigSearchMatch({
+                                          trc("settings.debug_options"),
+                                          trc("settings.debug_mpeg_video_memory"),
+                                          trc("settings.advanced_logging"),
+                                          "debug",
+                                          "logging"
+                                      }));
+    const bool showDebugOptionsSection = ShouldRenderConfigSearchSection(showAllDebugSections, {
+        trc("settings.debug_options"),
+        trc("settings.mirrors_match_colorspace"),
+        trc("settings.limit_capture_framerate"),
+        trc("settings.delay_rendering_until_finished"),
+        trc("settings.show_performance_overlay"),
+        trc("settings.show_profiler"),
+        trc("settings.profiler_scale"),
+        trc("settings.show_hotkey_debug"),
+        trc("settings.fake_cursor_overlay"),
+        trc("settings.show_texture_grid"),
+        "profiler",
+        "debug"
+    });
+    const bool showDebugVideoMemorySection = ShouldRenderConfigSearchSection(showAllDebugSections, {
+        trc("settings.debug_mpeg_video_memory"),
+        trc("settings.debug_mpeg_video_memory_uploaded_clips"),
+        trc("settings.debug_mpeg_video_memory_uploaded_textures"),
+        trc("settings.debug_mpeg_video_memory_vram"),
+        "mpeg",
+        "video memory",
+        "vram"
+    });
+    const bool showAdvancedLoggingSection = ShouldRenderConfigSearchSection(showAllDebugSections, {
+        trc("settings.advanced_logging"),
+        trc("settings.enable_verbose_logging"),
+        trc("settings.log_mode_switch"),
+        trc("settings.log_animation"),
+        trc("settings.log_hotkey"),
+        trc("settings.log_obs"),
+        trc("settings.log_window_overlay"),
+        trc("settings.log_file_monitor"),
+        trc("settings.log_image_monitor"),
+        trc("settings.log_performance"),
+        trc("settings.log_texture_ops"),
+        trc("settings.log_gui"),
+        trc("settings.log_init"),
+        trc("settings.log_cursor_textures"),
+        "logging",
+        "verbose logging"
+    });
 
-    bool driverInstalled = IsVirtualCameraDriverInstalled();
-    bool inUseByOBS = driverInstalled && IsVirtualCameraInUseByOBS();
-    ImGui::BeginDisabled(!driverInstalled || inUseByOBS);
-    bool vcEnabled = g_config.debug.virtualCameraEnabled;
-    if (ImGui::Checkbox(trc("settings.enable_virtual_camera"), &vcEnabled)) {
-        g_config.debug.virtualCameraEnabled = vcEnabled;
-        g_configIsDirty = true;
-        if (vcEnabled) {
-            uint32_t vcWidth = 0;
-            uint32_t vcHeight = 0;
-            if (GetPreferredVirtualCameraResolution(vcWidth, vcHeight)) {
-                StartVirtualCamera(vcWidth, vcHeight);
+    if (showCaptureStreamingSection) {
+        ImGui::Spacing();
+        ImGui::SeparatorText(trc("settings.capture_streaming"));
+        RecordConfigSearchSectionInteractionRect("config.section.settings.capture_streaming");
+        if (ImGui::Checkbox(trc("settings.hide_animations_in_game"), &g_config.hideAnimationsInGame)) { g_configIsDirty = true; }
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.hide_animations_in_game"));
+
+        bool driverInstalled = IsVirtualCameraDriverInstalled();
+        bool inUseByOBS = driverInstalled && IsVirtualCameraInUseByOBS();
+        ImGui::BeginDisabled(!driverInstalled || inUseByOBS);
+        bool vcEnabled = g_config.debug.virtualCameraEnabled;
+        if (ImGui::Checkbox(trc("settings.enable_virtual_camera"), &vcEnabled)) {
+            g_config.debug.virtualCameraEnabled = vcEnabled;
+            g_configIsDirty = true;
+            if (vcEnabled) {
+                uint32_t vcWidth = 0;
+                uint32_t vcHeight = 0;
+                if (GetPreferredVirtualCameraResolution(vcWidth, vcHeight)) {
+                    StartVirtualCamera(vcWidth, vcHeight);
+                }
+            } else {
+                StopVirtualCamera();
             }
+        }
+
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (!driverInstalled) {
+            ImGui::TextDisabled(trc("settings.virtual.camera_not_installed"));
+        } else if (inUseByOBS) {
+            ImGui::TextDisabled(trc("settings.virtual.camera_in_use"));
         } else {
-            StopVirtualCamera();
+            HelpMarker(trc("settings.tooltip.virtual_camera"));
         }
     }
 
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (!driverInstalled) {
-        ImGui::TextDisabled(trc("settings.virtual.camera_not_installed"));
-    } else if (inUseByOBS) {
-        ImGui::TextDisabled(trc("settings.virtual.camera_in_use"));
-    } else {
-        HelpMarker(trc("settings.tooltip.virtual_camera"));
+    if (showAdvancedSettingsSection) {
+        ImGui::Spacing();
+        ImGui::SeparatorText(trc("config_mode.advanced"));
+        RecordConfigSearchSectionInteractionRect("config.section.settings.advanced");
+        ImGui::PushID("settings_auto_borderless");
+        if (ImGui::Checkbox(trc("settings.auto_borderless"), &g_config.autoBorderless)) { g_configIsDirty = true; }
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.auto_borderless"));
+        ImGui::PopID();
+
+        if (ImGui::Checkbox(trc("settings.restore_windowed_mode_on_fullscreen_exit"), &g_config.restoreWindowedModeOnFullscreenExit)) {
+            g_configIsDirty = true;
+        }
+        ImGui::SameLine();
+        HelpMarker(trc("settings.tooltip.restore_windowed_mode_on_fullscreen_exit"));
     }
 
-    ImGui::Spacing();
-    ImGui::SeparatorText(trc("config_mode.advanced"));
-    ImGui::PushID("settings_auto_borderless");
-    if (ImGui::Checkbox(trc("settings.auto_borderless"), &g_config.autoBorderless)) { g_configIsDirty = true; }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.auto_borderless"));
-    ImGui::PopID();
+    if (showPerformanceSection) {
+        ImGui::Spacing();
+        ImGui::SeparatorText(trc("settings.performance"));
+        RecordConfigSearchSectionInteractionRect("config.section.settings.performance");
+        ImGui::Text(trc("label.fps_limit"));
+        ImGui::SetNextItemWidth(300);
+        int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
+        if (ImGui::SliderInt("##fpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
+            g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
+            g_configIsDirty = true;
+        }
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.fps_limit.advanced"));
 
-    if (ImGui::Checkbox(trc("settings.restore_windowed_mode_on_fullscreen_exit"), &g_config.restoreWindowedModeOnFullscreenExit)) {
-        g_configIsDirty = true;
+        ImGui::Spacing();
+        ImGui::Text(trc("settings.video_cache_budget_mib"));
+        ImGui::SetNextItemWidth(300);
+        int videoCacheBudgetMiB = g_config.debug.videoCacheBudgetMiB;
+        if (ImGui::SliderInt("##videoCacheBudgetMiB", &videoCacheBudgetMiB, 0, 2048,
+                             videoCacheBudgetMiB == 0 ? trc("label.disabled") : "%d MiB")) {
+            g_config.debug.videoCacheBudgetMiB = videoCacheBudgetMiB;
+            g_configIsDirty = true;
+        }
+        ImGui::SameLine();
+        HelpMarker(trc("settings.tooltip.video_cache_budget_mib"));
     }
-    ImGui::SameLine();
-    HelpMarker(trc("settings.tooltip.restore_windowed_mode_on_fullscreen_exit"));
-
-    ImGui::Spacing();
-    ImGui::SeparatorText(trc("settings.performance"));
-    ImGui::Text(trc("label.fps_limit"));
-    ImGui::SetNextItemWidth(300);
-    int fpsLimitValue = (g_config.fpsLimit == 0) ? 1001 : g_config.fpsLimit;
-    if (ImGui::SliderInt("##fpsLimit", &fpsLimitValue, 30, 1001, fpsLimitValue == 1001 ? trc("label.unlimited") : "%d fps")) {
-        g_config.fpsLimit = (fpsLimitValue == 1001) ? 0 : fpsLimitValue;
-        g_configIsDirty = true;
-    }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.fps_limit.advanced"));
-
-    ImGui::Spacing();
-    ImGui::Text(trc("settings.video_cache_budget_mib"));
-    ImGui::SetNextItemWidth(300);
-    int videoCacheBudgetMiB = g_config.debug.videoCacheBudgetMiB;
-    if (ImGui::SliderInt("##videoCacheBudgetMiB", &videoCacheBudgetMiB, 0, 2048,
-                         videoCacheBudgetMiB == 0 ? trc("label.disabled") : "%d MiB")) {
-        g_config.debug.videoCacheBudgetMiB = videoCacheBudgetMiB;
-        g_configIsDirty = true;
-    }
-    ImGui::SameLine();
-    HelpMarker(trc("settings.tooltip.video_cache_budget_mib"));
 
 /*    if (ImGui::Checkbox("Disable Fullscreen Prompt", &g_config.disableFullscreenPrompt)) { g_configIsDirty = true; }
     ImGui::SameLine();
@@ -106,39 +199,42 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.other"))) {
     ImGui::SameLine();
     HelpMarker("Disables the configure toast prompt (toast1) shown in windowed mode.");*/
 
-    ImGui::Spacing();
-    ImGui::SeparatorText(trc("label.font"));
+    if (showFontSection) {
+        ImGui::Spacing();
+        ImGui::SeparatorText(trc("label.font"));
+        RecordConfigSearchSectionInteractionRect("config.section.settings.font");
 
-    const std::vector<FontPickerOption> mainGuiFontOptions = BuildFontPickerOptions();
-    auto applyMainGuiFontChange = []() {
-        g_configIsDirty = true;
-        RequestDynamicGuiFontRefresh(true);
-    };
+        const std::vector<FontPickerOption> mainGuiFontOptions = BuildFontPickerOptions();
+        auto applyMainGuiFontChange = []() {
+            g_configIsDirty = true;
+            RequestDynamicGuiFontRefresh(true);
+        };
 
-    ImGui::Text(trc("label.font"));
-    const bool usingCustomMainGuiFont = RenderFontPickerCombo("##AdvancedMainGuiFontChoice", 300.0f, mainGuiFontOptions,
-                                                              g_config.fontPath, s_mainGuiFontPickerState, applyMainGuiFontChange);
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.font"));
+        ImGui::Text(trc("label.font"));
+        const bool usingCustomMainGuiFont = RenderFontPickerCombo("##AdvancedMainGuiFontChoice", 300.0f, mainGuiFontOptions,
+                                                                  g_config.fontPath, s_mainGuiFontPickerState, applyMainGuiFontChange);
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.font"));
 
-    if (usingCustomMainGuiFont) {
-        ImGui::Text(trc("label.font_path"));
-        RenderCustomFontPathEditor("##AdvancedFontPath", "##AdvancedMainGuiFont", 300.0f, mainGuiFontOptions,
-                                   g_config.fontPath, s_mainGuiFontPickerState, "Select Main GUI Font",
-                                   applyMainGuiFontChange);
+        if (usingCustomMainGuiFont) {
+            ImGui::Text(trc("label.font_path"));
+            RenderCustomFontPathEditor("##AdvancedFontPath", "##AdvancedMainGuiFont", 300.0f, mainGuiFontOptions,
+                                       g_config.fontPath, s_mainGuiFontPickerState, "Select Main GUI Font",
+                                       applyMainGuiFontChange);
+        }
+
+        ImGui::Text(trc("label.scale"));
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::SliderFloat("##AdvancedGuiFontScale", &g_config.appearance.guiFontScale, 0.75f, 2.0f, "%.2fx")) {
+            g_config.appearance.guiFontScale = std::clamp(g_config.appearance.guiFontScale, 0.75f, 2.0f);
+            g_configIsDirty = true;
+            RequestDynamicGuiFontRefresh(true);
+        }
+        ImGui::SameLine();
+        HelpMarker(trc("tooltip.gui_font_scale"));
+
+        ImGui::Spacing();
     }
-
-    ImGui::Text(trc("label.scale"));
-    ImGui::SetNextItemWidth(160);
-    if (ImGui::SliderFloat("##AdvancedGuiFontScale", &g_config.appearance.guiFontScale, 0.75f, 2.0f, "%.2fx")) {
-        g_config.appearance.guiFontScale = std::clamp(g_config.appearance.guiFontScale, 0.75f, 2.0f);
-        g_configIsDirty = true;
-        RequestDynamicGuiFontRefresh(true);
-    }
-    ImGui::SameLine();
-    HelpMarker(trc("tooltip.gui_font_scale"));
-
-    ImGui::Spacing();
 
     static bool s_debugUnlocked = false;
     static char s_passcodeInput[16] = "";
@@ -284,63 +380,92 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.other"))) {
             return stats;
         };
 
-        ImGui::SeparatorText(trc("settings.debug_options"));
-        drawMirrorColorspaceSetting();
-        ImGui::Spacing();
-        if (ImGui::Checkbox(trc("settings.limit_capture_framerate"), &g_config.limitCaptureFramerate)) { g_configIsDirty = true; }
-        ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.limit_capture_framerate"));
-        ImGui::Spacing();
-        if (ImGui::Checkbox(trc("settings.delay_rendering_until_finished"), &g_config.debug.delayRenderingUntilFinished)) { g_configIsDirty = true; }
-        ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.delay_rendering_until_finished"));
-        ImGui::Spacing();
-        if (ImGui::Checkbox(trc("settings.show_performance_overlay"), &g_config.debug.showPerformanceOverlay)) { g_configIsDirty = true; }
-        if (ImGui::Checkbox(trc("settings.show_profiler"), &g_config.debug.showProfiler)) { g_configIsDirty = true; }
-        ImGui::SetNextItemWidth(300);
-        if (ImGui::SliderFloat(trc("settings.profiler_scale"), &g_config.debug.profilerScale, 0.25f, 2.0f, "%.2f")) { g_configIsDirty = true; }
-        ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.profiler_scale"));
-        if (ImGui::Checkbox(trc("settings.show_hotkey_debug"), &g_config.debug.showHotkeyDebug)) { g_configIsDirty = true; }
-        if (ImGui::Checkbox(trc("settings.fake_cursor_overlay"), &g_config.debug.fakeCursor)) { g_configIsDirty = true; }
-        ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.fake_cursor"));
-        if (ImGui::Checkbox(trc("settings.show_texture_grid"), &g_config.debug.showTextureGrid)) { g_configIsDirty = true; }
-        ImGui::SameLine();
-        HelpMarker(trc("settings.tooltip.show_texture_grid"));
-
-        ImGui::Spacing();
-        ImGui::SeparatorText(trc("settings.debug_mpeg_video_memory"));
-        const MpegVideoTextureDebugStats mpegVideoStats = collectMpegVideoTextureDebugStats();
-        if (mpegVideoStats.uploadedClipCount == 0) {
-            ImGui::TextDisabled(trc("settings.debug_mpeg_video_memory_empty"));
-        } else {
-            ImGui::Text("%s %zu", trc("settings.debug_mpeg_video_memory_uploaded_clips"), mpegVideoStats.uploadedClipCount);
-            ImGui::Text("%s %zu", trc("settings.debug_mpeg_video_memory_uploaded_textures"), mpegVideoStats.uploadedTextureCount);
-            ImGui::Text("%s %.2f MiB (%llu bytes)", trc("settings.debug_mpeg_video_memory_vram"),
-                        static_cast<double>(mpegVideoStats.uploadedVramBytes) / (1024.0 * 1024.0),
-                        static_cast<unsigned long long>(mpegVideoStats.uploadedVramBytes));
-            ImGui::TextDisabled(trc("settings.debug_mpeg_video_memory_note"));
+        if (showDebugOptionsSection) {
+            ImGui::SeparatorText(trc("settings.debug_options"));
+            RecordConfigSearchSectionInteractionRect("config.section.settings.debug_options");
+            drawMirrorColorspaceSetting();
+            ImGui::Spacing();
+            if (ImGui::Checkbox(trc("settings.limit_capture_framerate"), &g_config.limitCaptureFramerate)) { g_configIsDirty = true; }
+            ImGui::SameLine();
+            HelpMarker(trc("settings.tooltip.limit_capture_framerate"));
+            ImGui::Spacing();
+            if (ImGui::Checkbox(trc("settings.delay_rendering_until_finished"), &g_config.debug.delayRenderingUntilFinished)) { g_configIsDirty = true; }
+            ImGui::SameLine();
+            HelpMarker(trc("settings.tooltip.delay_rendering_until_finished"));
+            ImGui::Spacing();
+            if (ImGui::Checkbox(trc("settings.show_performance_overlay"), &g_config.debug.showPerformanceOverlay)) { g_configIsDirty = true; }
+            if (ImGui::Checkbox(trc("settings.show_profiler"), &g_config.debug.showProfiler)) { g_configIsDirty = true; }
+            ImGui::SetNextItemWidth(300);
+            if (ImGui::SliderFloat(trc("settings.profiler_scale"), &g_config.debug.profilerScale, 0.25f, 2.0f, "%.2f")) { g_configIsDirty = true; }
+            ImGui::SameLine();
+            HelpMarker(trc("settings.tooltip.profiler_scale"));
+            if (ImGui::Checkbox(trc("settings.show_hotkey_debug"), &g_config.debug.showHotkeyDebug)) { g_configIsDirty = true; }
+            if (ImGui::Checkbox(trc("settings.fake_cursor_overlay"), &g_config.debug.fakeCursor)) { g_configIsDirty = true; }
+            ImGui::SameLine();
+            HelpMarker(trc("settings.tooltip.fake_cursor"));
+            if (ImGui::Checkbox(trc("settings.show_texture_grid"), &g_config.debug.showTextureGrid)) { g_configIsDirty = true; }
+            ImGui::SameLine();
+            HelpMarker(trc("settings.tooltip.show_texture_grid"));
         }
 
-        ImGui::Spacing();
-        if (ImGui::CollapsingHeader(trc("settings.advanced_logging"))) {
-            ImGui::Indent();
-            ImGui::TextDisabled(trc("settings.enable_verbose_logging"));
+        if (showDebugVideoMemorySection) {
             ImGui::Spacing();
-            if (ImGui::Checkbox(trc("settings.log_mode_switch"), &g_config.debug.logModeSwitch)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_animation"), &g_config.debug.logAnimation)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_hotkey"), &g_config.debug.logHotkey)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_obs"), &g_config.debug.logObs)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_window_overlay"), &g_config.debug.logWindowOverlay)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_file_monitor"), &g_config.debug.logFileMonitor)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_image_monitor"), &g_config.debug.logImageMonitor)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_performance"), &g_config.debug.logPerformance)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_texture_ops"), &g_config.debug.logTextureOps)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_gui"), &g_config.debug.logGui)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_init"), &g_config.debug.logInit)) { g_configIsDirty = true; }
-            if (ImGui::Checkbox(trc("settings.log_cursor_textures"), &g_config.debug.logCursorTextures)) { g_configIsDirty = true; }
-            ImGui::Unindent();
+            ImGui::SeparatorText(trc("settings.debug_mpeg_video_memory"));
+            RecordConfigSearchSectionInteractionRect("config.section.settings.debug_mpeg_video_memory");
+            const MpegVideoTextureDebugStats mpegVideoStats = collectMpegVideoTextureDebugStats();
+            if (mpegVideoStats.uploadedClipCount == 0) {
+                ImGui::TextDisabled(trc("settings.debug_mpeg_video_memory_empty"));
+            } else {
+                ImGui::Text("%s %zu", trc("settings.debug_mpeg_video_memory_uploaded_clips"), mpegVideoStats.uploadedClipCount);
+                ImGui::Text("%s %zu", trc("settings.debug_mpeg_video_memory_uploaded_textures"), mpegVideoStats.uploadedTextureCount);
+                ImGui::Text("%s %.2f MiB (%llu bytes)", trc("settings.debug_mpeg_video_memory_vram"),
+                            static_cast<double>(mpegVideoStats.uploadedVramBytes) / (1024.0 * 1024.0),
+                            static_cast<unsigned long long>(mpegVideoStats.uploadedVramBytes));
+                ImGui::TextDisabled(trc("settings.debug_mpeg_video_memory_note"));
+            }
+        }
+
+        if (showAdvancedLoggingSection) {
+            ImGui::Spacing();
+            const bool advancedLoggingOpen = ImGui::CollapsingHeader(
+                trc("settings.advanced_logging"),
+                GetConfigSearchSectionOpenFlags(showAllDebugSections, {
+                    trc("settings.advanced_logging"),
+                    trc("settings.enable_verbose_logging"),
+                    trc("settings.log_mode_switch"),
+                    trc("settings.log_animation"),
+                    trc("settings.log_hotkey"),
+                    trc("settings.log_obs"),
+                    trc("settings.log_window_overlay"),
+                    trc("settings.log_file_monitor"),
+                    trc("settings.log_image_monitor"),
+                    trc("settings.log_performance"),
+                    trc("settings.log_texture_ops"),
+                    trc("settings.log_gui"),
+                    trc("settings.log_init"),
+                    trc("settings.log_cursor_textures"),
+                    "logging",
+                    "verbose logging"
+                }));
+            RecordConfigSearchSectionInteractionRect("config.section.settings.advanced_logging");
+            if (advancedLoggingOpen) {
+                ImGui::Indent();
+                ImGui::TextDisabled(trc("settings.enable_verbose_logging"));
+                ImGui::Spacing();
+                if (ImGui::Checkbox(trc("settings.log_mode_switch"), &g_config.debug.logModeSwitch)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_animation"), &g_config.debug.logAnimation)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_hotkey"), &g_config.debug.logHotkey)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_obs"), &g_config.debug.logObs)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_window_overlay"), &g_config.debug.logWindowOverlay)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_file_monitor"), &g_config.debug.logFileMonitor)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_image_monitor"), &g_config.debug.logImageMonitor)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_performance"), &g_config.debug.logPerformance)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_texture_ops"), &g_config.debug.logTextureOps)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_gui"), &g_config.debug.logGui)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_init"), &g_config.debug.logInit)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_cursor_textures"), &g_config.debug.logCursorTextures)) { g_configIsDirty = true; }
+                ImGui::Unindent();
+            }
         }
     }
     ImGui::EndTabItem();

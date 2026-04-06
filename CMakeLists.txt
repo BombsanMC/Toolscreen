@@ -1015,6 +1015,8 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     profiler-unspecified-breakdown
     settings-gui-basic
     settings-gui-advanced
+    settings-search-subcategory-filtering
+    settings-search-specific-options
     settings-tab-general-default
     settings-tab-other-default
     settings-tab-supporters-default

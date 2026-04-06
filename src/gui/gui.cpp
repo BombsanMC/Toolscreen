@@ -47,6 +47,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <unordered_map>
@@ -59,6 +60,12 @@
 static constexpr const wchar_t* DISCORD_URL = L"https://discord.gg/A2v6bCJg6K";
 
 void ApplyKeyRepeatSettings();
+bool ContainsTextIgnoreCase(std::string_view haystack, std::string_view needle);
+void RecordConfigSearchSectionInteractionRect(const char* id);
+
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+bool ConsumeGuiTestConfigSearchQueryRequest(std::string& outQuery);
+#endif
 
 extern std::atomic<bool> g_gameWindowActive;
 
@@ -77,6 +84,7 @@ EyeZoomConfig GetDefaultEyeZoomConfig() { return GetDefaultEyeZoomConfigFromEmbe
 namespace {
 
 const char* s_forcedSettingsTopTabLabel = nullptr;
+const char* s_forcedSettingsNestedTabLabel = nullptr;
 const char* s_forcedSettingsInputsSubTabLabel = nullptr;
 
 struct SettingsTopTabBounceState {
@@ -116,6 +124,50 @@ struct FontPickerUiState {
 FontPickerUiState s_mainGuiFontPickerState;
 FontPickerUiState s_eyeZoomFontPickerState;
 FontPickerUiState s_ninjabrainFontPickerState;
+
+struct ConfigGuiSearchState {
+    std::string query;
+    std::string lastResolvedQuery;
+    bool lastResolvedBasicModeEnabled = false;
+    bool focusInput = false;
+    bool initialized = false;
+};
+
+ConfigGuiSearchState s_configGuiSearchState;
+
+enum class ConfigTopTabId {
+    BasicGeneral,
+    BasicOther,
+    Supporters,
+    Modes,
+    Overlays,
+    Hotkeys,
+    Inputs,
+    Settings,
+    Appearance,
+    Misc,
+};
+
+enum class ConfigNestedTabId {
+    None,
+    Mirrors,
+    Images,
+    WindowOverlays,
+    BrowserOverlays,
+    Ninjabrain,
+};
+
+enum class ConfigInputsSubTabId {
+    None,
+    Mouse,
+    Keyboard,
+};
+
+struct ConfigGuiSearchMatch {
+    ConfigTopTabId topTab = ConfigTopTabId::Modes;
+    ConfigNestedTabId nestedTab = ConfigNestedTabId::None;
+    ConfigInputsSubTabId inputsSubTab = ConfigInputsSubTabId::None;
+};
 
 std::string GetProfileButtonGlyph(const std::string& profileName) {
     if (profileName.empty()) {
@@ -177,6 +229,756 @@ void ApplySettingsTopTabBounceAnimation(const char* label) {
     const float offsetY = ComputeSettingsTopTabBounceOffsetY();
     if (std::fabs(offsetY) > 0.01f) {
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + offsetY);
+    }
+
+}
+
+    std::string_view TrimSearchQuery(std::string_view value) {
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+            value.remove_prefix(1);
+        }
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+            value.remove_suffix(1);
+        }
+        return value;
+    }
+
+    std::vector<std::string_view> TokenizeSearchQuery(std::string_view value) {
+        std::vector<std::string_view> tokens;
+        value = TrimSearchQuery(value);
+        while (!value.empty()) {
+            size_t separator = 0;
+            while (separator < value.size() && std::isspace(static_cast<unsigned char>(value[separator])) == 0) {
+                ++separator;
+            }
+
+            if (separator > 0) {
+                tokens.push_back(value.substr(0, separator));
+            }
+
+            value.remove_prefix((std::min)(separator, value.size()));
+            while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+                value.remove_prefix(1);
+            }
+        }
+        return tokens;
+    }
+
+    bool MatchesSearchTerms(std::string_view query, std::initializer_list<std::string_view> searchTerms) {
+        const std::vector<std::string_view> tokens = TokenizeSearchQuery(query);
+        if (tokens.empty()) {
+            return true;
+        }
+
+        for (const std::string_view token : tokens) {
+            bool tokenMatched = false;
+            for (const std::string_view searchTerm : searchTerms) {
+                if (searchTerm.empty()) {
+                    continue;
+                }
+                if (ContainsTextIgnoreCase(searchTerm, token)) {
+                    tokenMatched = true;
+                    break;
+                }
+            }
+
+            if (!tokenMatched) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool MatchesConfigTopTabCategorySearch(ConfigTopTabId topTab, std::string_view query) {
+        switch (topTab) {
+        case ConfigTopTabId::BasicGeneral:
+            return MatchesSearchTerms(query, { trc("tabs.general"), "general" });
+        case ConfigTopTabId::BasicOther:
+            return MatchesSearchTerms(query, { trc("tabs.other"), trc("tabs.settings"), "other", "settings" });
+        case ConfigTopTabId::Supporters:
+            return MatchesSearchTerms(query, { trc("tabs.supporters"), "supporters", "supporter", "support" });
+        case ConfigTopTabId::Modes:
+            return MatchesSearchTerms(query, { trc("tabs.modes"), "mode", "modes" });
+        case ConfigTopTabId::Overlays:
+            return MatchesSearchTerms(query, { trc("label.overlays"), "overlay", "overlays" });
+        case ConfigTopTabId::Hotkeys:
+            return MatchesSearchTerms(query, { trc("tabs.hotkeys"), "hotkey", "hotkeys" });
+        case ConfigTopTabId::Inputs:
+            return MatchesSearchTerms(query, { trc("tabs.inputs"), "input", "inputs" });
+        case ConfigTopTabId::Settings:
+            return MatchesSearchTerms(query, { trc("tabs.other"), trc("tabs.settings"), "other", "settings" });
+        case ConfigTopTabId::Appearance:
+            return MatchesSearchTerms(query, { trc("tabs.appearance"), "appearance", "theme", "themes" });
+        case ConfigTopTabId::Misc:
+            return MatchesSearchTerms(query, { trc("tabs.misc"), "misc" });
+        }
+
+        return false;
+    }
+
+    const char* GetConfigTopTabLabel(ConfigTopTabId topTab) {
+        switch (topTab) {
+        case ConfigTopTabId::BasicGeneral:
+            return trc("tabs.general");
+        case ConfigTopTabId::BasicOther:
+            return trc("tabs.other");
+        case ConfigTopTabId::Supporters:
+            return trc("tabs.supporters");
+        case ConfigTopTabId::Modes:
+            return trc("tabs.modes");
+        case ConfigTopTabId::Overlays:
+            return trc("label.overlays");
+        case ConfigTopTabId::Hotkeys:
+            return trc("tabs.hotkeys");
+        case ConfigTopTabId::Inputs:
+            return trc("tabs.inputs");
+        case ConfigTopTabId::Settings:
+            return trc("tabs.other");
+        case ConfigTopTabId::Appearance:
+            return trc("tabs.appearance");
+        case ConfigTopTabId::Misc:
+            return trc("tabs.misc");
+        }
+
+        return "";
+    }
+
+    const char* GetConfigNestedTabLabel(ConfigNestedTabId nestedTab) {
+        switch (nestedTab) {
+        case ConfigNestedTabId::None:
+            return nullptr;
+        case ConfigNestedTabId::Mirrors:
+            return trc("tabs.mirrors");
+        case ConfigNestedTabId::Images:
+            return trc("tabs.images");
+        case ConfigNestedTabId::WindowOverlays:
+            return trc("tabs.window_overlays");
+        case ConfigNestedTabId::BrowserOverlays:
+            return trc("tabs.browser_overlays");
+        case ConfigNestedTabId::Ninjabrain:
+            return trc("ninjabrain.title");
+        }
+
+        return nullptr;
+    }
+
+    const char* GetConfigInputsSubTabLabel(ConfigInputsSubTabId inputsSubTab) {
+        switch (inputsSubTab) {
+        case ConfigInputsSubTabId::None:
+            return nullptr;
+        case ConfigInputsSubTabId::Mouse:
+            return trc("inputs.mouse");
+        case ConfigInputsSubTabId::Keyboard:
+            return trc("inputs.keyboard");
+        }
+
+        return nullptr;
+    }
+
+    bool MatchesConfigInputsSubTabCategorySearch(ConfigInputsSubTabId inputsSubTab, std::string_view query) {
+        switch (inputsSubTab) {
+        case ConfigInputsSubTabId::None:
+            return false;
+        case ConfigInputsSubTabId::Mouse:
+            return MatchesSearchTerms(query, { trc("inputs.mouse"), "mouse", "cursor", "cursors" });
+        case ConfigInputsSubTabId::Keyboard:
+            return MatchesSearchTerms(query, { trc("inputs.keyboard"), "keyboard", "rebind", "rebinds" });
+        }
+
+        return false;
+    }
+
+    bool IsConfigTopTabAvailable(ConfigTopTabId topTab, bool basicModeEnabled) {
+        switch (topTab) {
+        case ConfigTopTabId::BasicGeneral:
+        case ConfigTopTabId::BasicOther:
+            return basicModeEnabled;
+        case ConfigTopTabId::Supporters:
+            return true;
+        case ConfigTopTabId::Hotkeys:
+            return !basicModeEnabled && IsResolutionChangeSupported(g_gameVersion);
+        case ConfigTopTabId::Modes:
+        case ConfigTopTabId::Overlays:
+        case ConfigTopTabId::Inputs:
+        case ConfigTopTabId::Settings:
+        case ConfigTopTabId::Appearance:
+        case ConfigTopTabId::Misc:
+            return !basicModeEnabled;
+        }
+
+        return false;
+    }
+
+    bool MatchesConfigNestedTabSearch(ConfigNestedTabId nestedTab, std::string_view query) {
+        switch (nestedTab) {
+        case ConfigNestedTabId::None:
+            return false;
+        case ConfigNestedTabId::Mirrors:
+            return MatchesSearchTerms(query, {
+                trc("tabs.mirrors"),
+                trc("mirrors.capture"),
+                trc("mirrors.matching"),
+                trc("mirrors.rendering"),
+                trc("mirrors.gradient_settings"),
+                trc("mirrors.border_settings"),
+                trc("mirrors.output_position"),
+                trc("mirrors.input_or_capture_zones"),
+                trc("mirrors.mirror_groups"),
+                trc("mirrors.group_output_position"),
+                trc("mirrors.per_item_sizing"),
+                "mirror",
+                "mirrors",
+                "mirror group",
+                "gradient",
+                "capture zone"
+            });
+        case ConfigNestedTabId::Images:
+            return MatchesSearchTerms(query, {
+                trc("tabs.images"),
+                trc("images.rendering"),
+                trc("images.cropping"),
+                trc("images.background"),
+                trc("images.color_keying"),
+                trc("images.border"),
+                "image",
+                "images",
+                "image overlay",
+                "opacity",
+                "color key"
+            });
+        case ConfigNestedTabId::WindowOverlays:
+            return MatchesSearchTerms(query, {
+                trc("tabs.window_overlays"),
+                trc("window.overlays_rendering"),
+                trc("window.overlays_cropping"),
+                trc("window.overlays_capture_settings"),
+                trc("window.overlays_interaction"),
+                trc("window.overlays_background"),
+                trc("window.overlays_color_keying"),
+                trc("window.overlays_border"),
+                "window overlay",
+                "window overlays",
+                "capture window",
+                "interaction"
+            });
+        case ConfigNestedTabId::BrowserOverlays:
+            return MatchesSearchTerms(query, {
+                trc("tabs.browser_overlays"),
+                trc("browser.overlays_source"),
+                trc("browser.overlays_rendering"),
+                trc("browser.overlays_cropping"),
+                trc("browser.overlays_capture_settings"),
+                trc("browser.overlays_background"),
+                trc("window.overlays_color_keying"),
+                trc("browser.overlays_border"),
+                "browser overlay",
+                "browser overlays",
+                "url",
+                "css",
+                "reload",
+                "fps"
+            });
+        case ConfigNestedTabId::Ninjabrain:
+            return MatchesSearchTerms(query, {
+                trc("ninjabrain.title"),
+                trc("ninjabrain.api"),
+                trc("ninjabrain.presets"),
+                trc("ninjabrain.rendering"),
+                trc("ninjabrain.appearance"),
+                trc("ninjabrain.background"),
+                trc("ninjabrain.colors"),
+                trc("ninjabrain.columns"),
+                trc("ninjabrain.layout"),
+                trc("ninjabrain.section_results"),
+                trc("ninjabrain.manual_sections"),
+                trc("ninjabrain.information_messages"),
+                trc("ninjabrain.throws_layout"),
+                trc("ninjabrain.failure_layout"),
+                trc("ninjabrain.blind_layout"),
+                "ninjabrain",
+                "blind",
+                "throws",
+                "presets"
+            });
+        }
+
+        return false;
+    }
+
+    bool MatchesConfigInputsSubTabSearch(ConfigInputsSubTabId inputsSubTab, std::string_view query) {
+        switch (inputsSubTab) {
+        case ConfigInputsSubTabId::None:
+            return false;
+        case ConfigInputsSubTabId::Mouse:
+            return MatchesSearchTerms(query, {
+                trc("inputs.mouse"),
+                trc("inputs.mouse_settings"),
+                trc("inputs.cursor_configuration"),
+                trc("label.mouse_sensitivity"),
+                trc("label.windows_mouse_speed"),
+                trc("label.let_cursor_escape_window"),
+                trc("label.confine_cursor"),
+                trc("inputs.enable_custom_cursors"),
+                trc("inputs.cursor"),
+                trc("inputs.cursor_size"),
+                trc("button.open_cursor_folder"),
+                "mouse",
+                "cursor",
+                "custom cursor",
+                "mouse sensitivity",
+                "crosshair",
+                "windows mouse speed",
+                "confine cursor"
+            });
+        case ConfigInputsSubTabId::Keyboard:
+            return MatchesSearchTerms(query, {
+                trc("inputs.keyboard"),
+                trc("inputs.key_repeat_rate"),
+                trc("inputs.key_rebinding"),
+                trc("inputs.rebind_toggle_hotkey"),
+                trc("inputs.rebinds"),
+                trc("inputs.key_repeat_start_delay"),
+                trc("inputs.key_repeat_delay"),
+                trc("inputs.enable_key_rebinding"),
+                trc("inputs.resolve_rebind_targets_for_hotkeys"),
+                trc("inputs.allow_system_alt_tab"),
+                trc("inputs.allow_system_alt_f4"),
+                trc("inputs.rebind_indicator"),
+                trc("inputs.indicator_position"),
+                "keyboard",
+                "key repeat",
+                "rebind",
+                "rebinds",
+                "keybind",
+                "typing"
+            });
+        }
+
+        return false;
+    }
+
+    bool MatchesConfigTopTabOwnSearch(ConfigTopTabId topTab, std::string_view query) {
+        switch (topTab) {
+        case ConfigTopTabId::BasicGeneral:
+            return MatchesSearchTerms(query, {
+                trc("tabs.general"),
+                trc("label.window"),
+                trc("label.modes"),
+                trc("label.sensitivity"),
+                trc("label.overlays"),
+                trc("general.mirrors"),
+                "general",
+                "window",
+                "borderless",
+                "fullscreen",
+                "eyezoom",
+                "preemptive",
+                "mirror",
+                "sensitivity"
+            });
+        case ConfigTopTabId::BasicOther:
+            return MatchesSearchTerms(query, {
+                trc("tabs.other"),
+                trc("hotkeys.gui_hotkey"),
+                trc("label.overlay_visibility_hotkeys"),
+                trc("hotkeys.window_hotkeys"),
+                trc("label.display_settings"),
+                trc("label.font"),
+                "other",
+                "settings",
+                "hotkey",
+                "font",
+                "display",
+                "animation"
+            });
+        case ConfigTopTabId::Supporters:
+            return MatchesSearchTerms(query, {
+                trc("tabs.supporters"),
+                trc("supporters.thanks"),
+                trc("supporters.donate"),
+                "supporters",
+                "supporter",
+                "support",
+                "patreon",
+                "donate",
+                "credits"
+            });
+        case ConfigTopTabId::Modes:
+            return MatchesSearchTerms(query, {
+                trc("tabs.modes"),
+                trc("modes.status.default_modes"),
+                trc("modes.custom_modes"),
+                trc("modes.transition_settings"),
+                trc("modes.border_settings"),
+                trc("modes.mirrors"),
+                trc("modes.mirror_groups"),
+                trc("modes.images"),
+                trc("modes.window_overlays"),
+                trc("modes.browser_overlays"),
+                trc("modes.background"),
+                trc("modes.sensitivity_override"),
+                "mode",
+                "modes",
+                "fullscreen",
+                "eyezoom",
+                "preemptive",
+                "thin",
+                "wide",
+                "stretch",
+                "transition",
+                "background"
+            });
+        case ConfigTopTabId::Overlays:
+            return MatchesSearchTerms(query, {
+                trc("label.overlays"),
+                "overlay",
+                "overlays"
+            });
+        case ConfigTopTabId::Hotkeys:
+            return MatchesSearchTerms(query, {
+                trc("tabs.hotkeys"),
+                trc("hotkeys.gui_hotkey"),
+                trc("hotkeys.window_hotkeys"),
+                trc("hotkeys.mode_hotkeys"),
+                trc("hotkeys.target_mode"),
+                trc("hotkeys.alt_secondary_modes"),
+                trc("hotkeys.required_game_states"),
+                trc("hotkeys.exclusion_keys"),
+                trc("hotkeys.sensitivity_hotkeys"),
+                trc("hotkeys.sensitivity_section"),
+                "hotkey",
+                "hotkeys",
+                "bind",
+                "keybind",
+                "toggle",
+                "debounce"
+            });
+        case ConfigTopTabId::Inputs:
+            return MatchesSearchTerms(query, {
+                trc("tabs.inputs"),
+                "input",
+                "inputs"
+            });
+        case ConfigTopTabId::Settings:
+            return MatchesSearchTerms(query, {
+                trc("tabs.other"),
+                trc("tabs.settings"),
+                trc("settings.capture_streaming"),
+                trc("config_mode.advanced"),
+                trc("settings.performance"),
+                trc("label.font"),
+                trc("settings.debug_options"),
+                trc("settings.debug_mpeg_video_memory"),
+                trc("settings.advanced_logging"),
+                trc("settings.hide_animations_in_game"),
+                trc("settings.enable_virtual_camera"),
+                trc("settings.auto_borderless"),
+                trc("settings.restore_windowed_mode_on_fullscreen_exit"),
+                trc("label.fps_limit"),
+                trc("settings.video_cache_budget_mib"),
+                trc("label.font_path"),
+                trc("label.scale"),
+                trc("settings.limit_capture_framerate"),
+                trc("settings.delay_rendering_until_finished"),
+                trc("settings.show_performance_overlay"),
+                trc("settings.show_profiler"),
+                trc("settings.profiler_scale"),
+                trc("settings.show_hotkey_debug"),
+                trc("settings.fake_cursor_overlay"),
+                trc("settings.show_texture_grid"),
+                trc("settings.log_mode_switch"),
+                trc("settings.log_hotkey"),
+                trc("settings.log_texture_ops"),
+                trc("settings.log_gui"),
+                "settings",
+                "other",
+                "virtual camera",
+                "capture",
+                "streaming",
+                "fps",
+                "fps limit",
+                "video cache",
+                "font",
+                "logging",
+                "debug"
+            });
+        case ConfigTopTabId::Appearance:
+            return MatchesSearchTerms(query, {
+                trc("tabs.appearance"),
+                trc("appearance.color_scheme"),
+                trc("appearance.preset_themes"),
+                trc("appearance.custom_colors"),
+                trc("appearance.window"),
+                trc("appearance.text"),
+                trc("appearance.frame"),
+                trc("appearance.title_bar"),
+                trc("appearance.buttons"),
+                trc("appearance.headers"),
+                trc("appearance.tabs"),
+                trc("appearance.sliders_scrollbars"),
+                trc("appearance.checkboxes_selections"),
+                trc("appearance.separators_resize_grips"),
+                trc("appearance.window_background"),
+                trc("appearance.child_background"),
+                trc("appearance.popup_background"),
+                trc("appearance.button"),
+                trc("appearance.button_hovered"),
+                trc("appearance.tab_selected"),
+                trc("appearance.slider_grab"),
+                trc("appearance.slider_grab_active"),
+                trc("appearance.separator"),
+                trc("appearance.resize_grip"),
+                "appearance",
+                "theme",
+                "themes",
+                "color",
+                "colors",
+                "windowbg",
+                "button",
+                "tab"
+            });
+        case ConfigTopTabId::Misc:
+            return MatchesSearchTerms(query, {
+                trc("tabs.misc"),
+                trc("label.about"),
+                trc("label.toolscreen"),
+                trc("button.licenses"),
+                trc("button.open_config"),
+                trc("button.upload_debug_info"),
+                "misc",
+                "about",
+                "license",
+                "licenses",
+                "config folder",
+                "debug info",
+                "share link"
+            });
+        }
+
+        return false;
+    }
+
+    bool MatchesConfigTopTabSearch(ConfigTopTabId topTab, std::string_view query) {
+        if (MatchesConfigTopTabOwnSearch(topTab, query)) {
+            return true;
+        }
+
+        switch (topTab) {
+        case ConfigTopTabId::Overlays:
+            return MatchesConfigNestedTabSearch(ConfigNestedTabId::Mirrors, query) ||
+                   MatchesConfigNestedTabSearch(ConfigNestedTabId::Images, query) ||
+                   MatchesConfigNestedTabSearch(ConfigNestedTabId::WindowOverlays, query) ||
+                   MatchesConfigNestedTabSearch(ConfigNestedTabId::BrowserOverlays, query) ||
+                   MatchesConfigNestedTabSearch(ConfigNestedTabId::Ninjabrain, query);
+        case ConfigTopTabId::Inputs:
+            return MatchesConfigInputsSubTabSearch(ConfigInputsSubTabId::Mouse, query) ||
+                   MatchesConfigInputsSubTabSearch(ConfigInputsSubTabId::Keyboard, query);
+        default:
+            return false;
+        }
+    }
+
+    bool IsConfigGuiSearchActive() {
+        return !TrimSearchQuery(s_configGuiSearchState.query).empty();
+    }
+
+    bool DoesActiveConfigSearchMatch(std::initializer_list<std::string_view> searchTerms) {
+        return MatchesSearchTerms(s_configGuiSearchState.query, searchTerms);
+    }
+
+    bool ShouldRenderConfigSearchSection(bool parentSearchMatch, std::initializer_list<std::string_view> searchTerms) {
+        if (!IsConfigGuiSearchActive()) {
+            return true;
+        }
+
+        return parentSearchMatch || DoesActiveConfigSearchMatch(searchTerms);
+    }
+
+    ImGuiTreeNodeFlags GetConfigSearchSectionOpenFlags(bool parentSearchMatch,
+                                                       std::initializer_list<std::string_view> searchTerms,
+                                                       ImGuiTreeNodeFlags baseFlags = ImGuiTreeNodeFlags_None) {
+        if (!IsConfigGuiSearchActive() || parentSearchMatch) {
+            return baseFlags;
+        }
+
+        if (DoesActiveConfigSearchMatch(searchTerms)) {
+            baseFlags |= ImGuiTreeNodeFlags_DefaultOpen;
+        }
+
+        return baseFlags;
+    }
+
+    bool ShouldRenderConfigTopTab(ConfigTopTabId topTab, bool basicModeEnabled) {
+        if (!IsConfigTopTabAvailable(topTab, basicModeEnabled)) {
+            return false;
+        }
+        if (!IsConfigGuiSearchActive()) {
+            return true;
+        }
+
+        return MatchesConfigTopTabSearch(topTab, s_configGuiSearchState.query);
+    }
+
+    bool ShouldRenderConfigNestedTab(ConfigNestedTabId nestedTab) {
+        if (!IsConfigGuiSearchActive()) {
+            return true;
+        }
+
+        return MatchesConfigTopTabCategorySearch(ConfigTopTabId::Overlays, s_configGuiSearchState.query) ||
+               MatchesConfigNestedTabSearch(nestedTab, s_configGuiSearchState.query);
+    }
+
+    bool ShouldRenderConfigInputsSubTab(ConfigInputsSubTabId inputsSubTab) {
+        if (!IsConfigGuiSearchActive()) {
+            return true;
+        }
+
+        return MatchesConfigTopTabCategorySearch(ConfigTopTabId::Inputs, s_configGuiSearchState.query) ||
+               MatchesConfigInputsSubTabSearch(inputsSubTab, s_configGuiSearchState.query);
+    }
+
+    bool HasVisibleConfigTopTabs(bool basicModeEnabled) {
+        if (basicModeEnabled) {
+            return ShouldRenderConfigTopTab(ConfigTopTabId::BasicGeneral, true) ||
+                   ShouldRenderConfigTopTab(ConfigTopTabId::BasicOther, true) ||
+                   ShouldRenderConfigTopTab(ConfigTopTabId::Supporters, true);
+        }
+
+        return ShouldRenderConfigTopTab(ConfigTopTabId::Modes, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Overlays, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Hotkeys, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Inputs, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Settings, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Appearance, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Misc, false) ||
+               ShouldRenderConfigTopTab(ConfigTopTabId::Supporters, false);
+    }
+
+    std::optional<ConfigGuiSearchMatch> FindConfigGuiSearchMatch(bool basicModeEnabled) {
+        if (!IsConfigGuiSearchActive()) {
+            return std::nullopt;
+        }
+
+        if (basicModeEnabled) {
+            if (ShouldRenderConfigTopTab(ConfigTopTabId::BasicGeneral, true)) {
+                return ConfigGuiSearchMatch{ ConfigTopTabId::BasicGeneral };
+            }
+            if (ShouldRenderConfigTopTab(ConfigTopTabId::BasicOther, true)) {
+                return ConfigGuiSearchMatch{ ConfigTopTabId::BasicOther };
+            }
+            if (ShouldRenderConfigTopTab(ConfigTopTabId::Supporters, true)) {
+                return ConfigGuiSearchMatch{ ConfigTopTabId::Supporters };
+            }
+            return std::nullopt;
+        }
+
+        const ConfigGuiSearchMatch preferredMatches[] = {
+            { ConfigTopTabId::Overlays, ConfigNestedTabId::Mirrors, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Overlays, ConfigNestedTabId::Images, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Overlays, ConfigNestedTabId::WindowOverlays, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Overlays, ConfigNestedTabId::BrowserOverlays, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Overlays, ConfigNestedTabId::Ninjabrain, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Inputs, ConfigNestedTabId::None, ConfigInputsSubTabId::Mouse },
+            { ConfigTopTabId::Inputs, ConfigNestedTabId::None, ConfigInputsSubTabId::Keyboard },
+            { ConfigTopTabId::Modes, ConfigNestedTabId::None, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Hotkeys, ConfigNestedTabId::None, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Settings, ConfigNestedTabId::None, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Appearance, ConfigNestedTabId::None, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Misc, ConfigNestedTabId::None, ConfigInputsSubTabId::None },
+            { ConfigTopTabId::Supporters, ConfigNestedTabId::None, ConfigInputsSubTabId::None },
+        };
+
+        for (const ConfigGuiSearchMatch& match : preferredMatches) {
+            if (!IsConfigTopTabAvailable(match.topTab, false)) {
+                continue;
+            }
+
+            if (match.nestedTab != ConfigNestedTabId::None && MatchesConfigNestedTabSearch(match.nestedTab, s_configGuiSearchState.query)) {
+                return match;
+            }
+
+            if (match.inputsSubTab != ConfigInputsSubTabId::None &&
+                MatchesConfigInputsSubTabSearch(match.inputsSubTab, s_configGuiSearchState.query)) {
+                return match;
+            }
+
+            if (match.nestedTab == ConfigNestedTabId::None && match.inputsSubTab == ConfigInputsSubTabId::None &&
+                MatchesConfigTopTabOwnSearch(match.topTab, s_configGuiSearchState.query)) {
+                return match;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    void ApplyConfigGuiSearchSelectionOverride(bool basicModeEnabled) {
+        const std::string trimmedQuery(TrimSearchQuery(s_configGuiSearchState.query));
+        if (s_configGuiSearchState.initialized && trimmedQuery == s_configGuiSearchState.lastResolvedQuery &&
+            basicModeEnabled == s_configGuiSearchState.lastResolvedBasicModeEnabled) {
+            return;
+        }
+
+        s_configGuiSearchState.initialized = true;
+        s_configGuiSearchState.lastResolvedQuery = trimmedQuery;
+        s_configGuiSearchState.lastResolvedBasicModeEnabled = basicModeEnabled;
+        s_forcedSettingsNestedTabLabel = nullptr;
+
+        if (trimmedQuery.empty()) {
+            ClearGuiTabSelectionOverride();
+            return;
+        }
+
+        const std::optional<ConfigGuiSearchMatch> searchMatch = FindConfigGuiSearchMatch(basicModeEnabled);
+        if (!searchMatch.has_value()) {
+            ClearGuiTabSelectionOverride();
+            return;
+        }
+
+        s_forcedSettingsTopTabLabel = GetConfigTopTabLabel(searchMatch->topTab);
+        s_forcedSettingsNestedTabLabel = GetConfigNestedTabLabel(searchMatch->nestedTab);
+        s_forcedSettingsInputsSubTabLabel = GetConfigInputsSubTabLabel(searchMatch->inputsSubTab);
+    }
+
+    void RenderConfigGuiSearchBar(bool basicModeEnabled) {
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+        std::string requestedQuery;
+        if (ConsumeGuiTestConfigSearchQueryRequest(requestedQuery)) {
+            s_configGuiSearchState.query = std::move(requestedQuery);
+        }
+#endif
+
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+            s_configGuiSearchState.focusInput = true;
+        }
+
+        const bool queryHasText = !s_configGuiSearchState.query.empty();
+        const float clearButtonWidth = queryHasText
+            ? ImGui::CalcTextSize(trc("button.clear")).x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x
+            : 0.0f;
+
+        if (s_configGuiSearchState.focusInput) {
+            ImGui::SetKeyboardFocusHere();
+            s_configGuiSearchState.focusInput = false;
+        }
+
+        ImGui::SetNextItemWidth((std::max)(220.0f, ImGui::GetContentRegionAvail().x - clearButtonWidth));
+        const bool changed = ImGui::InputTextWithHint("##ConfigGuiSearch", trc("config.search_hint"), &s_configGuiSearchState.query);
+        RecordConfigSearchSectionInteractionRect("config.search_bar");
+
+        if (queryHasText) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(trc("button.clear"))) {
+                s_configGuiSearchState.query.clear();
+            }
+        }
+
+        if (changed || queryHasText != !s_configGuiSearchState.query.empty()) {
+            s_configGuiSearchState.lastResolvedQuery.clear();
+        }
+
+        ApplyConfigGuiSearchSelectionOverride(basicModeEnabled);
     }
 }
 
@@ -1097,6 +1899,8 @@ void StartDebugInfoUpload() {
 std::unordered_map<std::string, GuiTestInteractionRect> s_guiTestInteractionRects;
 bool s_guiTestOpenKeyboardLayoutRequested = false;
 DWORD s_guiTestOpenKeyboardLayoutContextVk = 0;
+bool s_guiTestConfigSearchQueryRequested = false;
+std::string s_guiTestConfigSearchQuery;
 int s_guiTestKeyboardLayoutSplitModeRequest = -1;
 GuiTestKeyboardLayoutBindTarget s_guiTestKeyboardLayoutBindTargetRequest = GuiTestKeyboardLayoutBindTarget::None;
 int s_guiTestKeyboardLayoutShiftUppercaseRequest = -1;
@@ -1134,6 +1938,17 @@ DWORD ConsumeGuiTestOpenKeyboardLayoutContextRequest() {
     const DWORD vk = s_guiTestOpenKeyboardLayoutContextVk;
     s_guiTestOpenKeyboardLayoutContextVk = 0;
     return vk;
+}
+
+bool ConsumeGuiTestConfigSearchQueryRequest(std::string& outQuery) {
+    if (!s_guiTestConfigSearchQueryRequested) {
+        return false;
+    }
+
+    s_guiTestConfigSearchQueryRequested = false;
+    outQuery = std::move(s_guiTestConfigSearchQuery);
+    s_guiTestConfigSearchQuery.clear();
+    return true;
 }
 
 int ConsumeGuiTestKeyboardLayoutSplitModeRequest() {
@@ -1185,6 +2000,14 @@ bool ConsumeGuiTestKeyboardLayoutResetScanToDefaultRequest() {
 }
 #endif
 
+void RecordConfigSearchSectionInteractionRect(const char* id) {
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+    RecordGuiTestInteractionRect(id, ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+#else
+    (void)id;
+#endif
+}
+
 bool BeginSelectableSettingsTopTabItem(const char* label) {
     ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
     if (s_forcedSettingsTopTabLabel != nullptr && std::strcmp(s_forcedSettingsTopTabLabel, label) == 0) {
@@ -1193,13 +2016,25 @@ bool BeginSelectableSettingsTopTabItem(const char* label) {
 
     const bool open = ImGui::BeginTabItem(label, nullptr, flags);
     if (open) {
+        if ((flags & ImGuiTabItemFlags_SetSelected) != 0) {
+            s_forcedSettingsTopTabLabel = nullptr;
+        }
         ApplySettingsTopTabBounceAnimation(label);
     }
     return open;
 }
 
 bool BeginSelectableSettingsNestedTabItem(const char* label) {
-    return ImGui::BeginTabItem(label, nullptr, ImGuiTabItemFlags_None);
+    ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
+    if (s_forcedSettingsNestedTabLabel != nullptr && std::strcmp(s_forcedSettingsNestedTabLabel, label) == 0) {
+        flags |= ImGuiTabItemFlags_SetSelected;
+    }
+
+    const bool open = ImGui::BeginTabItem(label, nullptr, flags);
+    if (open && (flags & ImGuiTabItemFlags_SetSelected) != 0) {
+        s_forcedSettingsNestedTabLabel = nullptr;
+    }
+    return open;
 }
 
 bool BeginSelectableSettingsInputsSubTabItem(const char* label) {
@@ -1207,7 +2042,11 @@ bool BeginSelectableSettingsInputsSubTabItem(const char* label) {
     if (s_forcedSettingsInputsSubTabLabel != nullptr && std::strcmp(s_forcedSettingsInputsSubTabLabel, label) == 0) {
         flags |= ImGuiTabItemFlags_SetSelected;
     }
-    return ImGui::BeginTabItem(label, nullptr, flags);
+    const bool open = ImGui::BeginTabItem(label, nullptr, flags);
+    if (open && (flags & ImGuiTabItemFlags_SetSelected) != 0) {
+        s_forcedSettingsInputsSubTabLabel = nullptr;
+    }
+    return open;
 }
 
 const std::vector<std::pair<const char*, const char*>>& GetSettingsRelativeToOptions() {
@@ -1323,6 +2162,14 @@ void ResetGuiTransientInteractionState() {
     g_windowOverlayDragMode.store(false);
     g_browserOverlayDragMode.store(false);
 
+    s_configGuiSearchState.query.clear();
+    s_configGuiSearchState.lastResolvedQuery.clear();
+    s_configGuiSearchState.focusInput = false;
+    s_configGuiSearchState.initialized = false;
+    s_forcedSettingsTopTabLabel = nullptr;
+    s_forcedSettingsNestedTabLabel = nullptr;
+    s_forcedSettingsInputsSubTabLabel = nullptr;
+
     s_hoveredImageName = "";
     s_draggedImageName = "";
     s_isDragging = false;
@@ -1359,8 +2206,6 @@ void CloseSettingsGuiWindow() {
     ResetGuiTransientInteractionState();
 }
 
-}
-
 #ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
 void ResetGuiTestInteractionRects() {
     s_guiTestInteractionRects.clear();
@@ -1386,6 +2231,11 @@ void RequestGuiTestOpenKeyboardLayout() {
 
 void RequestGuiTestOpenKeyboardLayoutContext(DWORD vk) {
     s_guiTestOpenKeyboardLayoutContextVk = vk;
+}
+
+void RequestGuiTestSetConfigSearchQuery(const std::string& query) {
+    s_guiTestConfigSearchQuery = query;
+    s_guiTestConfigSearchQueryRequested = true;
 }
 
 void RequestGuiTestKeyboardLayoutSetSplitMode(bool splitMode) {
@@ -1423,11 +2273,13 @@ void RequestGuiTestKeyboardLayoutResetScanToDefault() {
 
 void SetGuiTabSelectionOverride(const char* topLevelTabLabel, const char* inputsSubTabLabel) {
     s_forcedSettingsTopTabLabel = topLevelTabLabel;
+    s_forcedSettingsNestedTabLabel = nullptr;
     s_forcedSettingsInputsSubTabLabel = inputsSubTabLabel;
 }
 
 void ClearGuiTabSelectionOverride() {
     s_forcedSettingsTopTabLabel = nullptr;
+    s_forcedSettingsNestedTabLabel = nullptr;
     s_forcedSettingsInputsSubTabLabel = nullptr;
 }
 
@@ -2254,28 +3106,61 @@ void RenderSettingsGUI() {
         {
             PROFILE_SCOPE_CAT("Settings Tabs", "ImGui");
 
-            if (g_config.basicModeEnabled) {
-                if (ImGui::BeginTabBar("BasicSettingsTabs")) {
-#include "tabs/tab_basic_general.inl"
-#include "tabs/tab_basic_other.inl"
+            RenderConfigGuiSearchBar(g_config.basicModeEnabled);
 
+            if (!HasVisibleConfigTopTabs(g_config.basicModeEnabled)) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("%s", trc("config.search_no_results"));
+            }
+
+            if (g_config.basicModeEnabled && HasVisibleConfigTopTabs(true)) {
+                if (ImGui::BeginTabBar("BasicSettingsTabs")) {
+#if 1
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::BasicGeneral, true)) {
+#include "tabs/tab_basic_general.inl"
+                    }
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::BasicOther, true)) {
+#include "tabs/tab_basic_other.inl"
+                    }
+
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Supporters, true)) {
 #include "tabs/tab_supporters.inl"
+                    }
+#endif
 
                     ImGui::EndTabBar();
                 }
-            } else {
+            } else if (!g_config.basicModeEnabled && HasVisibleConfigTopTabs(false)) {
                 if (ImGui::BeginTabBar("SettingsTabs")) {
+#if 1
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Modes, false)) {
 #include "tabs/tab_modes.inl"
+                    }
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Overlays, false)) {
 #include "tabs/tab_overlays.inl"
+                    }
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Hotkeys, false)) {
 #include "tabs/tab_hotkeys.inl"
+                    }
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Inputs, false)) {
 #include "tabs/tab_inputs.inl"
+                    }
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Settings, false)) {
 #include "tabs/tab_settings.inl"
+                    }
 
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Appearance, false)) {
 #include "tabs/tab_appearance.inl"
+                    }
 
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Misc, false)) {
 #include "tabs/tab_misc.inl"
+                    }
 
+                    if (ShouldRenderConfigTopTab(ConfigTopTabId::Supporters, false)) {
 #include "tabs/tab_supporters.inl"
+                    }
+#endif
 
                     ImGui::EndTabBar();
                 }

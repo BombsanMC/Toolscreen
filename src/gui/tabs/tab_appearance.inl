@@ -3,11 +3,123 @@
                 g_imageDragMode.store(false);
                 g_windowOverlayDragMode.store(false);
 
-                ImGui::SeparatorText(trc("appearance.color_scheme"));
+                const bool showAllAppearanceSections = MatchesConfigTopTabCategorySearch(ConfigTopTabId::Appearance, s_configGuiSearchState.query);
+                const bool showColorSchemeSection = ShouldRenderConfigSearchSection(showAllAppearanceSections, {
+                    trc("appearance.color_scheme"),
+                    trc("appearance.preset_themes"),
+                    trc("appearance.dark"),
+                    trc("appearance.light"),
+                    trc("appearance.classic"),
+                    trc("appearance.dracula"),
+                    trc("appearance.nord"),
+                    trc("appearance.solarized"),
+                    trc("appearance.red"),
+                    trc("appearance.green"),
+                    trc("appearance.reset_to_default_dark"),
+                    "theme",
+                    "themes",
+                    "color scheme"
+                });
+                const bool showAllAppearanceColorSections = showAllAppearanceSections ||
+                                                            (IsConfigGuiSearchActive() &&
+                                                             DoesActiveConfigSearchMatch({
+                                                                 trc("appearance.custom_colors"),
+                                                                 "custom colors"
+                                                             }));
+                const bool showAppearanceWindowSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.window"),
+                    trc("appearance.window_background"),
+                    trc("appearance.child_background"),
+                    trc("appearance.popup_background"),
+                    trc("appearance.border"),
+                    "window background",
+                    "windowbg",
+                    "childbg",
+                    "popupbg"
+                });
+                const bool showAppearanceTextSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.text"),
+                    trc("appearance.text_disabled"),
+                    "text"
+                });
+                const bool showAppearanceFrameSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.frame"),
+                    trc("appearance.frame_background"),
+                    trc("appearance.frame_hovered"),
+                    trc("appearance.frame_active"),
+                    "frame background"
+                });
+                const bool showAppearanceTitleBarSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.title_bar"),
+                    trc("appearance.title_background"),
+                    trc("appearance.title_active"),
+                    trc("appearance.title_collapsed"),
+                    "title bar"
+                });
+                const bool showAppearanceButtonsSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.buttons"),
+                    trc("appearance.button"),
+                    trc("appearance.button_hovered"),
+                    trc("appearance.button_active"),
+                    "button"
+                });
+                const bool showAppearanceHeadersSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.headers"),
+                    trc("appearance.header"),
+                    trc("appearance.header_hovered"),
+                    trc("appearance.header_active"),
+                    "header"
+                });
+                const bool showAppearanceTabsSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.tabs"),
+                    trc("appearance.tab"),
+                    trc("appearance.tab_hovered"),
+                    trc("appearance.tab_selected"),
+                    "tab"
+                });
+                const bool showAppearanceSlidersSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.sliders_scrollbars"),
+                    trc("appearance.slider_grab"),
+                    trc("appearance.slider_grab_active"),
+                    trc("appearance.scrollbar_bg"),
+                    trc("appearance.scrollbar_grab"),
+                    trc("appearance.scrollbar_grab_hovered"),
+                    trc("appearance.scrollbar_grab_active"),
+                    "slider",
+                    "slider grab",
+                    "scrollbar"
+                });
+                const bool showAppearanceCheckboxesSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.checkboxes_selections"),
+                    trc("appearance.check_mark"),
+                    trc("appearance.text_selected_bg"),
+                    "checkbox",
+                    "selection"
+                });
+                const bool showAppearanceSeparatorsSection = ShouldRenderConfigSearchSection(showAllAppearanceColorSections, {
+                    trc("appearance.separators_resize_grips"),
+                    trc("appearance.separator"),
+                    trc("appearance.separator_hovered"),
+                    trc("appearance.separator_active"),
+                    trc("appearance.resize_grip"),
+                    trc("appearance.resize_grip_hovered"),
+                    trc("appearance.resize_grip_active"),
+                    "separator",
+                    "resize grip"
+                });
+                const bool showAnyAppearanceColorSection = showAppearanceWindowSection || showAppearanceTextSection ||
+                                                           showAppearanceFrameSection || showAppearanceTitleBarSection ||
+                                                           showAppearanceButtonsSection || showAppearanceHeadersSection ||
+                                                           showAppearanceTabsSection || showAppearanceSlidersSection ||
+                                                           showAppearanceCheckboxesSection || showAppearanceSeparatorsSection;
 
-                ImGui::Text(trc("appearance.preset_themes"));
-                ImGui::SameLine();
-                HelpMarker(trc("appearance.tooltip.reset_themes"));
+                if (showColorSchemeSection) {
+                    ImGui::SeparatorText(trc("appearance.color_scheme"));
+                    RecordConfigSearchSectionInteractionRect("config.section.appearance.color_scheme");
+
+                    ImGui::Text(trc("appearance.preset_themes"));
+                    ImGui::SameLine();
+                    HelpMarker(trc("appearance.tooltip.reset_themes"));
 
                 if (ImGui::Button(trc("appearance.dark"))) {
                     ImGui::StyleColorsDark();
@@ -451,22 +563,52 @@
                     SaveTheme();
                 }
 
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+                }
 
-                ImGui::Text(trc("appearance.custom_colors"));
-                ImGui::SameLine();
-                HelpMarker(trc("appearance.tooltip.custom_colors"));
+                if (showAnyAppearanceColorSection) {
+                    ImGui::Text(trc("appearance.custom_colors"));
+                    ImGui::SameLine();
+                    HelpMarker(trc("appearance.tooltip.custom_colors"));
 
-                ImGui::Spacing();
+                    ImGui::Spacing();
+                }
 
                 ImGuiStyle& style = ImGui::GetStyle();
 
-                const bool colorListVisible = ImGui::BeginChild("ColorList", ImVec2(0, 400), true);
-                if (colorListVisible) {
-                    if (ImGui::CollapsingHeader(trc("appearance.window"), ImGuiTreeNodeFlags_DefaultOpen)) {
+                auto beginAppearanceColorSection = [&](const char* interactionId,
+                                                       bool visible,
+                                                       std::initializer_list<std::string_view> searchTerms,
+                                                       const char* label,
+                                                       ImGuiTreeNodeFlags baseFlags = ImGuiTreeNodeFlags_None) {
+                    if (!visible) {
+                        return false;
+                    }
+
+                    const bool open = ImGui::CollapsingHeader(
+                        label, GetConfigSearchSectionOpenFlags(showAllAppearanceColorSections, searchTerms, baseFlags));
+                    RecordConfigSearchSectionInteractionRect(interactionId);
+                    if (open) {
                         ImGui::Indent();
+                    }
+                    return open;
+                };
+
+                const bool colorListVisible = showAnyAppearanceColorSection && ImGui::BeginChild("ColorList", ImVec2(0, 400), true);
+                if (colorListVisible) {
+                    if (beginAppearanceColorSection("config.section.appearance.window", showAppearanceWindowSection, {
+                            trc("appearance.window"),
+                            trc("appearance.window_background"),
+                            trc("appearance.child_background"),
+                            trc("appearance.popup_background"),
+                            trc("appearance.border"),
+                            "window background",
+                            "windowbg",
+                            "childbg",
+                            "popupbg"
+                        }, trc("appearance.window"), ImGuiTreeNodeFlags_DefaultOpen)) {
                         if (ImGui::ColorEdit4((tr("appearance.window_background") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_WindowBg])) {
                             g_config.appearance.customColors["WindowBg"] = {style.Colors[ImGuiCol_WindowBg].x, style.Colors[ImGuiCol_WindowBg].y, style.Colors[ImGuiCol_WindowBg].z, style.Colors[ImGuiCol_WindowBg].w};
                             g_config.appearance.theme = "Custom";
@@ -494,8 +636,11 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.text"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.text", showAppearanceTextSection, {
+                            trc("appearance.text"),
+                            trc("appearance.text_disabled"),
+                            "text"
+                        }, trc("appearance.text"))) {
                         if (ImGui::ColorEdit4((tr("appearance.text") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_Text])) {
                             g_config.appearance.customColors["Text"] = {style.Colors[ImGuiCol_Text].x, style.Colors[ImGuiCol_Text].y, style.Colors[ImGuiCol_Text].z, style.Colors[ImGuiCol_Text].w};
                             g_config.appearance.theme = "Custom";
@@ -511,8 +656,13 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.frame"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.frame", showAppearanceFrameSection, {
+                            trc("appearance.frame"),
+                            trc("appearance.frame_background"),
+                            trc("appearance.frame_hovered"),
+                            trc("appearance.frame_active"),
+                            "frame background"
+                        }, trc("appearance.frame"))) {
                         if (ImGui::ColorEdit4((tr("appearance.frame_background") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_FrameBg])) {
                             g_config.appearance.customColors["FrameBg"] = {style.Colors[ImGuiCol_FrameBg].x, style.Colors[ImGuiCol_FrameBg].y, style.Colors[ImGuiCol_FrameBg].z, style.Colors[ImGuiCol_FrameBg].w};
                             g_config.appearance.theme = "Custom";
@@ -534,8 +684,13 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.title_bar"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.title_bar", showAppearanceTitleBarSection, {
+                            trc("appearance.title_bar"),
+                            trc("appearance.title_background"),
+                            trc("appearance.title_active"),
+                            trc("appearance.title_collapsed"),
+                            "title bar"
+                        }, trc("appearance.title_bar"))) {
                         if (ImGui::ColorEdit4((tr("appearance.title_background") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_TitleBg])) {
                             g_config.appearance.customColors["TitleBg"] = {style.Colors[ImGuiCol_TitleBg].x, style.Colors[ImGuiCol_TitleBg].y, style.Colors[ImGuiCol_TitleBg].z, style.Colors[ImGuiCol_TitleBg].w};
                             g_config.appearance.theme = "Custom";
@@ -557,8 +712,13 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.buttons"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.buttons", showAppearanceButtonsSection, {
+                            trc("appearance.buttons"),
+                            trc("appearance.button"),
+                            trc("appearance.button_hovered"),
+                            trc("appearance.button_active"),
+                            "button"
+                        }, trc("appearance.buttons"))) {
                         if (ImGui::ColorEdit4((tr("appearance.button") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_Button])) {
                             g_config.appearance.customColors["Button"] = {style.Colors[ImGuiCol_Button].x, style.Colors[ImGuiCol_Button].y, style.Colors[ImGuiCol_Button].z, style.Colors[ImGuiCol_Button].w};
                             g_config.appearance.theme = "Custom";
@@ -580,8 +740,13 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.headers"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.headers", showAppearanceHeadersSection, {
+                            trc("appearance.headers"),
+                            trc("appearance.header"),
+                            trc("appearance.header_hovered"),
+                            trc("appearance.header_active"),
+                            "header"
+                        }, trc("appearance.headers"))) {
                         if (ImGui::ColorEdit4((tr("appearance.header") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_Header])) {
                             g_config.appearance.customColors["Header"] = {style.Colors[ImGuiCol_Header].x, style.Colors[ImGuiCol_Header].y, style.Colors[ImGuiCol_Header].z, style.Colors[ImGuiCol_Header].w};
                             g_config.appearance.theme = "Custom";
@@ -603,8 +768,13 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.tabs"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.tabs", showAppearanceTabsSection, {
+                            trc("appearance.tabs"),
+                            trc("appearance.tab"),
+                            trc("appearance.tab_hovered"),
+                            trc("appearance.tab_selected"),
+                            "tab"
+                        }, trc("appearance.tabs"))) {
                         if (ImGui::ColorEdit4((tr("appearance.tab") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_Tab])) {
                             g_config.appearance.customColors["Tab"] = {style.Colors[ImGuiCol_Tab].x, style.Colors[ImGuiCol_Tab].y, style.Colors[ImGuiCol_Tab].z, style.Colors[ImGuiCol_Tab].w};
                             g_config.appearance.theme = "Custom";
@@ -626,8 +796,18 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.sliders_scrollbars"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.sliders_scrollbars", showAppearanceSlidersSection, {
+                            trc("appearance.sliders_scrollbars"),
+                            trc("appearance.slider_grab"),
+                            trc("appearance.slider_grab_active"),
+                            trc("appearance.scrollbar_bg"),
+                            trc("appearance.scrollbar_grab"),
+                            trc("appearance.scrollbar_grab_hovered"),
+                            trc("appearance.scrollbar_grab_active"),
+                            "slider",
+                            "slider grab",
+                            "scrollbar"
+                        }, trc("appearance.sliders_scrollbars"))) {
                         if (ImGui::ColorEdit4((tr("appearance.slider_grab") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_SliderGrab])) {
                             g_config.appearance.customColors["SliderGrab"] = {style.Colors[ImGuiCol_SliderGrab].x, style.Colors[ImGuiCol_SliderGrab].y, style.Colors[ImGuiCol_SliderGrab].z, style.Colors[ImGuiCol_SliderGrab].w};
                             g_config.appearance.theme = "Custom";
@@ -667,8 +847,13 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.checkboxes_selections"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.checkboxes_selections", showAppearanceCheckboxesSection, {
+                            trc("appearance.checkboxes_selections"),
+                            trc("appearance.check_mark"),
+                            trc("appearance.text_selected_bg"),
+                            "checkbox",
+                            "selection"
+                        }, trc("appearance.checkboxes_selections"))) {
                         if (ImGui::ColorEdit4((tr("appearance.check_mark") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_CheckMark])) {
                             g_config.appearance.customColors["CheckMark"] = {style.Colors[ImGuiCol_CheckMark].x, style.Colors[ImGuiCol_CheckMark].y, style.Colors[ImGuiCol_CheckMark].z, style.Colors[ImGuiCol_CheckMark].w};
                             g_config.appearance.theme = "Custom";
@@ -684,8 +869,17 @@
                         ImGui::Unindent();
                     }
 
-                    if (ImGui::CollapsingHeader(trc("appearance.separators_resize_grips"))) {
-                        ImGui::Indent();
+                    if (beginAppearanceColorSection("config.section.appearance.separators_resize_grips", showAppearanceSeparatorsSection, {
+                            trc("appearance.separators_resize_grips"),
+                            trc("appearance.separator"),
+                            trc("appearance.separator_hovered"),
+                            trc("appearance.separator_active"),
+                            trc("appearance.resize_grip"),
+                            trc("appearance.resize_grip_hovered"),
+                            trc("appearance.resize_grip_active"),
+                            "separator",
+                            "resize grip"
+                        }, trc("appearance.separators_resize_grips"))) {
                         if (ImGui::ColorEdit4((tr("appearance.separator") + "##Col").c_str(), (float*)&style.Colors[ImGuiCol_Separator])) {
                             g_config.appearance.customColors["Separator"] = {style.Colors[ImGuiCol_Separator].x, style.Colors[ImGuiCol_Separator].y, style.Colors[ImGuiCol_Separator].z, style.Colors[ImGuiCol_Separator].w};
                             g_config.appearance.theme = "Custom";
@@ -726,19 +920,23 @@
                     }
 
                 }
-                ImGui::EndChild();
+                if (showAnyAppearanceColorSection) {
+                    ImGui::EndChild();
+                }
 
                 ImGui::Spacing();
 
-                if (ImGui::Button(trc("appearance.reset_to_default_dark"))) {
-                    ImGui::StyleColorsDark();
-                    g_config.appearance.theme = "Dark";
-                    g_config.appearance.customColors.clear();
-                    g_configIsDirty = true;
-                    SaveTheme();
+                if (showColorSchemeSection) {
+                    if (ImGui::Button(trc("appearance.reset_to_default_dark"))) {
+                        ImGui::StyleColorsDark();
+                        g_config.appearance.theme = "Dark";
+                        g_config.appearance.customColors.clear();
+                        g_configIsDirty = true;
+                        SaveTheme();
+                    }
+                    ImGui::SameLine();
+                    HelpMarker(trc("appearance.tooltip.reset_to_default_dark"));
                 }
-                ImGui::SameLine();
-                HelpMarker(trc("appearance.tooltip.reset_to_default_dark"));
 
                 ImGui::EndTabItem();
             }

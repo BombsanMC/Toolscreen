@@ -98,6 +98,7 @@ void ResetGuiTestInteractionRects();
 bool GetGuiTestInteractionRect(const char* id, GuiTestInteractionRect& outRect);
 void RequestGuiTestOpenKeyboardLayout();
 void RequestGuiTestOpenKeyboardLayoutContext(DWORD vk);
+void RequestGuiTestSetConfigSearchQuery(const std::string& query);
 void RequestGuiTestKeyboardLayoutSetSplitMode(bool splitMode);
 void RequestGuiTestKeyboardLayoutBeginBind(GuiTestKeyboardLayoutBindTarget target);
 void RequestGuiTestKeyboardLayoutSetShiftLayerUppercase(bool enabled);

@@ -619,6 +619,45 @@ void RenderSettingsFrame(DummyWindow& window, const char* topLevelTabLabel, cons
     window.EndFrame();
 }
 
+void RenderSettingsSearchFrame(DummyWindow& window, const char* searchQuery, const char* topLevelTabLabel = nullptr,
+                               const char* inputsSubTabLabel = nullptr) {
+    if (!window.hasModernGL()) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
+
+    if (!g_visualNinjabrainPreviewModeId.empty()) {
+        RequestGuiTestSetConfigSearchQuery(searchQuery != nullptr ? std::string(searchQuery) : std::string());
+        const ModeConfig& previewMode = FindModeOrThrow(g_visualNinjabrainPreviewModeId);
+        RenderModeOverlayFrame(window, g_config, previewMode, 0, true);
+        return;
+    }
+
+    const int frameCount = topLevelTabLabel != nullptr ? 2 : 1;
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+        RequestGuiTestSetConfigSearchQuery(searchQuery != nullptr ? std::string(searchQuery) : std::string());
+
+        if (topLevelTabLabel != nullptr) {
+            ScopedTabSelection scopedSelection(topLevelTabLabel, inputsSubTabLabel);
+            Expect(window.BeginFrame(), "GUI integration test window closed unexpectedly.");
+            RenderSettingsGUI();
+            window.EndFrame();
+            continue;
+        }
+
+        Expect(window.BeginFrame(), "GUI integration test window closed unexpectedly.");
+        RenderSettingsGUI();
+        window.EndFrame();
+    }
+}
+
+bool HasGuiInteractionRect(const char* id) {
+    GuiTestInteractionRect rect;
+    return GetGuiTestInteractionRect(id, rect);
+}
+
+void ExpectGuiInteractionRectPresence(const char* id, bool expected, const std::string& message) {
+    const bool present = HasGuiInteractionRect(id);
+    Expect(present == expected, message);
+}
+
 void RenderInteractiveSettingsFrame(DummyWindow& window) {
     if (!g_visualNinjabrainPreviewModeId.empty()) {
         const ModeConfig& previewMode = FindModeOrThrow(g_visualNinjabrainPreviewModeId);

@@ -99,6 +99,8 @@ const auto& GetTestCaseDefinitions() {
         {"profiler-unspecified-breakdown", &RunProfilerUnspecifiedBreakdownTest},
         {"settings-gui-basic", &RunSettingsGuiBasicTest},
         {"settings-gui-advanced", &RunSettingsGuiAdvancedTest},
+        {"settings-search-subcategory-filtering", &RunSettingsSearchSubcategoryFilteringTest},
+        {"settings-search-specific-options", &RunSettingsSearchSpecificOptionsTest},
         {"settings-tab-general-default", &RunSettingsTabGeneralDefaultTest},
         {"settings-tab-other-default", &RunSettingsTabOtherDefaultTest},
         {"settings-tab-supporters-default", &RunSettingsTabSupportersDefaultTest},
