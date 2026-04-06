@@ -98,6 +98,7 @@ void RunSettingsGuiAdvancedTest(TestRunMode runMode = TestRunMode::Automated) {
 
 void RunSettingsSearchSubcategoryFilteringTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (!window.hasModernGL()) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
     PrepareDefaultConfigForGui("settings_search_subcategory_filtering", false);
 
     if (runMode == TestRunMode::Visual) {
@@ -129,6 +130,7 @@ void RunSettingsSearchSubcategoryFilteringTest(TestRunMode runMode = TestRunMode
 
 void RunSettingsSearchSpecificOptionsTest(TestRunMode runMode = TestRunMode::Automated) {
     DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (!window.hasModernGL()) { std::cout << "SKIP (no GL 3.3+)" << std::endl; return; }
     PrepareDefaultConfigForGui("settings_search_specific_options", false);
 
     if (runMode == TestRunMode::Visual) {
