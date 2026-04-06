@@ -133,6 +133,61 @@ void RefreshCursorDefinitions() {
 std::vector<CursorData> g_cursorList;
 std::mutex g_cursorListMutex;
 
+static void ComputeCursorContentBounds(CursorData& outData, const std::vector<unsigned char>& pixels,
+                                       const std::vector<unsigned char>* invertPixels, int width, int height) {
+    int minX = width;
+    int minY = height;
+    int maxX = -1;
+    int maxY = -1;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const int idx = (y * width + x) * 4;
+            const unsigned char alpha = pixels[idx + 3];
+            const unsigned char invertAlpha = invertPixels ? (*invertPixels)[idx + 3] : 0;
+            if (alpha == 0 && invertAlpha == 0) {
+                continue;
+            }
+
+            minX = (std::min)(minX, x);
+            minY = (std::min)(minY, y);
+            maxX = (std::max)(maxX, x);
+            maxY = (std::max)(maxY, y);
+        }
+    }
+
+    if (maxX < minX || maxY < minY) {
+        outData.contentLeft = 0;
+        outData.contentTop = 0;
+        outData.contentRight = width;
+        outData.contentBottom = height;
+        return;
+    }
+
+    outData.contentLeft = minX;
+    outData.contentTop = minY;
+    outData.contentRight = maxX + 1;
+    outData.contentBottom = maxY + 1;
+}
+
+static std::wstring BuildSystemCursorCacheKey(LPCWSTR systemCursorId) {
+    if (systemCursorId == IDC_ARROW) {
+        return L"<system:idc_arrow>";
+    }
+
+    if (IS_INTRESOURCE(systemCursorId)) {
+        std::wstring key = L"<system:resource:";
+        key += std::to_wstring(reinterpret_cast<ULONG_PTR>(systemCursorId));
+        key += L">";
+        return key;
+    }
+
+    std::wstring key = L"<system:name:";
+    key += systemCursorId;
+    key += L">";
+    return key;
+}
+
 static const std::vector<int> STANDARD_SIZES = {
     16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128, 144, 160, 192, 224, 256, 288, 320
 };
@@ -167,6 +222,7 @@ static bool LoadSingleCursor(const std::wstring& path, UINT loadType, int size, 
     outData.filePath = path;
     outData.size = size;
     outData.loadType = loadType;
+    outData.ownsHandle = true;
 
     HCURSOR hCursor = (HCURSOR)LoadImageW(NULL, resolvedPath.c_str(), loadType, size, size, LR_LOADFROMFILE | LR_DEFAULTSIZE);
     if (!hCursor) {
@@ -650,6 +706,7 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
     outData.filePath = L"<system>";
     outData.size = 0;
     outData.loadType = IMAGE_CURSOR;
+    outData.ownsHandle = false;
     outData.bitmapWidth = width;
     outData.bitmapHeight = height;
     outData.hotspotX = iconInfoEx.xHotspot;
@@ -671,6 +728,7 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
     }
 
     std::vector<unsigned char> pixels(width * height * 4);
+    std::vector<unsigned char> invertPixels;
 
     BITMAPINFO bmi = { 0 };
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -693,7 +751,7 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
         maskBmi.bmiHeader.biHeight = -bmp.bmHeight;
         GetDIBits(hdcMem, iconInfoEx.hbmMask, 0, bmp.bmHeight, maskData.data(), &maskBmi, DIB_RGB_COLORS);
 
-        std::vector<unsigned char> invertPixels(width * height * 4, 0);
+        invertPixels.assign(width * height * 4, 0);
         bool hasInverted = false;
 
         for (int y = 0; y < height; ++y) {
@@ -773,6 +831,8 @@ static bool CreateTextureFromHandle(HCURSOR hCursor, CursorData& outData) {
     if (iconInfoEx.hbmColor) DeleteObject(iconInfoEx.hbmColor);
     if (iconInfoEx.hbmMask) DeleteObject(iconInfoEx.hbmMask);
 
+    ComputeCursorContentBounds(outData, pixels, outData.hasInvertedPixels ? &invertPixels : nullptr, width, height);
+
     while (glGetError() != GL_NO_ERROR) {}
     glGenTextures(1, &outData.texture);
     if (outData.texture == 0) { return false; }
@@ -810,6 +870,48 @@ const CursorData* LoadOrFindCursorFromHandle(HCURSOR hCursor) {
 
     CursorData newData;
     if (!CreateTextureFromHandle(hCursor, newData)) { return nullptr; }
+
+    std::lock_guard<std::mutex> lock(g_cursorListMutex);
+    g_cursorList.push_back(newData);
+    return &g_cursorList.back();
+}
+
+const CursorData* LoadOrFindSystemCursor(LPCWSTR systemCursorId) {
+    if (!systemCursorId || wglGetCurrentContext() == nullptr) {
+        return nullptr;
+    }
+
+    const std::wstring cacheKey = BuildSystemCursorCacheKey(systemCursorId);
+    {
+        std::lock_guard<std::mutex> lock(g_cursorListMutex);
+        for (const auto& cursor : g_cursorList) {
+            if (cursor.filePath == cacheKey) {
+                return &cursor;
+            }
+        }
+    }
+
+    HCURSOR sharedCursor = LoadCursorW(nullptr, systemCursorId);
+    if (!sharedCursor) {
+        return nullptr;
+    }
+
+    HCURSOR ownedCursor = reinterpret_cast<HCURSOR>(CopyImage(reinterpret_cast<HANDLE>(sharedCursor), IMAGE_CURSOR, 0, 0, LR_DEFAULTSIZE));
+    if (!ownedCursor) {
+        return nullptr;
+    }
+
+    CursorData newData;
+    if (!CreateTextureFromHandle(ownedCursor, newData)) {
+        DestroyCursor(ownedCursor);
+        return nullptr;
+    }
+
+    newData.hCursor = ownedCursor;
+    newData.filePath = cacheKey;
+    newData.size = 0;
+    newData.loadType = IMAGE_CURSOR;
+    newData.ownsHandle = true;
 
     std::lock_guard<std::mutex> lock(g_cursorListMutex);
     g_cursorList.push_back(newData);
@@ -964,10 +1066,12 @@ void Cleanup() {
             cursor.invertMaskTexture = 0;
             invertMasksDeleted++;
         }
-        if (cursor.hCursor) {
+        if (cursor.hCursor && cursor.ownsHandle) {
             DestroyCursorOrIcon(cursor.hCursor, cursor.loadType);
             cursor.hCursor = nullptr;
             cursorsDestroyed++;
+        } else if (cursor.hCursor) {
+            cursor.hCursor = nullptr;
         }
     }
 

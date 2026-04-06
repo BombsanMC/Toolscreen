@@ -739,8 +739,8 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                     return std::string(tr("inputs.keyboard_layout_unknown"));
                 };
 
-                auto getKeyboardLayoutCursorStateViewId = [&]() -> const char* {
-                    switch (s_keyboardLayoutCursorStateView) {
+                auto getKeyboardLayoutCursorStateViewIdFor = [&](int view) -> const char* {
+                    switch (view) {
                     case kKeyboardLayoutCursorStateViewCursorFree:
                         return kKeyRebindCursorStateCursorFree;
                     case kKeyboardLayoutCursorStateViewCursorGrabbed:
@@ -751,9 +751,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                     }
                 };
 
+                auto getKeyboardLayoutCursorStateViewId = [&]() -> const char* { return getKeyboardLayoutCursorStateViewIdFor(s_keyboardLayoutCursorStateView); };
+
                 auto getKeyboardLayoutCursorStateViewLabel = [&](const char* cursorStateId) -> const char* {
                     if (cursorStateId == nullptr) {
-                        return trc("inputs.rebind_layout_any");
+                        return trc("label.default");
                     }
                     if (strcmp(cursorStateId, kKeyRebindCursorStateCursorFree) == 0) {
                         return trc("inputs.rebind_layout_cursor_free");
@@ -761,7 +763,126 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                     if (strcmp(cursorStateId, kKeyRebindCursorStateCursorGrabbed) == 0) {
                         return trc("inputs.rebind_layout_cursor_grabbed");
                     }
-                    return trc("inputs.rebind_layout_any");
+                    return trc("label.default");
+                };
+
+                auto getKeyboardLayoutCursorStateViewTooltip = [&](int view) -> const char* {
+                    switch (view) {
+                    case kKeyboardLayoutCursorStateViewCursorFree:
+                        return trc("inputs.tooltip.rebind_layout_cursor_free_button");
+                    case kKeyboardLayoutCursorStateViewCursorGrabbed:
+                        return trc("inputs.tooltip.rebind_layout_cursor_grabbed_button");
+                    case kKeyboardLayoutCursorStateViewAny:
+                    default:
+                        return trc("inputs.tooltip.rebind_layout_default_button");
+                    }
+                };
+
+                auto drawKeyboardLayoutCursorStateButton = [&](const char* id, int view) {
+                    const bool selected = s_keyboardLayoutCursorStateView == view;
+                    const float buttonSize = ImGui::GetFrameHeight() * 1.08f;
+                    const ImGuiStyle& style = ImGui::GetStyle();
+
+                    ImGui::PushID(id);
+                    ImGui::InvisibleButton("##cursorStateLayoutButton", ImVec2(buttonSize, buttonSize));
+                    const bool hovered = ImGui::IsItemHovered();
+                    const bool held = ImGui::IsItemActive();
+                    if (ImGui::IsItemClicked()) {
+                        s_keyboardLayoutCursorStateView = view;
+                    }
+
+                    const ImVec2 buttonMin = ImGui::GetItemRectMin();
+                    const ImVec2 buttonMax = ImGui::GetItemRectMax();
+                    const float width = buttonMax.x - buttonMin.x;
+                    const float height = buttonMax.y - buttonMin.y;
+                    const float rounding = 6.0f;
+                    const float stroke = selected ? 2.0f : 1.6f;
+                    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+                    ImVec4 fillColor = style.Colors[ImGuiCol_FrameBg];
+                    if (selected) {
+                        fillColor = style.Colors[ImGuiCol_ButtonActive];
+                    } else if (held) {
+                        fillColor = style.Colors[ImGuiCol_ButtonActive];
+                    } else if (hovered) {
+                        fillColor = style.Colors[ImGuiCol_ButtonHovered];
+                    }
+
+                    ImVec4 borderColor = selected ? style.Colors[ImGuiCol_CheckMark]
+                                                  : (hovered ? style.Colors[ImGuiCol_ButtonHovered] : style.Colors[ImGuiCol_Border]);
+                    ImVec4 iconColor = selected ? style.Colors[ImGuiCol_Text]
+                                                : (hovered ? style.Colors[ImGuiCol_Text] : style.Colors[ImGuiCol_TextDisabled]);
+
+                    drawList->AddRectFilled(buttonMin, buttonMax, ImGui::ColorConvertFloat4ToU32(fillColor), rounding);
+                    drawList->AddRect(buttonMin, buttonMax, ImGui::ColorConvertFloat4ToU32(borderColor), rounding, 0,
+                                      selected ? 2.0f : 1.0f);
+
+                    const float inset = width * 0.22f;
+                    const float centerX = buttonMin.x + width * 0.5f;
+                    const float centerY = buttonMin.y + height * 0.5f;
+                    const ImU32 iconColorU32 = ImGui::ColorConvertFloat4ToU32(iconColor);
+
+                    if (view == kKeyboardLayoutCursorStateViewAny) {
+                        const float barHeight = height * 0.11f;
+                        const float barGap = height * 0.11f;
+                        const float left = buttonMin.x + inset;
+                        const float right = buttonMax.x - inset;
+                        for (int barIndex = 0; barIndex < 3; ++barIndex) {
+                            const float y = buttonMin.y + height * 0.25f + barIndex * (barHeight + barGap);
+                            drawList->AddRectFilled(ImVec2(left, y), ImVec2(right, y + barHeight), iconColorU32, barHeight * 0.45f);
+                        }
+                    } else if (view == kKeyboardLayoutCursorStateViewCursorFree) {
+                        const CursorTextures::CursorData* cursorData = CursorTextures::LoadOrFindSystemCursor(IDC_ARROW);
+                        if (cursorData && cursorData->texture != 0 && cursorData->bitmapWidth > 0 && cursorData->bitmapHeight > 0) {
+                            const int contentLeft = cursorData->contentRight > cursorData->contentLeft ? cursorData->contentLeft : 0;
+                            const int contentTop = cursorData->contentBottom > cursorData->contentTop ? cursorData->contentTop : 0;
+                            const int contentRight = cursorData->contentRight > cursorData->contentLeft ? cursorData->contentRight
+                                                                                                           : cursorData->bitmapWidth;
+                            const int contentBottom = cursorData->contentBottom > cursorData->contentTop ? cursorData->contentBottom
+                                                                                                           : cursorData->bitmapHeight;
+                            const float contentWidth = static_cast<float>((std::max)(1, contentRight - contentLeft));
+                            const float contentHeight = static_cast<float>((std::max)(1, contentBottom - contentTop));
+                            const float maxImageWidth = width;
+                            const float maxImageHeight = height * 0.8f;
+                            const float imageScale = (std::min)(maxImageWidth / contentWidth, maxImageHeight / contentHeight);
+                            const float drawWidth = floorf(contentWidth * imageScale);
+                            const float drawHeight = floorf(contentHeight * imageScale);
+                            const ImVec2 imageMin(floorf(buttonMin.x + (width - drawWidth) * 0.5f),
+                                                  floorf(buttonMin.y + (height - drawHeight) * 0.5f));
+                            const ImVec2 imageMax(imageMin.x + drawWidth, imageMin.y + drawHeight);
+                            const ImVec2 uvMin(static_cast<float>(contentLeft) / static_cast<float>(cursorData->bitmapWidth),
+                                               static_cast<float>(contentTop) / static_cast<float>(cursorData->bitmapHeight));
+                            const ImVec2 uvMax(static_cast<float>(contentRight) / static_cast<float>(cursorData->bitmapWidth),
+                                               static_cast<float>(contentBottom) / static_cast<float>(cursorData->bitmapHeight));
+                            const float imageAlpha = selected ? 1.0f : (hovered ? 0.96f : 0.88f);
+                            drawList->AddImage((ImTextureID)(intptr_t)cursorData->texture, imageMin, imageMax, uvMin, uvMax,
+                                               ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, imageAlpha)));
+                        } else {
+                            const ImVec2 tip(buttonMin.x + width * 0.34f, buttonMin.y + height * 0.28f);
+                            const ImVec2 tail(buttonMin.x + width * 0.62f, buttonMin.y + height * 0.68f);
+                            drawList->AddLine(tip, tail, iconColorU32, stroke);
+                            drawList->AddLine(tip, ImVec2(buttonMin.x + width * 0.34f, buttonMin.y + height * 0.58f), iconColorU32, stroke);
+                            drawList->AddLine(tip, ImVec2(buttonMin.x + width * 0.54f, buttonMin.y + height * 0.42f), iconColorU32, stroke);
+                        }
+                    } else {
+                        const float crossHalfWidth = width * 0.35f;
+                        const float crossHalfHeight = height * 0.35f;
+                        drawList->AddLine(ImVec2(centerX - crossHalfWidth, centerY), ImVec2(centerX + crossHalfWidth, centerY), iconColorU32,
+                                          stroke);
+                        drawList->AddLine(ImVec2(centerX, centerY - crossHalfHeight), ImVec2(centerX, centerY + crossHalfHeight), iconColorU32,
+                                          stroke);
+                    }
+
+                    if (selected) {
+                        drawList->AddLine(ImVec2(buttonMin.x + 4.0f, buttonMax.y - 2.0f), ImVec2(buttonMax.x - 4.0f, buttonMax.y - 2.0f),
+                                          iconColorU32, 2.0f);
+                    }
+
+                    if (hovered) {
+                        ImGui::SetTooltip("%s", getKeyboardLayoutCursorStateViewTooltip(view));
+                    }
+
+                    ImGui::PopID();
                 };
 
                 auto findBestRebindIndexForCursorState = [&](DWORD fromVk, const char* cursorStateId) -> int {
@@ -868,18 +989,15 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
 
                         ImGui::TextUnformatted(trc("inputs.rebind_layout_state"));
                         ImGui::SameLine();
-                        ImGui::SetNextItemWidth(170.0f);
-                        {
-                            const char* rebindLayoutItems[] = {
-                                trc("inputs.rebind_layout_any"),
-                                trc("inputs.rebind_layout_cursor_free"),
-                                trc("inputs.rebind_layout_cursor_grabbed")
-                            };
-                            ImGui::Combo("##rebindLayoutCursorState", &s_keyboardLayoutCursorStateView, rebindLayoutItems,
-                                         IM_ARRAYSIZE(rebindLayoutItems));
-                        }
+                        drawKeyboardLayoutCursorStateButton("default", kKeyboardLayoutCursorStateViewAny);
+                        ImGui::SameLine(0.0f, 6.0f);
+                        drawKeyboardLayoutCursorStateButton("cursorFree", kKeyboardLayoutCursorStateViewCursorFree);
+                        ImGui::SameLine(0.0f, 6.0f);
+                        drawKeyboardLayoutCursorStateButton("cursorGrabbed", kKeyboardLayoutCursorStateViewCursorGrabbed);
                         ImGui::SameLine();
                         HelpMarker(trc("inputs.tooltip.rebind_layout_state"));
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%s", getKeyboardLayoutCursorStateViewLabel(getKeyboardLayoutCursorStateViewId()));
 
                         ImGui::TextDisabled(trc("inputs.keyboard_layout_state_note"));
                         ImGui::TextDisabled(trc("inputs.keyboard_layout_tip"));
@@ -3270,7 +3388,6 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                     {
                         ImGui::Spacing();
                         ImGui::SeparatorText(trc("inputs.rebinds"));
-                        bool anyShown = false;
                         auto isNoOp = [&](const KeyRebind& r) -> bool {
                             if (r.fromKey == 0 || r.toKey == 0) return true;
                             if (r.toKey != r.fromKey) return false;
@@ -3281,10 +3398,7 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                             if (hasShiftLayerOverride(&r, r.fromKey)) return false;
                             return true;
                         };
-                        for (const auto& r : g_config.keyRebinds.rebinds) {
-                            if (r.fromKey == 0 || r.toKey == 0) continue;
-                            if (isNoOp(r)) continue;
-
+                        auto renderRebindSummaryLine = [&](const KeyRebind& r) {
                             std::string fromStr = VkToString(r.fromKey);
                             std::string typesStr = typesValueForDisplay(&r, r.fromKey);
                             if (hasShiftLayerOverride(&r, r.fromKey)) {
@@ -3296,8 +3410,50 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                             DWORD displayScan = resolveTriggerScanFor(&r, r.fromKey);
                             std::string triggersStr = scanCodeToDisplayName(displayScan, triggerVk);
                             ImGui::Text("%s -> %s & %s", fromStr.c_str(), typesStr.c_str(), triggersStr.c_str());
+                        };
+
+                        auto renderRebindSummarySection = [&](const char* cursorStateId, const char* label) -> bool {
+                            bool sectionShown = false;
+                            for (const auto& r : g_config.keyRebinds.rebinds) {
+                                if (r.fromKey == 0 || r.toKey == 0) continue;
+                                if (isNoOp(r)) continue;
+                                if (NormalizeKeyRebindCursorStateId(r.cursorState) != cursorStateId) continue;
+
+                                if (!sectionShown) {
+                                    ImGui::TextDisabled("%s", label);
+                                    ImGui::Indent();
+                                    sectionShown = true;
+                                }
+
+                                renderRebindSummaryLine(r);
+                            }
+
+                            if (sectionShown) {
+                                ImGui::Unindent();
+                            }
+
+                            return sectionShown;
+                        };
+
+                        bool anyShown = false;
+                        const struct {
+                            const char* cursorStateId;
+                            const char* label;
+                        } summarySections[] = {
+                            { kKeyRebindCursorStateAny, trc("label.default") },
+                            { kKeyRebindCursorStateCursorGrabbed, trc("inputs.rebind_layout_cursor_grabbed") },
+                            { kKeyRebindCursorStateCursorFree, trc("inputs.rebind_layout_cursor_free") },
+                        };
+
+                        for (const auto& section : summarySections) {
+                            if (!renderRebindSummarySection(section.cursorStateId, section.label)) {
+                                continue;
+                            }
+
                             anyShown = true;
+                            ImGui::Spacing();
                         }
+
                         if (!anyShown) {
                             ImGui::TextDisabled(trc("inputs.no_active_rebinds"));
                         }

@@ -20,7 +20,12 @@ struct CursorData {
     int hotspotY = 0;
     int bitmapWidth = 32;
     int bitmapHeight = 32;
+    int contentLeft = 0;
+    int contentTop = 0;
+    int contentRight = 0;
+    int contentBottom = 0;
     bool hasInvertedPixels = false;
+    bool ownsHandle = true;
     UINT loadType = IMAGE_CURSOR;
 };
 
@@ -36,6 +41,8 @@ const CursorData* FindCursor(const std::wstring& path, int size);
 const CursorData* FindCursorByHandle(HCURSOR hCursor);
 
 const CursorData* LoadOrFindCursorFromHandle(HCURSOR hCursor);
+
+const CursorData* LoadOrFindSystemCursor(LPCWSTR systemCursorId);
 
 void Cleanup();
 
