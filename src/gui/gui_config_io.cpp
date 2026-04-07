@@ -24,7 +24,7 @@ struct ActiveProfileSaveState {
     ProfileSectionSelection sections;
 };
 
-static ActiveProfileSaveState PrepareConfigPersistence(Config& sharedSnapshot, Config& profileSnapshot) {
+static ActiveProfileSaveState GetActiveProfileSaveState() {
     ActiveProfileSaveState state;
     state.name = g_profilesConfig.activeProfile;
 
@@ -37,24 +37,43 @@ static ActiveProfileSaveState PrepareConfigPersistence(Config& sharedSnapshot, C
         }
     }
 
+    return state;
+}
+
+static void SyncSharedConfigFromMergedConfig(const ActiveProfileSaveState& state) {
     if (!state.tracked) {
         g_sharedConfig = g_config;
         g_sharedConfig.configVersion = GetConfigVersion();
-        sharedSnapshot = g_sharedConfig;
-        profileSnapshot = Config{};
-        return state;
+        return;
     }
 
     Config updatedShared = g_config;
     ApplyProfileFields(g_sharedConfig, updatedShared, state.sections);
     updatedShared.configVersion = GetConfigVersion();
-    g_sharedConfig = updatedShared;
+    g_sharedConfig = std::move(updatedShared);
+}
 
+static ActiveProfileSaveState PrepareConfigPersistence(Config& sharedSnapshot, Config& profileSnapshot) {
+    const ActiveProfileSaveState state = GetActiveProfileSaveState();
+
+    SyncSharedConfigFromMergedConfig(state);
     sharedSnapshot = g_sharedConfig;
+
+    if (!state.tracked) {
+        profileSnapshot = Config{};
+        return state;
+    }
+
     profileSnapshot = Config{};
     ApplyProfileFields(g_config, profileSnapshot, state.sections);
     profileSnapshot.configVersion = GetConfigVersion();
     return state;
+}
+
+void PublishGuiConfigSnapshot() {
+    const ActiveProfileSaveState state = GetActiveProfileSaveState();
+    SyncSharedConfigFromMergedConfig(state);
+    PublishConfigSnapshot();
 }
 
 bool WaitForConfigSaveIdle(int timeoutMs) {
@@ -810,7 +829,7 @@ void LoadConfig() {
         }
         RequestScreenMetricsRecalculation();
 
-        PublishConfigSnapshot();
+        PublishGuiConfigSnapshot();
         ApplyConfineCursorToGameWindow();
         SetGlobalMirrorGammaMode(g_config.mirrorGammaMode);
         DiscardUnusedUserImageCaches();

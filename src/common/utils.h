@@ -366,6 +366,10 @@ struct ModeViewportInfo {
     bool stretchEnabled = false;
 };
 
+inline int GetCenteredAxisOffset(int containerSize, int contentSize) {
+    return containerSize / 2 - contentSize / 2;
+}
+
 bool GetMonitorRectForWindow(HWND hwnd, RECT& outRect);
 bool GetMonitorSizeForWindow(HWND hwnd, int& outW, int& outH);
 bool GetWindowClientRectInScreen(HWND hwnd, RECT& outRect);

@@ -1643,8 +1643,8 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
                 } else {
                     fromWidth = fromMode->width;
                     fromHeight = fromMode->height;
-                    fromX = (fullW - fromWidth) / 2;
-                    fromY = (fullH - fromHeight) / 2;
+                    fromX = GetCenteredAxisOffset(fullW, fromWidth);
+                    fromY = GetCenteredAxisOffset(fullH, fromHeight);
                 }
             } else {
                 fromWidth = fullW;
@@ -1670,8 +1670,8 @@ bool SwitchToMode(const std::string& newModeId, const std::string& source, bool 
             } else {
                 toWidth = toMode->width;
                 toHeight = toMode->height;
-                toX = (fullW - toWidth) / 2;
-                toY = (fullH - toHeight) / 2;
+                toX = GetCenteredAxisOffset(fullW, toWidth);
+                toY = GetCenteredAxisOffset(fullH, toHeight);
             }
 
             toModeCopy = *toMode;
@@ -1906,8 +1906,8 @@ ModeViewportInfo GetCurrentModeViewport_Internal() {
             info.stretchHeight = mode->stretch.height;
         }
     } else {
-        info.stretchX = screenW / 2 - mode->width / 2;
-        info.stretchY = screenH / 2 - mode->height / 2;
+        info.stretchX = GetCenteredAxisOffset(screenW, mode->width);
+        info.stretchY = GetCenteredAxisOffset(screenH, mode->height);
         info.stretchWidth = mode->width;
         info.stretchHeight = mode->height;
     }

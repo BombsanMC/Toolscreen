@@ -889,6 +889,10 @@ extern std::atomic<bool> g_configIsDirty;
 // Atomically publish current g_config as an immutable snapshot.
 void PublishConfigSnapshot();
 
+// Synchronize the shared/base GUI config from the current draft and publish
+// the merged runtime snapshot for reader threads.
+void PublishGuiConfigSnapshot();
+
 // Atomically publish a specific config instance as an immutable snapshot.
 // Use this for derived/runtime snapshots built off the latest published config.
 void PublishConfigSnapshot(const Config& config);
@@ -1077,6 +1081,7 @@ void RebuildHotkeyMainKeys_Internal(); // Internal version - requires locks alre
 
 void StartModeTransition(const std::string& fromModeId, const std::string& toModeId, int fromWidth, int fromHeight, int fromX, int fromY,
                          int toWidth, int toHeight, int toX, int toY, const ModeConfig& toMode);
+void RetargetActiveModeTransition(const ModeConfig& mode);
 void UpdateModeTransition();
 bool IsModeTransitionActive();
 GameTransitionType GetGameTransitionType();

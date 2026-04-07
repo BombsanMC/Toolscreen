@@ -1297,8 +1297,8 @@ static bool GetLatestViewportForHook(int& outModeW, int& outModeH, bool& outStre
             s_cache.stretchH = mode->stretch.height;
         }
     } else {
-        s_cache.stretchX = screenW / 2 - modeW / 2;
-        s_cache.stretchY = screenH / 2 - modeH / 2;
+        s_cache.stretchX = GetCenteredAxisOffset(screenW, modeW);
+        s_cache.stretchY = GetCenteredAxisOffset(screenH, modeH);
         s_cache.stretchW = modeW;
         s_cache.stretchH = modeH;
     }
@@ -1330,6 +1330,9 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
     const ViewportTransitionSnapshot& transitionSnap =
         g_viewportTransitionSnapshots[g_viewportTransitionSnapshotIndex.load(std::memory_order_acquire)];
     bool isTransitionActive = transitionSnap.active;
+    auto hookConfigSnap = GetConfigSnapshot();
+    const bool hideAnimationsInGame = hookConfigSnap ? hookConfigSnap->hideAnimationsInGame : g_config.hideAnimationsInGame;
+    const bool cutGameViewportTransition = isTransitionActive && hideAnimationsInGame;
 
     // Lock-free read of cached mode viewport data (updated by logic_thread)
     const CachedModeViewport& cachedMode = g_viewportModeCache[g_viewportModeCacheIndex.load(std::memory_order_acquire)];
@@ -1339,7 +1342,7 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
     bool stretchEnabled;
     int stretchX, stretchY, stretchWidth, stretchHeight;
 
-    if (isTransitionActive) {
+    if (isTransitionActive && !cutGameViewportTransition) {
         modeWidth = transitionSnap.toNativeWidth;
         modeHeight = transitionSnap.toNativeHeight;
         stretchEnabled = true;
@@ -1372,16 +1375,26 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
     GetRecentRequestedWindowClientResizes(requestedViewportW, requestedViewportH, previousRequestedViewportW, previousRequestedViewportH);
 
     bool posValid = x == 0 && y == 0;
-    bool dimsMatch = (width == modeWidth && height == modeHeight) ||
-                     (width == lastViewportWValue && height == lastViewportHValue) ||
-                     (cachedMode.valid && width == cachedMode.width && height == cachedMode.height) ||
-                     (width == requestedViewportW && height == requestedViewportH) ||
-                     (width == previousRequestedViewportW && height == previousRequestedViewportH) ||
-                     MatchesRecentViewportHookModeSize(hookCache, static_cast<int>(width), static_cast<int>(height));
-
-    if (isTransitionActive && !dimsMatch) {
+    bool dimsMatch = false;
+    if (isTransitionActive && !cutGameViewportTransition) {
         dimsMatch = (width == transitionSnap.fromNativeWidth && height == transitionSnap.fromNativeHeight) ||
                     (width == transitionSnap.toNativeWidth && height == transitionSnap.toNativeHeight);
+
+        if (!dimsMatch) {
+            dimsMatch = (width == modeWidth && height == modeHeight) ||
+                        (cachedMode.valid && width == cachedMode.width && height == cachedMode.height);
+        }
+    } else {
+        dimsMatch = (width == modeWidth && height == modeHeight) ||
+                    (width == lastViewportWValue && height == lastViewportHValue) ||
+                    (cachedMode.valid && width == cachedMode.width && height == cachedMode.height) ||
+                    (width == requestedViewportW && height == requestedViewportH) ||
+                    (width == previousRequestedViewportW && height == previousRequestedViewportH) ||
+                    MatchesRecentViewportHookModeSize(hookCache, static_cast<int>(width), static_cast<int>(height));
+
+        if (isTransitionActive && !dimsMatch) {
+            dimsMatch = (width == transitionSnap.toNativeWidth && height == transitionSnap.toNativeHeight);
+        }
     }
 
     if (!posValid || !dimsMatch) {
@@ -1423,7 +1436,7 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
         return next(x, y, width, height);
     }
 
-    bool useAnimatedDimensions = transitionSnap.active;
+    bool useAnimatedDimensions = transitionSnap.active && !cutGameViewportTransition;
     int animatedX = transitionSnap.currentX;
     int animatedY = transitionSnap.currentY;
     int animatedWidth = transitionSnap.currentWidth;
@@ -1434,7 +1447,7 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
     int targetHeight = transitionSnap.toHeight;
 
     if (useAnimatedDimensions) {
-        bool shouldSkipAnimation = g_config.hideAnimationsInGame;
+        bool shouldSkipAnimation = hideAnimationsInGame;
 
         if (shouldSkipAnimation) {
             stretchX = targetX;
@@ -1449,8 +1462,8 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
         }
     } else {
         if (!stretchEnabled) {
-            stretchX = screenW / 2 - modeWidth / 2;
-            stretchY = screenH / 2 - modeHeight / 2;
+            stretchX = GetCenteredAxisOffset(screenW, modeWidth);
+            stretchY = GetCenteredAxisOffset(screenH, modeHeight);
             stretchWidth = modeWidth;
             stretchHeight = modeHeight;
         }
@@ -1901,6 +1914,9 @@ void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuf
 
     const ViewportTransitionSnapshot& transitionSnap =
         g_viewportTransitionSnapshots[g_viewportTransitionSnapshotIndex.load(std::memory_order_acquire)];
+    auto hookConfigSnap = GetConfigSnapshot();
+    const bool hideAnimationsInGame = hookConfigSnap ? hookConfigSnap->hideAnimationsInGame : g_config.hideAnimationsInGame;
+    const bool cutGameViewportTransition = transitionSnap.active && hideAnimationsInGame;
     const CachedModeViewport& cachedMode = g_viewportModeCache[g_viewportModeCacheIndex.load(std::memory_order_acquire)];
     int modeWidth = 0;
     int modeHeight = 0;
@@ -1910,7 +1926,7 @@ void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuf
     int stretchWidth = 0;
     int stretchHeight = 0;
 
-    if (transitionSnap.active) {
+    if (transitionSnap.active && !cutGameViewportTransition) {
         modeWidth = transitionSnap.toNativeWidth;
         modeHeight = transitionSnap.toNativeHeight;
         stretchEnabled = true;
@@ -1937,8 +1953,8 @@ void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuf
     const int screenW = GetCachedWindowWidth();
     const int screenH = GetCachedWindowHeight();
     if (screenW > 0 && screenH > 0) {
-        if (transitionSnap.active) {
-            if (g_config.hideAnimationsInGame) {
+        if (transitionSnap.active && !cutGameViewportTransition) {
+            if (hideAnimationsInGame) {
                 stretchX = transitionSnap.toX;
                 stretchY = transitionSnap.toY;
                 stretchWidth = transitionSnap.toWidth;
@@ -1950,8 +1966,8 @@ void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuf
                 stretchHeight = transitionSnap.currentHeight;
             }
         } else if (!stretchEnabled) {
-            stretchX = screenW / 2 - modeWidth / 2;
-            stretchY = screenH / 2 - modeHeight / 2;
+            stretchX = GetCenteredAxisOffset(screenW, modeWidth);
+            stretchY = GetCenteredAxisOffset(screenH, modeHeight);
             stretchWidth = modeWidth;
             stretchHeight = modeHeight;
         }
@@ -2327,8 +2343,8 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
                     contentW = viewport.stretchWidth;
                     contentH = viewport.stretchHeight;
                 } else {
-                    offsetX = (fullW - windowWidth) / 2;
-                    offsetY = (fullH - windowHeight) / 2;
+                    offsetX = GetCenteredAxisOffset(fullW, windowWidth);
+                    offsetY = GetCenteredAxisOffset(fullH, windowHeight);
                 }
 
                 g_obsPre113Windowed.store(true, std::memory_order_release);
@@ -2373,7 +2389,7 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
             int modeWidth = 0, modeHeight = 0;
             bool modeValid = false;
             {
-                const ModeConfig* newMode = GetMode(desiredModeId);
+                const ModeConfig* newMode = GetModeFromSnapshot(frameCfg, desiredModeId);
                 if (newMode) {
                     modeWidth = newMode->width;
                     modeHeight = newMode->height;
@@ -2396,10 +2412,9 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
         ModeConfig modeToRenderCopy;
         bool modeFound = false;
         {
-            // Use target/desired mode - GetMode is lock-free
-            const ModeConfig* tempMode = GetMode(desiredModeId);
+            const ModeConfig* tempMode = GetModeFromSnapshot(frameCfg, desiredModeId);
             if (!tempMode && g_isTransitioningMode) {
-                tempMode = GetMode(lastFrameModeIdCopy);
+                tempMode = GetModeFromSnapshot(frameCfg, lastFrameModeIdCopy);
             }
             if (tempMode) {
                 modeToRenderCopy = *tempMode;

@@ -69,17 +69,25 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
 
         g_configIsDirty = true;
 
+        const bool shouldResizeCurrentMode = (g_currentModeId == mode.id);
+        const bool shouldResizePreemptiveEyeZoom = EqualsIgnoreCase(g_currentModeId, "Preemptive") && EqualsIgnoreCase(mode.id, "EyeZoom");
+        if (!shouldResizeCurrentMode && !shouldResizePreemptiveEyeZoom) { return; }
+
         HWND hwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
         if (!hwnd) { return; }
 
-        if (g_currentModeId == mode.id) {
+        if (shouldResizeCurrentMode) {
+            RetargetActiveModeTransition(mode);
+            PublishGuiConfigSnapshot();
             RequestWindowClientResize(hwnd, mode.width, mode.height, resizeSource);
             return;
         }
 
-        if (EqualsIgnoreCase(g_currentModeId, "Preemptive") && EqualsIgnoreCase(mode.id, "EyeZoom")) {
+        if (shouldResizePreemptiveEyeZoom) {
             for (const auto& syncedMode : g_config.modes) {
                 if (EqualsIgnoreCase(syncedMode.id, "Preemptive")) {
+                    RetargetActiveModeTransition(syncedMode);
+                    PublishGuiConfigSnapshot();
                     RequestWindowClientResize(hwnd, syncedMode.width, syncedMode.height, "gui:preemptive_eyezoom_sync");
                     break;
                 }
@@ -172,7 +180,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:fullscreen_width_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:fullscreen_width_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -199,7 +211,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:fullscreen_height_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:fullscreen_height_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -1664,7 +1680,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:thin_width_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:thin_width_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -1691,7 +1711,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:thin_height_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:thin_height_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -2075,7 +2099,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:wide_width_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:wide_width_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -2102,7 +2130,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
                         g_configIsDirty = true;
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:wide_height_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:wide_height_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -2570,7 +2602,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
 
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:eyezoom_width_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:eyezoom_width_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();
@@ -2603,7 +2639,11 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.modes"))) {
 
                         if (g_currentModeId == mode.id) {
                             HWND hwnd = g_minecraftHwnd.load();
-                            if (hwnd) { RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:eyezoom_height_slider"); }
+                            if (hwnd) {
+                                RetargetActiveModeTransition(mode);
+                                PublishGuiConfigSnapshot();
+                                RequestWindowClientResize(hwnd, mode.width, mode.height, "gui:eyezoom_height_slider");
+                            }
                         }
                     }
                     ImGui::SameLine();

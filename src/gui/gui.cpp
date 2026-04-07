@@ -3267,8 +3267,7 @@ void RenderSettingsGUI() {
 
     SaveConfig();
 
-    // Ensure config snapshot is published for reader threads after GUI mutations.
-    // update to prevent reader threads from seeing stale/freed vector data.
-    if (g_configIsDirty.load()) { PublishConfigSnapshot(); }
+    // Ensure config snapshots stay profile-aware for reader threads after GUI mutations.
+    if (g_configIsDirty.load()) { PublishGuiConfigSnapshot(); }
 }
 

@@ -3186,7 +3186,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
     const int effectiveFromH = isTransitioningFromEyeZoom ? toH : fromH;
     const int effectiveFromY = isTransitioningFromEyeZoom ? toY : fromY;
     const bool wantsTransitionSlide = mirrorSlideProgress < 1.0f && !skipAnimation;
-    const int targetViewportX = (fullW - cfg.eyezoom.windowWidth) / 2;
+    const int targetViewportX = GetCenteredAxisOffset(fullW, cfg.eyezoom.windowWidth);
     const bool hasEyeZoomAnimatedPosition = eyeZoomAnimatedViewportX >= 0 && targetViewportX > 0;
     const bool isEyeZoomTransitioning = hasEyeZoomAnimatedPosition && eyeZoomAnimatedViewportX < targetViewportX;
     const bool wantsEyeZoomSlide =
@@ -5176,8 +5176,8 @@ bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, 
         } else {
             finalW = modeWidth;
             finalH = modeHeight;
-            finalX = (fullW - finalW) / 2;
-            finalY = (fullH - finalH) / 2;
+            finalX = GetCenteredAxisOffset(fullW, finalW);
+            finalY = GetCenteredAxisOffset(fullH, finalH);
         }
     }
 
@@ -5436,7 +5436,7 @@ void handleEyeZoomMode(const GLState& s, const EyeZoomConfig& zoomConfig, int fu
     glDisable(GL_SCISSOR_TEST);
 
     int modeWidth = zoomConfig.windowWidth;
-    int targetViewportX = (fullW - modeWidth) / 2;
+    int targetViewportX = GetCenteredAxisOffset(fullW, modeWidth);
 
     int viewportX;
     if (animatedViewportX >= 0) {
@@ -5471,7 +5471,7 @@ void handleEyeZoomMode(const GLState& s, const EyeZoomConfig& zoomConfig, int fu
         finalZoomOutputWidth = targetViewportX - (2 * autoHorizontalMargin);
         finalZoomOutputHeight = fullH - (2 * autoVerticalMargin);
         finalZoomX = autoHorizontalMargin;
-        finalZoomY = (fullH - finalZoomOutputHeight) / 2;
+        finalZoomY = GetCenteredAxisOffset(fullH, finalZoomOutputHeight);
 
         zoomOutputWidth = finalZoomOutputWidth;
         zoomOutputHeight = finalZoomOutputHeight;
@@ -6009,8 +6009,8 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
         } else {
             finalW = modeWidth;
             finalH = modeHeight;
-            finalX = (fullW - finalW) / 2;
-            finalY = (fullH - finalH) / 2;
+            finalX = GetCenteredAxisOffset(fullW, finalW);
+            finalY = GetCenteredAxisOffset(fullH, finalH);
         }
         currentGeo = { current_gameW, current_gameH, finalX, finalY, finalW, finalH };
         int finalY_gl = fullH - finalY - finalH;
@@ -7525,6 +7525,60 @@ static float CalculateBounceOffset(float bounceProgress, int bounceIndex, int to
     return bounce;
 }
 
+static void ResolveModeTransitionTargetBounds(const ModeConfig& mode, int fullW, int fullH, int& outWidth, int& outHeight, int& outX,
+                                              int& outY) {
+    if (mode.stretch.enabled) {
+        if (EqualsIgnoreCase(mode.id, "Fullscreen")) {
+            outWidth = fullW;
+            outHeight = fullH;
+            outX = 0;
+            outY = 0;
+        } else {
+            outWidth = mode.stretch.width;
+            outHeight = mode.stretch.height;
+            outX = mode.stretch.x;
+            outY = mode.stretch.y;
+        }
+    } else {
+        outWidth = mode.width;
+        outHeight = mode.height;
+        outX = GetCenteredAxisOffset(fullW, outWidth);
+        outY = GetCenteredAxisOffset(fullH, outHeight);
+    }
+}
+
+static void PublishViewportTransitionSnapshotLocked() {
+    int nextSnapshotIndex = 1 - g_viewportTransitionSnapshotIndex.load(std::memory_order_relaxed);
+    ViewportTransitionSnapshot& snapshot = g_viewportTransitionSnapshots[nextSnapshotIndex];
+    snapshot.active = g_modeTransition.active;
+    snapshot.isBounceTransition = (g_modeTransition.gameTransition == GameTransitionType::Bounce);
+    snapshot.fromModeId = g_modeTransition.fromModeId;
+    snapshot.toModeId = g_modeTransition.toModeId;
+    snapshot.fromWidth = g_modeTransition.fromWidth;
+    snapshot.fromHeight = g_modeTransition.fromHeight;
+    snapshot.fromX = g_modeTransition.fromX;
+    snapshot.fromY = g_modeTransition.fromY;
+    snapshot.currentX = g_modeTransition.currentX;
+    snapshot.currentY = g_modeTransition.currentY;
+    snapshot.currentWidth = g_modeTransition.currentWidth;
+    snapshot.currentHeight = g_modeTransition.currentHeight;
+    snapshot.toX = g_modeTransition.toX;
+    snapshot.toY = g_modeTransition.toY;
+    snapshot.toWidth = g_modeTransition.toWidth;
+    snapshot.toHeight = g_modeTransition.toHeight;
+    snapshot.fromNativeWidth = g_modeTransition.fromNativeWidth;
+    snapshot.fromNativeHeight = g_modeTransition.fromNativeHeight;
+    snapshot.toNativeWidth = g_modeTransition.toNativeWidth;
+    snapshot.toNativeHeight = g_modeTransition.toNativeHeight;
+    snapshot.gameTransition = g_modeTransition.gameTransition;
+    snapshot.overlayTransition = g_modeTransition.overlayTransition;
+    snapshot.backgroundTransition = g_modeTransition.backgroundTransition;
+    snapshot.progress = g_modeTransition.progress;
+    snapshot.moveProgress = g_modeTransition.moveProgress;
+    snapshot.startTime = g_modeTransition.startTime;
+    g_viewportTransitionSnapshotIndex.store(nextSnapshotIndex, std::memory_order_release);
+}
+
 void StartModeTransition(const std::string& fromModeId, const std::string& toModeId, int fromWidth, int fromHeight, int fromX, int fromY,
                          int toWidth, int toHeight, int toX, int toY, const ModeConfig& toMode) {
     LogCategory("animation", "[ANIMATION] StartModeTransition entry - acquiring g_modeTransitionMutex...");
@@ -7651,38 +7705,51 @@ void StartModeTransition(const std::string& fromModeId, const std::string& toMod
                                  " -> " + toModeId + " (" + std::to_string(toWidth) + "x" + std::to_string(toHeight) + " at " +
                                  std::to_string(toX) + "," + std::to_string(toY) + ")");
 
-    // Update lock-free snapshot for viewport hook and GetModeTransitionState (done inside the lock)
-    int nextSnapshotIndex = 1 - g_viewportTransitionSnapshotIndex.load(std::memory_order_relaxed);
-    ViewportTransitionSnapshot& snapshot = g_viewportTransitionSnapshots[nextSnapshotIndex];
-    snapshot.active = g_modeTransition.active;
-    snapshot.isBounceTransition = (g_modeTransition.gameTransition == GameTransitionType::Bounce);
-    snapshot.fromModeId = g_modeTransition.fromModeId;
-    snapshot.toModeId = g_modeTransition.toModeId;
-    snapshot.fromWidth = g_modeTransition.fromWidth;
-    snapshot.fromHeight = g_modeTransition.fromHeight;
-    snapshot.fromX = g_modeTransition.fromX;
-    snapshot.fromY = g_modeTransition.fromY;
-    snapshot.currentX = g_modeTransition.currentX;
-    snapshot.currentY = g_modeTransition.currentY;
-    snapshot.currentWidth = g_modeTransition.currentWidth;
-    snapshot.currentHeight = g_modeTransition.currentHeight;
-    snapshot.toX = g_modeTransition.toX;
-    snapshot.toY = g_modeTransition.toY;
-    snapshot.toWidth = g_modeTransition.toWidth;
-    snapshot.toHeight = g_modeTransition.toHeight;
-    snapshot.fromNativeWidth = g_modeTransition.fromNativeWidth;
-    snapshot.fromNativeHeight = g_modeTransition.fromNativeHeight;
-    snapshot.toNativeWidth = g_modeTransition.toNativeWidth;
-    snapshot.toNativeHeight = g_modeTransition.toNativeHeight;
-    snapshot.gameTransition = g_modeTransition.gameTransition;
-    snapshot.overlayTransition = g_modeTransition.overlayTransition;
-    snapshot.backgroundTransition = g_modeTransition.backgroundTransition;
-    snapshot.progress = g_modeTransition.progress;
-    snapshot.moveProgress = g_modeTransition.moveProgress;
-    snapshot.startTime = g_modeTransition.startTime;
-    g_viewportTransitionSnapshotIndex.store(nextSnapshotIndex, std::memory_order_release);
+    PublishViewportTransitionSnapshotLocked();
 
     LogCategory("animation", "[ANIMATION] StartModeTransition complete - releasing g_modeTransitionMutex");
+}
+
+void RetargetActiveModeTransition(const ModeConfig& mode) {
+    std::lock_guard<std::mutex> lock(g_modeTransitionMutex);
+
+    if (!g_modeTransition.active || !EqualsIgnoreCase(g_modeTransition.toModeId, mode.id)) { return; }
+
+    int fullW = GetCachedWindowWidth();
+    int fullH = GetCachedWindowHeight();
+    if (fullW < 1) fullW = 1;
+    if (fullH < 1) fullH = 1;
+
+    int toWidth = 0;
+    int toHeight = 0;
+    int toX = 0;
+    int toY = 0;
+    ResolveModeTransitionTargetBounds(mode, fullW, fullH, toWidth, toHeight, toX, toY);
+
+    g_modeTransition.toWidth = toWidth;
+    g_modeTransition.toHeight = toHeight;
+    g_modeTransition.toX = toX;
+    g_modeTransition.toY = toY;
+    g_modeTransition.toNativeWidth = mode.width > 0 ? mode.width : toWidth;
+    g_modeTransition.toNativeHeight = mode.height > 0 ? mode.height : toHeight;
+
+    if (g_modeTransition.gameTransition != GameTransitionType::Bounce) {
+        g_modeTransition.currentWidth = g_modeTransition.toWidth;
+        g_modeTransition.currentHeight = g_modeTransition.toHeight;
+        g_modeTransition.currentX = g_modeTransition.toX;
+        g_modeTransition.currentY = g_modeTransition.toY;
+    } else {
+        if (g_modeTransition.skipAnimateX) {
+            g_modeTransition.currentWidth = g_modeTransition.toWidth;
+            g_modeTransition.currentX = g_modeTransition.toX;
+        }
+        if (g_modeTransition.skipAnimateY) {
+            g_modeTransition.currentHeight = g_modeTransition.toHeight;
+            g_modeTransition.currentY = g_modeTransition.toY;
+        }
+    }
+
+    PublishViewportTransitionSnapshotLocked();
 }
 
 void UpdateModeTransition() {
@@ -7815,36 +7882,7 @@ void UpdateModeTransition() {
         g_modeTransition.active = false;
     }
 
-    // Update lock-free snapshot for viewport hook and GetModeTransitionState (done inside the lock)
-    int nextSnapshotIndex = 1 - g_viewportTransitionSnapshotIndex.load(std::memory_order_relaxed);
-    ViewportTransitionSnapshot& snapshot = g_viewportTransitionSnapshots[nextSnapshotIndex];
-    snapshot.active = g_modeTransition.active;
-    snapshot.isBounceTransition = (g_modeTransition.gameTransition == GameTransitionType::Bounce);
-    snapshot.fromModeId = g_modeTransition.fromModeId;
-    snapshot.toModeId = g_modeTransition.toModeId;
-    snapshot.fromWidth = g_modeTransition.fromWidth;
-    snapshot.fromHeight = g_modeTransition.fromHeight;
-    snapshot.fromX = g_modeTransition.fromX;
-    snapshot.fromY = g_modeTransition.fromY;
-    snapshot.currentX = g_modeTransition.currentX;
-    snapshot.currentY = g_modeTransition.currentY;
-    snapshot.currentWidth = g_modeTransition.currentWidth;
-    snapshot.currentHeight = g_modeTransition.currentHeight;
-    snapshot.toX = g_modeTransition.toX;
-    snapshot.toY = g_modeTransition.toY;
-    snapshot.toWidth = g_modeTransition.toWidth;
-    snapshot.toHeight = g_modeTransition.toHeight;
-    snapshot.fromNativeWidth = g_modeTransition.fromNativeWidth;
-    snapshot.fromNativeHeight = g_modeTransition.fromNativeHeight;
-    snapshot.toNativeWidth = g_modeTransition.toNativeWidth;
-    snapshot.toNativeHeight = g_modeTransition.toNativeHeight;
-    snapshot.gameTransition = g_modeTransition.gameTransition;
-    snapshot.overlayTransition = g_modeTransition.overlayTransition;
-    snapshot.backgroundTransition = g_modeTransition.backgroundTransition;
-    snapshot.progress = g_modeTransition.progress;
-    snapshot.moveProgress = g_modeTransition.moveProgress;
-    snapshot.startTime = g_modeTransition.startTime;
-    g_viewportTransitionSnapshotIndex.store(nextSnapshotIndex, std::memory_order_release);
+    PublishViewportTransitionSnapshotLocked();
 }
 
 bool IsModeTransitionActive() {
