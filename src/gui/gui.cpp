@@ -1897,6 +1897,7 @@ void StartDebugInfoUpload() {
 
 #ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
 std::unordered_map<std::string, GuiTestInteractionRect> s_guiTestInteractionRects;
+std::unordered_map<DWORD, GuiTestKeyboardLayoutKeyLabels> s_guiTestKeyboardLayoutKeyLabels;
 bool s_guiTestOpenKeyboardLayoutRequested = false;
 DWORD s_guiTestOpenKeyboardLayoutContextVk = 0;
 bool s_guiTestConfigSearchQueryRequested = false;
@@ -1933,6 +1934,11 @@ void RecordGuiTestKeyboardLayoutKeyRect(DWORD vk, const ImVec2& min, const ImVec
     char id[96] = {};
     sprintf_s(id, "inputs.keyboard_layout.key.%u", static_cast<unsigned>(vk));
     RecordGuiTestInteractionRect(id, min, max);
+}
+
+void RecordGuiTestKeyboardLayoutKeyLabels(DWORD vk, const std::string& primaryText, const std::string& secondaryText,
+                                          const std::string& shiftLayerText) {
+    s_guiTestKeyboardLayoutKeyLabels[vk] = GuiTestKeyboardLayoutKeyLabels{ primaryText, secondaryText, shiftLayerText };
 }
 
 bool ConsumeGuiTestOpenKeyboardLayoutRequest() {
@@ -2260,6 +2266,7 @@ void CloseSettingsGuiWindow() {
 #ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
 void ResetGuiTestInteractionRects() {
     s_guiTestInteractionRects.clear();
+    s_guiTestKeyboardLayoutKeyLabels.clear();
 }
 
 bool GetGuiTestInteractionRect(const char* id, GuiTestInteractionRect& outRect) {
@@ -2273,6 +2280,16 @@ bool GetGuiTestInteractionRect(const char* id, GuiTestInteractionRect& outRect) 
     }
 
     outRect = found->second;
+    return true;
+}
+
+bool GetGuiTestKeyboardLayoutKeyLabels(DWORD vk, GuiTestKeyboardLayoutKeyLabels& outLabels) {
+    const auto found = s_guiTestKeyboardLayoutKeyLabels.find(vk);
+    if (found == s_guiTestKeyboardLayoutKeyLabels.end()) {
+        return false;
+    }
+
+    outLabels = found->second;
     return true;
 }
 

@@ -988,6 +988,9 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     key-rebind-gui-keyboard-layout-full-bind-and-trigger
     key-rebind-gui-keyboard-layout-split-bind-and-trigger
     key-rebind-gui-keyboard-layout-mouse-source-bind-and-trigger
+    key-rebind-gui-keyboard-layout-mouse-trigger-label-mapping
+    key-rebind-gui-keyboard-layout-xbutton-trigger-label-mapping
+    key-rebind-gui-keyboard-layout-scroll-trigger-label-mapping
     key-rebind-gui-keyboard-layout-cursor-state-override
     key-rebind-gui-keyboard-layout-add-custom-bind-button
     key-rebind-gui-keyboard-layout-remove-custom-bind-button

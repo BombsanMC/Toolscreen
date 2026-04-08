@@ -271,6 +271,13 @@ static GuiTestInteractionRect ExpectGuiInteractionRect(const char* id, const std
     return rect;
 }
 
+static GuiTestKeyboardLayoutKeyLabels ExpectKeyboardLayoutKeyLabels(DWORD vk, const std::string& label) {
+    GuiTestKeyboardLayoutKeyLabels labels;
+    Expect(GetGuiTestKeyboardLayoutKeyLabels(vk, labels),
+           label + " missing keyboard-layout labels for VK " + std::to_string(static_cast<unsigned>(vk)) + ".");
+    return labels;
+}
+
 static POINT GetClientCenterPoint(HWND hwnd, const GuiTestInteractionRect& rect, const std::string& label) {
     POINT point{};
     point.x = static_cast<LONG>(std::lround((rect.minX + rect.maxX) * 0.5f));
@@ -315,6 +322,42 @@ static void OpenKeyboardLayoutContext(DummyWindow& window, DWORD sourceVk) {
     RenderKeyboardInputsFrame(window);
     RequestGuiTestOpenKeyboardLayoutContext(sourceVk);
     RenderKeyboardInputsFrame(window);
+}
+
+static void OpenKeyboardLayout(DummyWindow& window) {
+    RenderKeyboardInputsFrame(window);
+    RenderKeyboardInputsFrame(window);
+    RequestGuiTestOpenKeyboardLayout();
+    RenderKeyboardInputsFrame(window);
+}
+
+static void RunKeyboardLayoutTriggerLabelMappingCase(std::string_view caseName, DWORD triggerVk, DWORD forcedScanCode,
+                                                     const char* expectedTriggerLabel, TestRunMode runMode) {
+    constexpr DWORD kSourceVk = 'A';
+
+    DummyWindow window(kWindowWidth, kWindowHeight, runMode == TestRunMode::Visual);
+    if (SkipIfNoModernGuiTestGL(window)) { return; }
+
+    KeyRebind rebind = MakeEnabledRebind(kSourceVk, triggerVk);
+    rebind.useCustomOutput = true;
+    rebind.customOutputScanCode = forcedScanCode;
+    PrepareRebindGuiCase(caseName, { rebind });
+
+    OpenKeyboardLayout(window);
+    ResetGuiTestInteractionRects();
+    RenderKeyboardInputsFrame(window);
+
+    const GuiTestKeyboardLayoutKeyLabels labels = ExpectKeyboardLayoutKeyLabels(
+        kSourceVk, std::string("Expected keyboard-layout trigger labels for case '") + std::string(caseName) + "'.");
+    Expect(labels.primaryText == "CT",
+           std::string("Expected keyboard-layout trigger mapping case '") + std::string(caseName) +
+               "' to render the compact cannot-type indicator on the source key.");
+    Expect(labels.secondaryText == expectedTriggerLabel,
+           std::string("Expected keyboard-layout trigger mapping case '") + std::string(caseName) +
+               "' to render '" + expectedTriggerLabel + "' instead of a scan-derived fallback label.");
+    Expect(labels.shiftLayerText.empty(),
+           std::string("Expected keyboard-layout trigger mapping case '") + std::string(caseName) +
+               "' to avoid rendering a Shift-layer label.");
 }
 
 static void BindKeyboardLayoutTarget(DummyWindow& window, bool splitMode, DWORD targetVk) {
@@ -923,6 +966,21 @@ void RunKeyRebindGuiKeyboardLayoutMouseSourceBindAndTriggerTest(TestRunMode runM
     Expect(mouseUpResult.consumed, "Expected the GUI-created mouse-source rebind to consume WM_LBUTTONUP.");
     Expect(capture.messages.size() == 1, "Expected the GUI-created mouse-source rebind to forward exactly one WM_KEYUP message.");
     ExpectCapturedMessage(capture, 0, WM_KEYUP, 'Q', "GUI mouse-source rebind WM_KEYUP");
+}
+
+void RunKeyRebindGuiKeyboardLayoutMouseTriggerLabelMappingTest(TestRunMode runMode = TestRunMode::Automated) {
+    RunKeyboardLayoutTriggerLabelMappingCase("key_rebind_gui_keyboard_layout_mouse_trigger_label_mapping",
+                                             VK_LBUTTON, 0x0001, "MB1", runMode);
+}
+
+void RunKeyRebindGuiKeyboardLayoutXButtonTriggerLabelMappingTest(TestRunMode runMode = TestRunMode::Automated) {
+    RunKeyboardLayoutTriggerLabelMappingCase("key_rebind_gui_keyboard_layout_xbutton_trigger_label_mapping",
+                                             VK_XBUTTON1, 0x0001, "MB4", runMode);
+}
+
+void RunKeyRebindGuiKeyboardLayoutScrollTriggerLabelMappingTest(TestRunMode runMode = TestRunMode::Automated) {
+    RunKeyboardLayoutTriggerLabelMappingCase("key_rebind_gui_keyboard_layout_scroll_trigger_label_mapping",
+                                             VK_TOOLSCREEN_SCROLL_UP, 0x0001, "SCROLL UP", runMode);
 }
 
 void RunKeyRebindGuiKeyboardLayoutCursorStateOverrideTest(TestRunMode runMode = TestRunMode::Automated) {

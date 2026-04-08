@@ -3398,7 +3398,7 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
                 glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(renderData.vertices), renderData.vertices);
             } else {
                 const MirrorConfig* sourceConf = nullptr;
-                if (isAnimating && !isSlideOutPass) {
+                if (!isSlideOutPass) {
                     auto sourceIt = sourceMirrorConfigs.find(conf.name);
                     if (sourceIt != sourceMirrorConfigs.end()) {
                         sourceConf = sourceIt->second;
@@ -3484,13 +3484,15 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
                 int finalYScreen = 0;
                 int finalWScreen = targetSizeW;
                 int finalHScreen = targetSizeH;
-                const float t = transitionProgress;
-                finalXScreen = static_cast<int>(fromPosX + (toPosX - fromPosX) * t);
-                finalYScreen = static_cast<int>(fromPosY + (toPosY - fromPosY) * t);
-                if (sourceConf || relativeStretching) {
-                    finalWScreen = static_cast<int>(sourceSizeW + (targetSizeW - sourceSizeW) * t);
-                    finalHScreen = static_cast<int>(sourceSizeH + (targetSizeH - sourceSizeH) * t);
-                }
+                auto applyLayoutProgress = [&](float layoutProgress) {
+                    finalXScreen = static_cast<int>(fromPosX + (toPosX - fromPosX) * layoutProgress);
+                    finalYScreen = static_cast<int>(fromPosY + (toPosY - fromPosY) * layoutProgress);
+                    if (sourceConf || relativeStretching) {
+                        finalWScreen = static_cast<int>(sourceSizeW + (targetSizeW - sourceSizeW) * layoutProgress);
+                        finalHScreen = static_cast<int>(sourceSizeH + (targetSizeH - sourceSizeH) * layoutProgress);
+                    }
+                };
+                applyLayoutProgress(transitionProgress);
 
                 int slideAnchorX = finalXScreen;
                 int slideAnchorW = finalWScreen;
@@ -3521,9 +3523,14 @@ static void RenderMirrorsDirect(const std::vector<MirrorConfig>& activeMirrors, 
                     slideProgress = 1.0f - mirrorSlideProgress;
                 }
             }
-            if (shouldApplySlide && !isSlideOutPass && sourceMirrorConfigs.count(conf.name) > 0) {
-                const bool sharedMirrorChangesHorizontalPlacement = (fromPosX != toPosX) || (sourceSizeW != targetSizeW);
-                if (!sharedMirrorChangesHorizontalPlacement) { shouldApplySlide = false; }
+            bool shouldUseSharedOnScreenLerp = false;
+            if (wantsTransitionSlide && !isSlideOutPass && sourceConf != nullptr) {
+                shouldApplySlide = false;
+                shouldUseSharedOnScreenLerp = (fromPosX != toPosX) || (fromPosY != toPosY) || (sourceSizeW != targetSizeW) ||
+                                              (sourceSizeH != targetSizeH);
+            }
+            if (shouldUseSharedOnScreenLerp) {
+                applyLayoutProgress((std::max)(0.0f, (std::min)(1.0f, mirrorSlideProgress)));
             }
             if (shouldApplySlide) {
                 slideProgress = (std::max)(0.0f, (std::min)(1.0f, slideProgress));

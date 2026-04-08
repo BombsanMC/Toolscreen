@@ -711,16 +711,17 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                 auto scanCodeToDisplayName = [&](DWORD scan, DWORD fallbackVk) -> std::string {
                     const DWORD normalizedFallbackVk = normalizeModifierVkForDisplay(fallbackVk, scan);
 
-                        if (scan == 0) {
-                            if (fallbackVk == VK_LBUTTON || fallbackVk == VK_RBUTTON || fallbackVk == VK_MBUTTON || fallbackVk == VK_XBUTTON1 ||
-                                fallbackVk == VK_XBUTTON2 || isScrollWheelVk(fallbackVk)) {
-                                return VkToString(fallbackVk);
-                            }
-                            if (usesSpecificModifierDisplayName(normalizedFallbackVk)) {
-                                return VkToString(normalizedFallbackVk);
-                            }
-                            return std::string(tr("inputs.keyboard_layout_unbound"));
+                    if (fallbackVk == VK_LBUTTON || fallbackVk == VK_RBUTTON || fallbackVk == VK_MBUTTON || fallbackVk == VK_XBUTTON1 ||
+                        fallbackVk == VK_XBUTTON2 || isScrollWheelVk(fallbackVk)) {
+                        return VkToString(fallbackVk);
+                    }
+
+                    if (scan == 0) {
+                        if (usesSpecificModifierDisplayName(normalizedFallbackVk)) {
+                            return VkToString(normalizedFallbackVk);
                         }
+                        return std::string(tr("inputs.keyboard_layout_unbound"));
+                    }
 
                     const DWORD scanLow = (scan & 0xFF);
                     if (scanLow == 0x45) {
@@ -1787,6 +1788,10 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                                                                : std::string();
                         const bool showSecondaryText = showRebindInfo && !secondaryText.empty();
 
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+                        RecordGuiTestKeyboardLayoutKeyLabels(vk, primaryText, secondaryText, shiftLayerText);
+#endif
+
                         ImFont* fLabel = g_keyboardLayoutPrimaryFont ? g_keyboardLayoutPrimaryFont : ImGui::GetFont();
                         ImFont* fSecondary = g_keyboardLayoutSecondaryFont ? g_keyboardLayoutSecondaryFont : fLabel;
                         auto snapPxText = [](float v) -> float { return floorf(v + 0.5f); };
@@ -2320,6 +2325,9 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.inputs"))) {
                             dl->AddRect(segMin, segMax, theme.border, segR, segFlags, 1.0f);
 
                             const KeyRebind* rb = findRebindForKey(vk);
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+                            RecordGuiTestKeyboardLayoutKeyLabels(vk, label, std::string(), std::string());
+#endif
                             if (rb && rb->fromKey != 0 && rb->toKey != 0) {
                                 const ImU32 outline = rb->enabled ? IM_COL32(0, 220, 110, 255) : IM_COL32(255, 170, 0, 255);
                                 dl->AddRect(segMin, segMax, outline, segR, segFlags, 3.0f);

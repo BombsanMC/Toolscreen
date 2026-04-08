@@ -76,6 +76,12 @@ struct GuiTestInteractionRect {
     float maxY = 0.0f;
 };
 
+struct GuiTestKeyboardLayoutKeyLabels {
+    std::string primaryText;
+    std::string secondaryText;
+    std::string shiftLayerText;
+};
+
 enum class GuiTestKeyboardLayoutBindTarget {
     None,
     FullOutputVk,
@@ -103,6 +109,9 @@ enum class GuiTestKeyboardLayoutCursorStateView {
 
 void ResetGuiTestInteractionRects();
 bool GetGuiTestInteractionRect(const char* id, GuiTestInteractionRect& outRect);
+void RecordGuiTestKeyboardLayoutKeyLabels(DWORD vk, const std::string& primaryText, const std::string& secondaryText,
+                                          const std::string& shiftLayerText);
+bool GetGuiTestKeyboardLayoutKeyLabels(DWORD vk, GuiTestKeyboardLayoutKeyLabels& outLabels);
 void RequestGuiTestOpenKeyboardLayout();
 void RequestGuiTestOpenKeyboardLayoutContext(DWORD vk);
 void RequestGuiTestSetConfigSearchQuery(const std::string& query);

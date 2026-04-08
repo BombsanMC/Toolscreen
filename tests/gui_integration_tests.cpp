@@ -423,14 +423,14 @@ void SetLocalFileLastWriteTime(const std::filesystem::path& path,
     localTime.wMinute = minute;
     localTime.wSecond = second;
 
-    SYSTEMTIME utcTime{};
-    Expect(TzSpecificLocalTimeToSystemTime(nullptr, &localTime, &utcTime) == TRUE,
-           "Failed to convert local timestamp to UTC for: " + Narrow(path.wstring()));
+        FILETIME localFileTime{};
+        Expect(SystemTimeToFileTime(&localTime, &localFileTime) == TRUE,
+            "Failed to convert local SYSTEMTIME to local FILETIME for: " + Narrow(path.wstring()));
 
-    FILETIME fileTime{};
-    Expect(SystemTimeToFileTime(&utcTime, &fileTime) == TRUE,
-           "Failed to convert SYSTEMTIME to FILETIME for: " + Narrow(path.wstring()));
-    Expect(SetFileTime(file, nullptr, nullptr, &fileTime) == TRUE,
+        FILETIME utcFileTime{};
+        Expect(LocalFileTimeToFileTime(&localFileTime, &utcFileTime) == TRUE,
+            "Failed to convert local FILETIME to UTC FILETIME for: " + Narrow(path.wstring()));
+        Expect(SetFileTime(file, nullptr, nullptr, &utcFileTime) == TRUE,
            "Failed to apply timestamp to fixture file: " + Narrow(path.wstring()));
     CloseHandle(file);
 }
