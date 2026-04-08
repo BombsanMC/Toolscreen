@@ -155,6 +155,8 @@ std::condition_variable g_browserOverlayDecodeCv;
 std::array<BrowserOverlayEnvironmentState, kBrowserOverlayEnvironmentCount> g_browserOverlayEnvironments;
 std::atomic<bool> g_browserOverlayHostClassRegistered{ false };
 
+void LogBrowserOverlayMessage(const std::string& message);
+
 LRESULT CALLBACK BrowserOverlayHostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_MOUSEACTIVATE:
@@ -181,7 +183,7 @@ bool EnsureBrowserOverlayHostClass() {
     if (!RegisterClassExW(&wc)) {
         const DWORD lastError = GetLastError();
         if (lastError != ERROR_CLASS_ALREADY_EXISTS) {
-            Log("[BrowserOverlay] Failed to register host window class: " + std::to_string(lastError));
+            LogBrowserOverlayMessage("[BrowserOverlay] Failed to register host window class: " + std::to_string(lastError));
             return false;
         }
     }
@@ -220,6 +222,10 @@ std::wstring GetBrowserOverlayEnvironmentModeName(bool allowSystemMediaKeys, boo
 std::string GetBrowserOverlayEnvironmentModeLabel(bool allowSystemMediaKeys, bool hardwareAcceleration) {
     return std::string(allowSystemMediaKeys ? "system media keys enabled" : "system media keys disabled") + ", " +
            (hardwareAcceleration ? "hardware acceleration enabled" : "hardware acceleration disabled");
+}
+
+void LogBrowserOverlayMessage(const std::string& message) {
+    LogCategory("browser_overlay", message);
 }
 
 std::wstring GetBrowserOverlayUserDataFolder(bool allowSystemMediaKeys, bool hardwareAcceleration) {
@@ -387,7 +393,7 @@ bool EnsureBrowserOverlayEnvironment(bool allowSystemMediaKeys, bool hardwareAcc
 
     HANDLE completionEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!completionEvent) {
-        Log("[BrowserOverlay] Failed to create WebView2 environment wait event.");
+        LogBrowserOverlayMessage("[BrowserOverlay] Failed to create WebView2 environment wait event.");
         environmentState.failed.store(true, std::memory_order_release);
         return false;
     }
@@ -398,8 +404,8 @@ bool EnsureBrowserOverlayEnvironment(bool allowSystemMediaKeys, bool hardwareAcc
     ComPtr<ICoreWebView2EnvironmentOptions> environmentOptions =
         CreateBrowserOverlayEnvironmentOptions(allowSystemMediaKeys, hardwareAcceleration);
     if ((!allowSystemMediaKeys || !hardwareAcceleration) && !environmentOptions) {
-        Log("[BrowserOverlay] Failed to create WebView2 environment options for " +
-            GetBrowserOverlayEnvironmentModeLabel(allowSystemMediaKeys, hardwareAcceleration));
+        LogBrowserOverlayMessage("[BrowserOverlay] Failed to create WebView2 environment options for " +
+                                 GetBrowserOverlayEnvironmentModeLabel(allowSystemMediaKeys, hardwareAcceleration));
         CloseHandle(completionEvent);
         environmentState.failed.store(true, std::memory_order_release);
         return false;
@@ -419,7 +425,7 @@ bool EnsureBrowserOverlayEnvironment(bool allowSystemMediaKeys, bool hardwareAcc
             .Get());
 
     if (FAILED(hr)) {
-        Log("[BrowserOverlay] CreateCoreWebView2EnvironmentWithOptions failed: " + FormatHexResult(hr));
+        LogBrowserOverlayMessage("[BrowserOverlay] CreateCoreWebView2EnvironmentWithOptions failed: " + FormatHexResult(hr));
         CloseHandle(completionEvent);
         environmentState.failed.store(true, std::memory_order_release);
         return false;
@@ -441,15 +447,15 @@ bool EnsureBrowserOverlayEnvironment(bool allowSystemMediaKeys, bool hardwareAcc
     }
 
     if (FAILED(createResult) || !createdEnvironment) {
-        Log("[BrowserOverlay] WebView2 environment creation failed: " + FormatHexResult(createResult));
+        LogBrowserOverlayMessage("[BrowserOverlay] WebView2 environment creation failed: " + FormatHexResult(createResult));
         environmentState.failed.store(true, std::memory_order_release);
         return false;
     }
 
     environmentState.environment = createdEnvironment;
     environmentState.ready.store(true, std::memory_order_release);
-    Log("[BrowserOverlay] WebView2 environment initialized (" +
-        GetBrowserOverlayEnvironmentModeLabel(allowSystemMediaKeys, hardwareAcceleration) + ")");
+    LogBrowserOverlayMessage("[BrowserOverlay] WebView2 environment initialized (" +
+                             GetBrowserOverlayEnvironmentModeLabel(allowSystemMediaKeys, hardwareAcceleration) + ")");
     return true;
 }
 
@@ -901,7 +907,8 @@ void ConfigureBrowserOverlayController(const std::string& overlayId, BrowserOver
 
                 it->second->lastReloadTime = std::chrono::steady_clock::now();
                 if (!success) {
-                    Log("[BrowserOverlay] Navigation failed for '" + overlayId + "' with status " + std::to_string(static_cast<int>(errorStatus)));
+                    LogBrowserOverlayMessage("[BrowserOverlay] Navigation failed for '" + overlayId + "' with status " +
+                                             std::to_string(static_cast<int>(errorStatus)));
                 } else {
                     ApplyBrowserOverlayInjectedStyles(*it->second);
                 }
@@ -925,7 +932,8 @@ void ConfigureBrowserOverlayController(const std::string& overlayId, BrowserOver
                     it->second->captureInFlight = false;
                 }
 
-                Log("[BrowserOverlay] Process failure for '" + overlayId + "', kind=" + std::to_string(static_cast<int>(kind)));
+                LogBrowserOverlayMessage("[BrowserOverlay] Process failure for '" + overlayId + "', kind=" +
+                                         std::to_string(static_cast<int>(kind)));
                 return S_OK;
             })
             .Get(),
@@ -948,7 +956,7 @@ void BeginBrowserOverlayControllerCreation(const std::string& overlayId, Browser
                                                           entry.browserHeight);
         if (!entry.hostWindow) {
             entry.controllerCreationFailed = true;
-            Log("[BrowserOverlay] Failed to create host window for '" + overlayId + "'");
+            LogBrowserOverlayMessage("[BrowserOverlay] Failed to create host window for '" + overlayId + "'");
             return;
         }
     }
@@ -972,7 +980,8 @@ void BeginBrowserOverlayControllerCreation(const std::string& overlayId, Browser
                 entry.controllerCreationPending = false;
                 if (FAILED(result) || !controller) {
                     entry.controllerCreationFailed = true;
-                    Log("[BrowserOverlay] Failed to create controller for '" + overlayId + "': " + FormatHexResult(result));
+                    LogBrowserOverlayMessage("[BrowserOverlay] Failed to create controller for '" + overlayId + "': " +
+                                             FormatHexResult(result));
                     return S_OK;
                 }
 
@@ -1205,7 +1214,7 @@ void TryCaptureBrowserOverlay(const std::string& overlayId) {
 
         HRESULT streamHr = CreateStreamOnHGlobal(nullptr, TRUE, stream.GetAddressOf());
         if (FAILED(streamHr) || !stream) {
-            Log("[BrowserOverlay] Failed to create in-memory stream for '" + overlayId + "'");
+            LogBrowserOverlayMessage("[BrowserOverlay] Failed to create in-memory stream for '" + overlayId + "'");
             return;
         }
 
@@ -1251,7 +1260,7 @@ void TryCaptureBrowserOverlay(const std::string& overlayId) {
                     if (it != g_browserOverlayCache.end() && it->second) {
                         it->second->captureInFlight = false;
                     }
-                    Log("[BrowserOverlay] CapturePreview failed for '" + overlayId + "': " + FormatHexResult(result));
+                    LogBrowserOverlayMessage("[BrowserOverlay] CapturePreview failed for '" + overlayId + "': " + FormatHexResult(result));
                     return S_OK;
                 }
 
@@ -1325,7 +1334,7 @@ void TryCaptureBrowserOverlay(const std::string& overlayId) {
         if (it != g_browserOverlayCache.end() && it->second) {
             it->second->captureInFlight = false;
         }
-        Log("[BrowserOverlay] CapturePreview start failed for '" + overlayId + "': " + FormatHexResult(captureHr));
+        LogBrowserOverlayMessage("[BrowserOverlay] CapturePreview start failed for '" + overlayId + "': " + FormatHexResult(captureHr));
     }
 }
 
@@ -1333,7 +1342,7 @@ void BrowserOverlayDecodeThreadFunc() {
     // Image overlays use a global stb vertical flip; browser captures need the raw orientation.
     stbi_set_flip_vertically_on_load_thread(0);
 
-    Log("[BrowserOverlay] Decode thread started");
+    LogBrowserOverlayMessage("[BrowserOverlay] Decode thread started");
 
     while (true) {
         BrowserOverlayEncodedFrame frame{};
@@ -1385,20 +1394,20 @@ void BrowserOverlayDecodeThreadFunc() {
         stbi_image_free(pixels);
     }
 
-    Log("[BrowserOverlay] Decode thread stopped");
+    LogBrowserOverlayMessage("[BrowserOverlay] Decode thread stopped");
 }
 
 void BrowserOverlayThreadFunc() {
     const HRESULT initHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initHr)) {
-        Log("[BrowserOverlay] CoInitializeEx failed: " + FormatHexResult(initHr));
+        LogBrowserOverlayMessage("[BrowserOverlay] CoInitializeEx failed: " + FormatHexResult(initHr));
         return;
     }
 
     // Image overlays use a global stb vertical flip; browser captures need the raw orientation.
     stbi_set_flip_vertically_on_load_thread(0);
 
-    Log("[BrowserOverlay] Thread started");
+    LogBrowserOverlayMessage("[BrowserOverlay] Thread started");
 
     uint64_t lastConfigVersion = UINT64_MAX;
     while (!g_stopBrowserOverlayThread.load(std::memory_order_acquire)) {
@@ -1453,7 +1462,7 @@ void BrowserOverlayThreadFunc() {
     }
 
     CoUninitialize();
-    Log("[BrowserOverlay] Thread stopped");
+    LogBrowserOverlayMessage("[BrowserOverlay] Thread stopped");
 }
 
 } // namespace

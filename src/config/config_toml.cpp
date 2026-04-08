@@ -1606,6 +1606,8 @@ void DebugGlobalConfigToToml(const DebugGlobalConfig& cfg, toml::table& out) {
     out.insert("logHotkey", cfg.logHotkey);
     out.insert("logObs", cfg.logObs);
     out.insert("logWindowOverlay", cfg.logWindowOverlay);
+    out.insert("logBrowserOverlay", cfg.logBrowserOverlay);
+    out.insert("logNinjabrain", cfg.logNinjabrain);
     out.insert("logFileMonitor", cfg.logFileMonitor);
     out.insert("logImageMonitor", cfg.logImageMonitor);
     out.insert("logPerformance", cfg.logPerformance);
@@ -1632,6 +1634,8 @@ void DebugGlobalConfigFromToml(const toml::table& tbl, DebugGlobalConfig& cfg) {
     cfg.logHotkey = GetOr(tbl, "logHotkey", ConfigDefaults::DEBUG_GLOBAL_LOG_HOTKEY);
     cfg.logObs = GetOr(tbl, "logObs", ConfigDefaults::DEBUG_GLOBAL_LOG_OBS);
     cfg.logWindowOverlay = GetOr(tbl, "logWindowOverlay", ConfigDefaults::DEBUG_GLOBAL_LOG_WINDOW_OVERLAY);
+    cfg.logBrowserOverlay = GetOr(tbl, "logBrowserOverlay", ConfigDefaults::DEBUG_GLOBAL_LOG_BROWSER_OVERLAY);
+    cfg.logNinjabrain = GetOr(tbl, "logNinjabrain", ConfigDefaults::DEBUG_GLOBAL_LOG_NINJABRAIN);
     cfg.logFileMonitor = GetOr(tbl, "logFileMonitor", ConfigDefaults::DEBUG_GLOBAL_LOG_FILE_MONITOR);
     cfg.logImageMonitor = GetOr(tbl, "logImageMonitor", ConfigDefaults::DEBUG_GLOBAL_LOG_IMAGE_MONITOR);
     cfg.logPerformance = GetOr(tbl, "logPerformance", ConfigDefaults::DEBUG_GLOBAL_LOG_PERFORMANCE);

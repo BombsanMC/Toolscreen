@@ -1162,6 +1162,10 @@ void LogCategory(const char* category, const std::string& message) {
         enabled = g_config.debug.logObs;
     else if (strcmp(category, "window_overlay") == 0)
         enabled = g_config.debug.logWindowOverlay;
+    else if (strcmp(category, "browser_overlay") == 0)
+        enabled = g_config.debug.logBrowserOverlay;
+    else if (strcmp(category, "ninjabrain") == 0)
+        enabled = g_config.debug.logNinjabrain;
     else if (strcmp(category, "file_monitor") == 0)
         enabled = g_config.debug.logFileMonitor;
     else if (strcmp(category, "image_monitor") == 0)

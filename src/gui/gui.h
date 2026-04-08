@@ -467,6 +467,8 @@ struct DebugGlobalConfig {
     bool logHotkey = false;
     bool logObs = false;
     bool logWindowOverlay = false;
+    bool logBrowserOverlay = false;
+    bool logNinjabrain = false;
     bool logFileMonitor = false;
     bool logImageMonitor = false;
     bool logPerformance = false;

@@ -42,6 +42,10 @@ void LogIfPresent(const NinjabrainLogCallback& callback, const std::string& mess
     if (callback) { callback(message); }
 }
 
+void LogNinjabrainApiMessage(const std::string& message) {
+    LogCategory("ninjabrain", message);
+}
+
 long long DurationToMilliseconds(SteadyClock::duration duration) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 }
@@ -490,7 +494,7 @@ void NinjabrainApiSession::RunStream(
     bool disconnected = false;
     bool hasConnectedOnce = false;
 
-    Log(
+    LogNinjabrainApiMessage(
         "NinjabrainBot API connecting " + streamNameString + " stream to " + apiBaseUrl_ + path +
         " (connection timeout " + std::to_string(connectionTimeoutMs) + " ms, reconnect delay " +
         std::to_string(kNinjabrainReconnectIntervalMs) + " ms).");
@@ -505,12 +509,12 @@ void NinjabrainApiSession::RunStream(
         currentAttemptStartedAt = now;
 
         if (!hasConnectedOnce) {
-            Log(
+            LogNinjabrainApiMessage(
                 "NinjabrainBot API connected " + streamName + " stream after " +
                 std::to_string(outageDurationMs) + " ms.");
             hasConnectedOnce = true;
         } else if (disconnected) {
-            Log(
+            LogNinjabrainApiMessage(
                 "NinjabrainBot API reconnected " + streamName + " stream after " +
                 std::to_string(outageDurationMs) + " ms of downtime.");
             LogIfPresent(callbacks_.onLog, "Reconnected " + streamName + " stream.");
@@ -540,20 +544,20 @@ void NinjabrainApiSession::RunStream(
 
         if (connected) {
             const long long connectedDurationMs = DurationToMilliseconds(now - connectedAt);
-            Log(
+            LogNinjabrainApiMessage(
                 "NinjabrainBot API lost " + streamName + " stream after " +
                 std::to_string(connectedDurationMs) + " ms connected: " + errorString +
                 ". Retrying in " + std::to_string(kNinjabrainReconnectIntervalMs) + " ms.");
             connected = false;
         } else if (error == httplib::Error::ConnectionTimeout) {
-            Log(
+            LogNinjabrainApiMessage(
                 "NinjabrainBot API " + streamName + " stream connection attempt timed out after " +
                 std::to_string(attemptDurationMs) + " ms (total delay " +
                 std::to_string(outageDurationMs) + " ms). Retrying in " +
                 std::to_string(kNinjabrainReconnectIntervalMs) + " ms.");
         } else {
             const std::string attemptKind = hasConnectedOnce ? "reconnect" : "initial connection";
-            Log(
+            LogNinjabrainApiMessage(
                 "NinjabrainBot API " + streamName + " stream " + attemptKind + " failed after " +
                 std::to_string(attemptDurationMs) + " ms (total delay " +
                 std::to_string(outageDurationMs) + " ms): " + errorString + ". Retrying in " +

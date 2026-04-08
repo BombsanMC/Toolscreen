@@ -437,6 +437,8 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.other"))) {
                     trc("settings.log_hotkey"),
                     trc("settings.log_obs"),
                     trc("settings.log_window_overlay"),
+                    trc("settings.log_browser_overlay"),
+                    trc("settings.log_ninjabrain"),
                     trc("settings.log_file_monitor"),
                     trc("settings.log_image_monitor"),
                     trc("settings.log_performance"),
@@ -457,6 +459,8 @@ if (BeginSelectableSettingsTopTabItem(trc("tabs.other"))) {
                 if (ImGui::Checkbox(trc("settings.log_hotkey"), &g_config.debug.logHotkey)) { g_configIsDirty = true; }
                 if (ImGui::Checkbox(trc("settings.log_obs"), &g_config.debug.logObs)) { g_configIsDirty = true; }
                 if (ImGui::Checkbox(trc("settings.log_window_overlay"), &g_config.debug.logWindowOverlay)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_browser_overlay"), &g_config.debug.logBrowserOverlay)) { g_configIsDirty = true; }
+                if (ImGui::Checkbox(trc("settings.log_ninjabrain"), &g_config.debug.logNinjabrain)) { g_configIsDirty = true; }
                 if (ImGui::Checkbox(trc("settings.log_file_monitor"), &g_config.debug.logFileMonitor)) { g_configIsDirty = true; }
                 if (ImGui::Checkbox(trc("settings.log_image_monitor"), &g_config.debug.logImageMonitor)) { g_configIsDirty = true; }
                 if (ImGui::Checkbox(trc("settings.log_performance"), &g_config.debug.logPerformance)) { g_configIsDirty = true; }
