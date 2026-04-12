@@ -15,6 +15,9 @@ class ScopedKeyboardStateOverride {
             memset(m_originalState, 0, sizeof(m_originalState));
         }
         memcpy(m_state, m_originalState, sizeof(m_state));
+        for (BYTE& keyState : m_state) {
+            keyState &= static_cast<BYTE>(~0x80);
+        }
     }
 
     ~ScopedKeyboardStateOverride() {
