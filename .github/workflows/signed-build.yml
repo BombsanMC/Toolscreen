@@ -19,6 +19,9 @@ jobs:
       SIGNPATH_JAR_ARTIFACT_CONFIGURATION_SLUG: 'jar'
       SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG: 'installer'
       SIGNPATH_DOWNLOADER_ARTIFACT_CONFIGURATION_SLUG: 'downloader'
+      VCPKG_DEFAULT_BINARY_CACHE: '${{ github.workspace }}/.cache/vcpkg/archives'
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.cache/vcpkg/archives,readwrite'
+      VCPKG_DISABLE_METRICS: '1'
 
     steps:
       - name: Check out repository
@@ -74,19 +77,37 @@ jobs:
           path: |
             out/build/_deps
             out/build/downloads
-          key: windows-build-deps-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'ToolscreenVersion.cmake', 'liblogger/CMakeLists.txt') }}
+          key: windows-build-deps-v2-full-${{ hashFiles('CMakeLists.txt', 'src/vcpkg.json') }}
           restore-keys: |
-            windows-build-deps-v1-
+            windows-build-deps-v2-full-
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: windows-vcpkg-binary-v1-${{ hashFiles('src/vcpkg.json') }}
+          restore-keys: |
+            windows-vcpkg-binary-v1-
 
       - name: Restore Maven repository cache
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
-          key: windows-maven-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'ToolscreenVersion.cmake') }}
+          key: windows-maven-v2-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
-            windows-maven-v1-
+            windows-maven-v2-
+
+      - name: Restore prebuilt liblogger cache
+        id: prebuilt_liblogger_cache
+        uses: actions/cache@v4
+        with:
+          path: out/prebuilt-liblogger
+          key: windows-prebuilt-liblogger-v1-${{ hashFiles('liblogger/LibLoggerVersion.cmake', 'scripts/fetch_signed_liblogger.ps1') }}
+          restore-keys: |
+            windows-prebuilt-liblogger-v1-
 
       - name: Fetch latest signed liblogger artifacts
+        if: ${{ steps.prebuilt_liblogger_cache.outputs.cache-hit != 'true' }}
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}

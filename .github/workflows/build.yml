@@ -25,6 +25,11 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      TOOLSCREEN_FULL_BUILD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      VCPKG_DEFAULT_BINARY_CACHE: '${{ github.workspace }}/.cache/vcpkg/archives'
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.cache/vcpkg/archives,readwrite'
+      VCPKG_DISABLE_METRICS: '1'
 
     steps:
       - name: Check out repository
@@ -57,6 +62,7 @@ jobs:
           "title=$title" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Set up Java 17
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -68,19 +74,38 @@ jobs:
           path: |
             out/build/_deps
             out/build/downloads
-          key: windows-build-deps-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'ToolscreenVersion.cmake', 'liblogger/CMakeLists.txt') }}
+          key: windows-build-deps-v2-${{ env.TOOLSCREEN_FULL_BUILD }}-${{ hashFiles('CMakeLists.txt', 'src/vcpkg.json') }}
           restore-keys: |
-            windows-build-deps-v1-
+            windows-build-deps-v2-${{ env.TOOLSCREEN_FULL_BUILD }}-
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: windows-vcpkg-binary-v1-${{ hashFiles('src/vcpkg.json') }}
+          restore-keys: |
+            windows-vcpkg-binary-v1-
 
       - name: Restore Maven repository cache
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
-          key: windows-maven-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'ToolscreenVersion.cmake') }}
+          key: windows-maven-v2-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
-            windows-maven-v1-
+            windows-maven-v2-
+
+      - name: Restore prebuilt liblogger cache
+        id: prebuilt_liblogger_cache
+        uses: actions/cache@v4
+        with:
+          path: out/prebuilt-liblogger
+          key: windows-prebuilt-liblogger-v1-${{ hashFiles('liblogger/LibLoggerVersion.cmake', 'scripts/fetch_signed_liblogger.ps1') }}
+          restore-keys: |
+            windows-prebuilt-liblogger-v1-
 
       - name: Fetch latest signed liblogger artifacts
+        if: ${{ steps.prebuilt_liblogger_cache.outputs.cache-hit != 'true' }}
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -93,8 +118,9 @@ jobs:
         run: |
           $prebuiltLoggerDllPath = (Resolve-Path 'out/prebuilt-liblogger/liblogger_x64.dll').Path
           $prebuiltLoggerPdbPath = (Resolve-Path 'out/prebuilt-liblogger/liblogger_x64.pdb').Path
+          $packagingEnabled = if ($env:TOOLSCREEN_FULL_BUILD -eq 'true') { 'ON' } else { 'OFF' }
 
-          cmake --preset vs2022-x64 -DTOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH="$prebuiltLoggerDllPath" -DTOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH="$prebuiltLoggerPdbPath"
+          cmake --preset vs2022-x64 -DTOOLSCREEN_ENABLE_JAR_PACKAGING="$packagingEnabled" -DTOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH="$prebuiltLoggerDllPath" -DTOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH="$prebuiltLoggerPdbPath"
 
       - name: Build DLLs and CLI integration test runner
         shell: cmd
@@ -104,19 +130,26 @@ jobs:
         shell: cmd
         run: out\build\bin\Release\toolscreen_gui_integration_tests.exe --run-all
 
+      - name: Run fast CTest smoke tests
+        shell: cmd
+        run: ctest --preset release --tests-regex "^(toolscreen_artifact_exists|liblogger_artifact_exists)$"
+
       - name: Prepare EXE packaging inputs
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: cmd
         run: cmake --build --preset release --parallel --target toolscreen_prepare_easyinject_exe_inputs
 
       - name: Reconfigure packaging preset
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
           $prebuiltLoggerDllPath = (Resolve-Path 'out/prebuilt-liblogger/liblogger_x64.dll').Path
           $prebuiltLoggerPdbPath = (Resolve-Path 'out/prebuilt-liblogger/liblogger_x64.pdb').Path
 
-          cmake --preset vs2022-x64 -DTOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH="$prebuiltLoggerDllPath" -DTOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH="$prebuiltLoggerPdbPath"
+          cmake --preset vs2022-x64 -DTOOLSCREEN_ENABLE_JAR_PACKAGING=ON -DTOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH="$prebuiltLoggerDllPath" -DTOOLSCREEN_PREBUILT_LIBLOGGER_PDB_PATH="$prebuiltLoggerPdbPath"
 
       - name: Remove stale packaged artifacts
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
           $outputDir = 'out/build/bin/Release'
@@ -134,18 +167,22 @@ jobs:
           }
 
       - name: Build installer EXE package
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: cmd
         run: cmake --build --preset release --parallel --target installer_exe
 
       - name: Build downloader EXE package
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: cmd
         run: cmake --build --preset release --parallel --target downloader_exe
 
       - name: Build JAR package
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: cmd
         run: cmake --build --preset release --parallel --target jar
 
       - name: Validate PE metadata
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
           $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'scripts\verify_pe_metadata.ps1'
@@ -153,10 +190,12 @@ jobs:
           & $scriptPath -ArtifactDirectory $artifactDirectory
 
       - name: Run CTest packaging smoke tests
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: cmd
         run: ctest --preset release --exclude-regex "^toolscreen_integration_"
 
       - name: Rename release artifacts
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
           $outputDir = 'out/build/bin/Release'
@@ -199,6 +238,7 @@ jobs:
           }
 
       - name: Upload unsigned release artifacts
+        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: toolscreen-unsigned-artifacts
