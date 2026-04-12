@@ -33,6 +33,12 @@
       }
     },
     {
+      "name": "ci-ninja-x64-packaging",
+      "displayName": "CI Ninja x64 Packaging",
+      "inherits": "ci-ninja-x64",
+      "binaryDir": "${sourceDir}/out/build-ci-package"
+    },
+    {
       "name": "vs2022-x64-ninjabrain-manual-tests",
       "displayName": "Visual Studio 2022 x64 (Manual Ninjabrain Tests)",
       "inherits": "vs2022-x64",
@@ -60,6 +66,11 @@
       "name": "ci-release",
       "displayName": "CI Release",
       "configurePreset": "ci-ninja-x64"
+    },
+    {
+      "name": "ci-package",
+      "displayName": "CI Packaging",
+      "configurePreset": "ci-ninja-x64-packaging"
     },
     {
       "name": "release-ninjabrain-manual-tests",

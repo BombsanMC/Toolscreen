@@ -661,8 +661,11 @@ if(TOOLSCREEN_ENABLE_JAR_PACKAGING OR TOOLSCREEN_ENABLE_EXE_PACKAGING)
         set(TOOLSCREEN_PACKAGING_LOGGER_SOURCE "${TOOLSCREEN_PACKAGING_LIBLOGGER_PATH}")
     endif()
 
-    set(TOOLSCREEN_PACKAGING_DEPENDENCIES ${PROJECT_NAME})
-    if(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY)
+    set(TOOLSCREEN_PACKAGING_DEPENDENCIES)
+    if(NOT TOOLSCREEN_PACKAGING_DLL_PATH)
+        list(APPEND TOOLSCREEN_PACKAGING_DEPENDENCIES ${PROJECT_NAME})
+    endif()
+    if(TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY AND NOT TOOLSCREEN_PACKAGING_LIBLOGGER_PATH)
         list(APPEND TOOLSCREEN_PACKAGING_DEPENDENCIES ${TOOLSCREEN_LIBLOGGER_BUILD_DEPENDENCY})
     endif()
 
@@ -1092,6 +1095,7 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     mode-browser-overlay-render
     mode-image-overlay-render-png
     mode-image-overlay-render-mpeg
+    mode-ninjabrain-overlay-render
     rebind-indicator-renders-below-settings-gui
     config-error-gui
     profiler-unspecified-breakdown
@@ -1150,6 +1154,26 @@ foreach(test_case IN LISTS TOOLSCREEN_GUI_INTEGRATION_TEST_CASES)
     add_test(
         NAME toolscreen_integration_${test_name_suffix}
         COMMAND $<TARGET_FILE:toolscreen_gui_integration_tests> ${test_case}
+    )
+endforeach()
+
+set(TOOLSCREEN_GUI_INTEGRATION_TEST_GROUPS
+    config
+    rebind
+    render
+    settings-and-ui
+    logs-and-profiles
+)
+
+foreach(test_group IN LISTS TOOLSCREEN_GUI_INTEGRATION_TEST_GROUPS)
+    string(REPLACE "-" "_" test_group_suffix "${test_group}")
+    add_test(
+        NAME toolscreen_integration_group_${test_group_suffix}
+        COMMAND $<TARGET_FILE:toolscreen_gui_integration_tests> --run-group ${test_group}
+    )
+    set_tests_properties(
+        toolscreen_integration_group_${test_group_suffix}
+        PROPERTIES LABELS "gui-integration;group;${test_group}"
     )
 endforeach()
 

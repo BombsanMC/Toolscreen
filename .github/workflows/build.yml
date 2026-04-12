@@ -16,17 +16,16 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  build_core:
     runs-on: windows-latest
     env:
-      TOOLSCREEN_FULL_BUILD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       TOOLSCREEN_BUILD_DIR: 'out/build-ci'
       TOOLSCREEN_ARTIFACT_DIR: 'out/build-ci/bin/Release'
       VCPKG_DEFAULT_BINARY_CACHE: '${{ github.workspace }}/.cache/vcpkg/archives'
@@ -46,9 +45,208 @@ jobs:
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - name: Restore CMake dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TOOLSCREEN_BUILD_DIR }}/_deps
+            ${{ env.TOOLSCREEN_BUILD_DIR }}/downloads
+          key: windows-build-deps-v3-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'src/vcpkg.json') }}
+          restore-keys: |
+            windows-build-deps-v3-
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: windows-vcpkg-binary-v1-${{ hashFiles('src/vcpkg.json') }}
+          restore-keys: |
+            windows-vcpkg-binary-v1-
+
+      - name: Restore prebuilt liblogger cache
+        id: prebuilt_liblogger_cache
+        uses: actions/cache@v4
+        with:
+          path: out/prebuilt-liblogger
+          key: windows-prebuilt-liblogger-v1-${{ hashFiles('liblogger/LibLoggerVersion.cmake', 'scripts/fetch_signed_liblogger.ps1') }}
+          restore-keys: |
+            windows-prebuilt-liblogger-v1-
+
+      - name: Fetch latest signed liblogger artifacts
+        if: ${{ steps.prebuilt_liblogger_cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $destination = Join-Path (Get-Location) 'out/prebuilt-liblogger'
+          & .\scripts\fetch_signed_liblogger.ps1 -DestinationDirectory $destination
+
+      - name: Configure core build preset
+        shell: pwsh
+        run: |
+          $prebuiltLoggerDllPath = (Resolve-Path 'out/prebuilt-liblogger/liblogger_x64.dll').Path
+
+          cmake --preset ci-ninja-x64 -DTOOLSCREEN_ENABLE_JAR_PACKAGING=OFF -DTOOLSCREEN_ENABLE_EXE_PACKAGING=OFF -DTOOLSCREEN_BUILD_DOWNLOADER_ARTIFACTS=OFF -DTOOLSCREEN_STAGE_LIBLOGGER_PDB=OFF -DTOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH="$prebuiltLoggerDllPath"
+
+      - name: Build DLLs and GUI integration test runner
+        shell: pwsh
+        run: cmake --build --preset ci-release --parallel --target Toolscreen toolscreen_gui_integration_tests
+
+      - name: Run fast CTest smoke tests
+        shell: pwsh
+        run: ctest --preset ci-release --tests-regex "^(toolscreen_artifact_exists|liblogger_artifact_exists)$"
+
+      - name: Upload GUI integration test runner
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolscreen-gui-test-runner
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/toolscreen_gui_integration_tests.exe
+
+      - name: Upload unsigned core artifacts
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolscreen-unsigned-core
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/Toolscreen.dll
+            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/Toolscreen.pdb
+            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/liblogger_x64.dll
+
+      - name: Show sccache stats
+        if: ${{ always() }}
+        shell: pwsh
+        run: sccache --show-stats
+
+  integration_tests:
+    name: GUI Integration (${{ matrix.test_group }})
+    runs-on: windows-latest
+    needs: build_core
+    strategy:
+      fail-fast: false
+      matrix:
+        test_group:
+          - config
+          - rebind
+          - render
+          - settings-and-ui
+          - logs-and-profiles
+
+    steps:
+      - name: Download GUI integration test runner
+        uses: actions/download-artifact@v4
+        with:
+          name: toolscreen-gui-test-runner
+          path: out/gui-test-runner
+
+      - name: Run GUI integration test group
+        shell: pwsh
+        run: |
+          $runnerPath = (Resolve-Path 'out/gui-test-runner/toolscreen_gui_integration_tests.exe').Path
+          & $runnerPath --run-group '${{ matrix.test_group }}'
+
+  package_unsigned_jar:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: windows-latest
+    needs: build_core
+    env:
+      TOOLSCREEN_BUILD_DIR: 'out/build-ci-package'
+      TOOLSCREEN_ARTIFACT_DIR: 'out/build-ci-package/bin/Release'
+      VCPKG_DEFAULT_BINARY_CACHE: '${{ github.workspace }}/.cache/vcpkg/archives'
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.cache/vcpkg/archives,readwrite'
+      VCPKG_DISABLE_METRICS: '1'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC developer command prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore CMake dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TOOLSCREEN_BUILD_DIR }}/_deps
+            ${{ env.TOOLSCREEN_BUILD_DIR }}/downloads
+          key: windows-package-deps-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: |
+            windows-package-deps-v1-
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: windows-vcpkg-binary-v1-${{ hashFiles('src/vcpkg.json') }}
+          restore-keys: |
+            windows-vcpkg-binary-v1-
+
+      - name: Restore Maven repository cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: windows-maven-v2-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            windows-maven-v2-
+
+      - name: Download unsigned core artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: toolscreen-unsigned-core
+          path: out/unsigned-core
+
+      - name: Configure packaging build preset
+        shell: pwsh
+        run: |
+          $toolscreenDllPath = (Resolve-Path 'out/unsigned-core/Toolscreen.dll').Path
+          $libloggerDllPath = (Resolve-Path 'out/unsigned-core/liblogger_x64.dll').Path
+
+          cmake --preset ci-ninja-x64-packaging -DTOOLSCREEN_ENABLE_EXE_PACKAGING=OFF -DTOOLSCREEN_BUILD_DOWNLOADER_ARTIFACTS=OFF -DTOOLSCREEN_STAGE_LIBLOGGER_PDB=OFF -DTOOLSCREEN_PACKAGING_DLL_PATH="$toolscreenDllPath" -DTOOLSCREEN_PACKAGING_LIBLOGGER_PATH="$libloggerDllPath"
+
+      - name: Build JAR package
+        shell: pwsh
+        run: cmake --build --preset ci-package --parallel --target jar
+
+      - name: Upload unsigned JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolscreen-unsigned-jar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/Toolscreen-*-double-click-me.jar
+
+  publish_unsigned_release:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: windows-latest
+    needs:
+      - build_core
+      - integration_tests
+      - package_unsigned_jar
+    permissions:
+      contents: write
+    env:
+      TOOLSCREEN_RELEASE_DIR: 'out/release-unsigned'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Resolve unsigned release metadata
         id: release_meta
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         shell: pwsh
         run: |
           $versionFile = Join-Path $env:GITHUB_WORKSPACE 'ToolscreenVersion.cmake'
@@ -72,107 +270,42 @@ jobs:
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "title=$title" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Set up Java 17
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
-        uses: actions/setup-java@v4
+      - name: Download unsigned core artifacts
+        uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: '17'
+          name: toolscreen-unsigned-core
+          path: out/release-inputs/core
 
-      - name: Restore CMake dependency cache
-        uses: actions/cache@v4
+      - name: Download unsigned JAR artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ${{ env.TOOLSCREEN_BUILD_DIR }}/_deps
-            ${{ env.TOOLSCREEN_BUILD_DIR }}/downloads
-          key: windows-build-deps-v2-${{ env.TOOLSCREEN_FULL_BUILD }}-${{ hashFiles('CMakeLists.txt', 'src/vcpkg.json') }}
-          restore-keys: |
-            windows-build-deps-v2-${{ env.TOOLSCREEN_FULL_BUILD }}-
+          name: toolscreen-unsigned-jar
+          path: out/release-inputs/jar
 
-      - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: windows-vcpkg-binary-v1-${{ hashFiles('src/vcpkg.json') }}
-          restore-keys: |
-            windows-vcpkg-binary-v1-
-
-      - name: Restore Maven repository cache
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: windows-maven-v2-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            windows-maven-v2-
-
-      - name: Restore prebuilt liblogger cache
-        id: prebuilt_liblogger_cache
-        uses: actions/cache@v4
-        with:
-          path: out/prebuilt-liblogger
-          key: windows-prebuilt-liblogger-v1-${{ hashFiles('liblogger/LibLoggerVersion.cmake', 'scripts/fetch_signed_liblogger.ps1') }}
-          restore-keys: |
-            windows-prebuilt-liblogger-v1-
-
-      - name: Fetch latest signed liblogger artifacts
-        if: ${{ steps.prebuilt_liblogger_cache.outputs.cache-hit != 'true' }}
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          $destination = Join-Path (Get-Location) 'out/prebuilt-liblogger'
-          & .\scripts\fetch_signed_liblogger.ps1 -DestinationDirectory $destination
-
-      - name: Configure build preset
+      - name: Assemble unsigned release inputs
         shell: pwsh
         run: |
-          $prebuiltLoggerDllPath = (Resolve-Path 'out/prebuilt-liblogger/liblogger_x64.dll').Path
-          $packagingEnabled = if ($env:TOOLSCREEN_FULL_BUILD -eq 'true') { 'ON' } else { 'OFF' }
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_RELEASE_DIR
+          $coreDir = Join-Path $env:GITHUB_WORKSPACE 'out/release-inputs/core'
+          $jarDir = Join-Path $env:GITHUB_WORKSPACE 'out/release-inputs/jar'
 
-          cmake --preset ci-ninja-x64 -DTOOLSCREEN_ENABLE_JAR_PACKAGING="$packagingEnabled" -DTOOLSCREEN_ENABLE_EXE_PACKAGING=OFF -DTOOLSCREEN_BUILD_DOWNLOADER_ARTIFACTS=OFF -DTOOLSCREEN_STAGE_LIBLOGGER_PDB=OFF -DTOOLSCREEN_PREBUILT_LIBLOGGER_DLL_PATH="$prebuiltLoggerDllPath"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
-      - name: Build DLLs and CLI integration test runner
-        shell: pwsh
-        run: cmake --build --preset ci-release --parallel --target Toolscreen toolscreen_gui_integration_tests
+          Copy-Item -Path (Join-Path $coreDir 'Toolscreen.dll') -Destination (Join-Path $releaseDir 'Toolscreen.dll') -Force
+          Copy-Item -Path (Join-Path $coreDir 'Toolscreen.pdb') -Destination (Join-Path $releaseDir 'Toolscreen.pdb') -Force
+          Copy-Item -Path (Join-Path $coreDir 'liblogger_x64.dll') -Destination (Join-Path $releaseDir 'liblogger_x64.dll') -Force
 
-      - name: Run CLI integration tests
-        shell: pwsh
-        run: |
-          & "$env:GITHUB_WORKSPACE\$env:TOOLSCREEN_ARTIFACT_DIR\toolscreen_gui_integration_tests.exe" --run-all
-
-      - name: Run fast CTest smoke tests
-        shell: pwsh
-        run: ctest --preset ci-release --tests-regex "^(toolscreen_artifact_exists|liblogger_artifact_exists)$"
-
-      - name: Remove stale packaged artifacts
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
-        shell: pwsh
-        run: |
-          $outputDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_ARTIFACT_DIR
-          $patterns = @(
-            'Toolscreen-*-double-click-me.jar'
-            'Toolscreen-*-double-click-me.exe'
-            'toolscreen-downloader.jar'
-            'toolscreen-downloader.exe'
-            'tioolscrteen-downloader.jar'
-            'tioolscrteen-downloader.exe'
-          )
-
-          foreach ($pattern in $patterns) {
-            Get-ChildItem -Path $outputDir -File -Filter $pattern -ErrorAction SilentlyContinue | Remove-Item -Force
+          $jarPath = Get-ChildItem -Path $jarDir -File -Filter 'Toolscreen-*-double-click-me.jar' | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $jarPath) {
+            throw "Expected packaged Toolscreen jar in $jarDir"
           }
 
-      - name: Build JAR package
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
-        shell: pwsh
-        run: cmake --build --preset ci-release --parallel --target jar
+          Copy-Item -Path $jarPath -Destination (Join-Path $releaseDir (Split-Path $jarPath -Leaf)) -Force
 
       - name: Strip private symbols from unsigned PDB
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
-          $artifactDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_ARTIFACT_DIR
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_RELEASE_DIR
           $pdbPath = Join-Path $artifactDir 'Toolscreen.pdb'
 
           if (-not (Test-Path $pdbPath)) {
@@ -211,23 +344,16 @@ jobs:
           Write-Host ('Reduced Toolscreen.pdb from {0} MiB to {1} MiB using PDBCopy.' -f [math]::Round($beforeSizeBytes / 1MB, 2), [math]::Round($afterSizeBytes / 1MB, 2))
 
       - name: Validate unsigned PE metadata
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
           $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'scripts\verify_unsigned_pe_metadata.ps1'
-          $artifactDirectory = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_ARTIFACT_DIR
+          $artifactDirectory = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_RELEASE_DIR
           & $scriptPath -ArtifactDirectory $artifactDirectory
 
-      - name: Run CTest packaging smoke tests
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
-        shell: pwsh
-        run: ctest --preset ci-release --exclude-regex "^toolscreen_integration_"
-
       - name: Rename release artifacts
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         shell: pwsh
         run: |
-          $outputDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_ARTIFACT_DIR
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_RELEASE_DIR
           $suffix = '-not-legal-for-speedruns'
 
           function Get-SingleArtifactPath {
@@ -263,7 +389,6 @@ jobs:
           }
 
       - name: Upload unsigned release artifacts
-        if: ${{ env.TOOLSCREEN_FULL_BUILD == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: toolscreen-unsigned-artifacts
@@ -271,13 +396,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: |
-            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/Toolscreen-not-legal-for-speedruns.dll
-            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/Toolscreen-not-legal-for-speedruns.pdb
-            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/liblogger_x64-not-legal-for-speedruns.dll
-            ${{ env.TOOLSCREEN_ARTIFACT_DIR }}/Toolscreen-*-double-click-me-not-legal-for-speedruns.jar
+            ${{ env.TOOLSCREEN_RELEASE_DIR }}/Toolscreen-not-legal-for-speedruns.dll
+            ${{ env.TOOLSCREEN_RELEASE_DIR }}/Toolscreen-not-legal-for-speedruns.pdb
+            ${{ env.TOOLSCREEN_RELEASE_DIR }}/liblogger_x64-not-legal-for-speedruns.dll
+            ${{ env.TOOLSCREEN_RELEASE_DIR }}/Toolscreen-*-double-click-me-not-legal-for-speedruns.jar
 
       - name: Publish unsigned artifacts to GitHub release
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -286,7 +410,7 @@ jobs:
           $tag = '${{ steps.release_meta.outputs.tag }}'
           $title = '${{ steps.release_meta.outputs.title }}'
           $notesPath = Join-Path $env:RUNNER_TEMP 'unsigned-release-notes.md'
-          $artifactDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_ARTIFACT_DIR
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_RELEASE_DIR
 
           @"
           Unsigned CI archive for Toolscreen.
@@ -315,8 +439,3 @@ jobs:
           $assets += (Get-ChildItem $artifactDir -File -Filter 'Toolscreen-*-double-click-me-not-legal-for-speedruns.jar').FullName
 
           gh release upload $tag -R $repo --clobber $assets
-
-      - name: Show sccache stats
-        if: ${{ always() }}
-        shell: pwsh
-        run: sccache --show-stats

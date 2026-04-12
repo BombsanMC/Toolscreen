@@ -3,6 +3,17 @@ struct TestCaseDefinition {
     void (*run)(TestRunMode runMode);
 };
 
+struct TestGroupDefinition {
+    const char* name;
+    std::vector<std::string_view> prefixes;
+    std::vector<std::string_view> explicitTestCaseNames;
+};
+
+struct ResolvedTestGroupDefinition {
+    const char* name;
+    std::vector<const TestCaseDefinition*> testCases;
+};
+
 const auto& GetTestCaseDefinitions() {
     static const std::vector<TestCaseDefinition> testCases = {
         {"config-default-load", &RunConfigDefaultLoadTest},
@@ -182,13 +193,108 @@ const TestCaseDefinition* FindTestCaseDefinition(std::string_view testCaseName) 
     return nullptr;
 }
 
+bool GroupIncludesTestCaseName(const TestGroupDefinition& testGroup, std::string_view testCaseName) {
+    for (const std::string_view prefix : testGroup.prefixes) {
+        if (testCaseName.starts_with(prefix)) {
+            return true;
+        }
+    }
+
+    for (const std::string_view explicitTestCaseName : testGroup.explicitTestCaseNames) {
+        if (explicitTestCaseName == testCaseName) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const auto& GetTestGroupDefinitions() {
+    static const std::vector<TestGroupDefinition> testGroups = {
+        {"config", {"config-default-", "config-roundtrip", "config-load-"}, {}},
+        {"rebind", {"key-rebind-"}, {}},
+        {"render", {"mode-"}, {"rebind-indicator-renders-below-settings-gui"}},
+        {"settings-and-ui", {"settings-"}, {"config-error-gui", "profiler-unspecified-breakdown"}},
+        {"logs-and-profiles", {"log-", "profile-"}, {}},
+    };
+
+    return testGroups;
+}
+
+const auto& GetResolvedTestGroupDefinitions() {
+    static const std::vector<ResolvedTestGroupDefinition> resolvedTestGroups = []() {
+        const auto& testCases = GetTestCaseDefinitions();
+        const auto& testGroups = GetTestGroupDefinitions();
+
+        std::vector<size_t> assignmentCounts(testCases.size(), 0);
+        std::vector<ResolvedTestGroupDefinition> resolvedGroups;
+        resolvedGroups.reserve(testGroups.size());
+
+        for (const TestGroupDefinition& testGroup : testGroups) {
+            ResolvedTestGroupDefinition resolvedGroup;
+            resolvedGroup.name = testGroup.name;
+
+            for (size_t index = 0; index < testCases.size(); ++index) {
+                const TestCaseDefinition& testCase = testCases[index];
+                if (!GroupIncludesTestCaseName(testGroup, testCase.name)) {
+                    continue;
+                }
+
+                resolvedGroup.testCases.push_back(&testCase);
+                ++assignmentCounts[index];
+            }
+
+            if (resolvedGroup.testCases.empty()) {
+                throw std::runtime_error("GUI integration test group has no cases: " + std::string(testGroup.name));
+            }
+
+            resolvedGroups.push_back(std::move(resolvedGroup));
+        }
+
+        for (size_t index = 0; index < testCases.size(); ++index) {
+            if (assignmentCounts[index] == 1) {
+                continue;
+            }
+
+            const std::string testCaseName = testCases[index].name;
+            if (assignmentCounts[index] == 0) {
+                throw std::runtime_error("GUI integration test case is not assigned to a CI group: " + testCaseName);
+            }
+
+            throw std::runtime_error("GUI integration test case is assigned to multiple CI groups: " + testCaseName);
+        }
+
+        return resolvedGroups;
+    }();
+
+    return resolvedTestGroups;
+}
+
+const ResolvedTestGroupDefinition* FindTestGroupDefinition(std::string_view testGroupName) {
+    for (const ResolvedTestGroupDefinition& testGroup : GetResolvedTestGroupDefinitions()) {
+        if (std::string_view(testGroup.name) == testGroupName) {
+            return &testGroup;
+        }
+    }
+
+    return nullptr;
+}
+
 void RunTestCaseByName(std::string_view testCaseName, TestRunMode runMode = TestRunMode::Automated);
+void RunTestGroupByName(std::string_view testGroupName);
 void RunAllTestCases();
 
 void PrintTestCaseList(std::ostream& stream) {
     stream << "Available test cases:" << std::endl;
     for (const TestCaseDefinition& testCase : GetTestCaseDefinitions()) {
         stream << "  " << testCase.name << std::endl;
+    }
+}
+
+void PrintTestGroupList(std::ostream& stream) {
+    stream << "Available test groups:" << std::endl;
+    for (const ResolvedTestGroupDefinition& testGroup : GetResolvedTestGroupDefinitions()) {
+        stream << "  " << testGroup.name << " (" << testGroup.testCases.size() << " cases)" << std::endl;
     }
 }
 
@@ -354,15 +460,20 @@ void PrintUsage(std::ostream& stream) {
     stream << "Usage:" << std::endl;
     stream << "  toolscreen_gui_integration_tests" << std::endl;
     stream << "  toolscreen_gui_integration_tests --run-all" << std::endl;
+    stream << "  toolscreen_gui_integration_tests --run-group <group-name>" << std::endl;
     stream << "  toolscreen_gui_integration_tests <test-case>" << std::endl;
     stream << "  toolscreen_gui_integration_tests --visual [<test-case>]" << std::endl;
     stream << "  toolscreen_gui_integration_tests --list" << std::endl;
+    stream << "  toolscreen_gui_integration_tests --list-groups" << std::endl;
     stream << "  toolscreen_gui_integration_tests --help" << std::endl;
     stream << std::endl;
     stream << "No arguments opens a launcher GUI where you can choose which test mode to run." << std::endl;
     stream << "Use --run-all for pure CLI pass/fail execution of every test case." << std::endl;
+    stream << "Use --run-group to execute one CI-oriented batch of test cases in declaration order." << std::endl;
     stream << "Visual mode keeps the dummy Win32/WGL window open so the GUI can be inspected interactively." << std::endl;
     stream << "If no visual test case is provided, it defaults to " << kDefaultVisualTestCase << "." << std::endl;
+    stream << std::endl;
+    PrintTestGroupList(stream);
     stream << std::endl;
     PrintTestCaseList(stream);
 }
@@ -371,8 +482,10 @@ struct CommandLineOptions {
     bool openLauncher = false;
     bool showUsage = false;
     bool listOnly = false;
+    bool listGroupsOnly = false;
     bool runAll = false;
     TestRunMode runMode = TestRunMode::Automated;
+    std::string groupName;
     std::string testCaseName;
 };
 
@@ -408,6 +521,16 @@ CommandLineOptions ParseCommandLine(int argc, char** argv) {
         return options;
     }
 
+    if (firstArg == "--list-groups") {
+        if (argc != 2) {
+            throw std::runtime_error("--list-groups does not accept additional arguments.");
+        }
+
+        CommandLineOptions options;
+        options.listGroupsOnly = true;
+        return options;
+    }
+
     if (firstArg == "--run-all") {
         if (argc != 2) {
             throw std::runtime_error("--run-all does not accept additional arguments.");
@@ -415,6 +538,16 @@ CommandLineOptions ParseCommandLine(int argc, char** argv) {
 
         CommandLineOptions options;
         options.runAll = true;
+        return options;
+    }
+
+    if (firstArg == "--run-group") {
+        if (argc != 3) {
+            throw std::runtime_error("--run-group requires exactly one group name.");
+        }
+
+        CommandLineOptions options;
+        options.groupName = argv[2];
         return options;
     }
 
@@ -464,6 +597,22 @@ void RunTestCaseByName(std::string_view testCaseName, TestRunMode runMode) {
     std::cout << std::endl;
 }
 
+void RunTestGroupByName(std::string_view testGroupName) {
+    const ResolvedTestGroupDefinition* testGroup = FindTestGroupDefinition(testGroupName);
+    if (testGroup == nullptr) {
+        throw std::runtime_error("Unknown test group: " + std::string(testGroupName));
+    }
+
+    std::cout << "Running GUI integration test group '" << testGroup->name << "' with "
+              << testGroup->testCases.size() << " cases." << std::endl;
+
+    for (const TestCaseDefinition* testCase : testGroup->testCases) {
+        RunTestCaseByName(testCase->name);
+    }
+
+    std::cout << "PASS group " << testGroup->name << std::endl;
+}
+
 void RunAllTestCases() {
     for (const TestCaseDefinition& testCase : GetTestCaseDefinitions()) {
         RunTestCaseByName(testCase.name);
@@ -507,10 +656,20 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        if (options.listGroupsOnly) {
+            PrintTestGroupList(std::cout);
+            return 0;
+        }
+
         if (options.runAll) {
             std::cout << "Running all GUI integration tests." << std::endl;
             PrintTestCaseList(std::cout);
             RunAllTestCases();
+            return 0;
+        }
+
+        if (!options.groupName.empty()) {
+            RunTestGroupByName(options.groupName);
             return 0;
         }
 
