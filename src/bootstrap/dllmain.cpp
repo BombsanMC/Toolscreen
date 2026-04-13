@@ -1416,14 +1416,12 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &currentTextureBinding);
     const GLuint currentTexture = static_cast<GLuint>(currentTextureBinding);
 
-    if (g_gameVersion >= GameVersion(1, 17, 0) && g_gameVersion < GameVersion(1, 20, 0)) {
-        if (currentTexture != 0 || drawFBO != 0) {
-            return next(x, y, width, height);
-        }
-    } else {
-        if (currentTexture == 0 || drawFBO != 0) {
-            return next(x, y, width, height);
-        }
+    const bool isLegacyVersion = g_gameVersion < GameVersion(1, 17, 0);
+    const bool shouldBypassViewportHook = isLegacyVersion ?
+        (currentTexture == 0 || drawFBO != 0) :
+        (currentTexture != 0 || drawFBO != 0);
+    if (shouldBypassViewportHook) {
+        return next(x, y, width, height);
     }
 
     // Track the actual incoming viewport dimensions so tolerant matching remains in sync
