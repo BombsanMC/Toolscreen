@@ -1729,6 +1729,31 @@ static inline void TrackNamedFramebufferTextureAttachment(GLenum attachment, GLu
     g_lastTrackedGameFramebufferTextureId.store(texture != 0 ? texture : UINT_MAX, std::memory_order_release);
 }
 
+static inline void TrackCurrentReadFramebufferColorAttachmentTexture() {
+    const DWORD lastSwapThreadId = g_lastSwapBuffersThreadId.load(std::memory_order_acquire);
+    if (lastSwapThreadId != 0 && GetCurrentThreadId() != lastSwapThreadId) {
+        return;
+    }
+
+    GLint attachmentType = GL_NONE;
+    glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER,
+                                          GL_COLOR_ATTACHMENT0,
+                                          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+                                          &attachmentType);
+    if (attachmentType != GL_TEXTURE) {
+        g_lastTrackedGameFramebufferTextureId.store(UINT_MAX, std::memory_order_release);
+        return;
+    }
+
+    GLint attachmentName = 0;
+    glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER,
+                                          GL_COLOR_ATTACHMENT0,
+                                          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
+                                          &attachmentName);
+    g_lastTrackedGameFramebufferTextureId.store(attachmentName > 0 ? static_cast<GLuint>(attachmentName) : UINT_MAX,
+                                                std::memory_order_release);
+}
+
 static void AttemptHookGlBlitNamedFramebufferViaGlew() {
     static std::atomic<bool> s_hooked{ false };
     if (s_hooked.load(std::memory_order_acquire)) return;
@@ -1779,6 +1804,10 @@ static inline void BlitFramebufferHook_Impl(PFNGLBLITFRAMEBUFFERPROC_HOOK next,
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFBO);
 
     if (ShouldRetargetMinecraftBlitFramebuffer(readFBO, drawFBO)) {
+        if ((mask & GL_COLOR_BUFFER_BIT) != 0) {
+            TrackCurrentReadFramebufferColorAttachmentTexture();
+        }
+
         int resolvedDstX0 = 0;
         int resolvedDstY0 = 0;
         int resolvedDstX1 = 0;
