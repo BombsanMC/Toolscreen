@@ -4886,7 +4886,7 @@ static GLuint PrepareSameThreadVirtualCameraTexture(GLuint srcTexture, int srcW,
 
     const int dstX = (outW - fitW) / 2;
     const int dstY = (outH - fitH) / 2;
-    glBlitFramebuffer(0, 0, srcW, srcH, dstX, dstY, dstX + fitW, dstY + fitH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    BlitFramebufferDirect(0, 0, srcW, srcH, dstX, dstY, dstX + fitW, dstY + fitH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousDrawFbo);
@@ -4935,7 +4935,7 @@ static GLuint PrepareSameThreadVirtualCameraBackbufferTexture(int srcW, int srcH
 
     const int dstX = (outW - fitW) / 2;
     const int dstY = (outH - fitH) / 2;
-    ObsBlitFramebufferDirect(0, 0, srcW, srcH, dstX, dstY, dstX + fitW, dstY + fitH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    BlitFramebufferDirect(0, 0, srcW, srcH, dstX, dstY, dstX + fitW, dstY + fitH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousDrawFbo);
@@ -6588,15 +6588,15 @@ void RenderModeInternal(const ModeConfig* modeToRender, const GLState& s, int cu
                         int dstRight = padding + conf.captureWidth;
                         int dstTop = padding + conf.captureHeight;
 
-                        glBlitFramebuffer(srcLeft, srcBottom, srcRight, srcTop, dstLeft, dstBottom, dstRight, dstTop, GL_COLOR_BUFFER_BIT,
-                                          GL_NEAREST);
+                        BlitFramebufferDirect(srcLeft, srcBottom, srcRight, srcTop, dstLeft, dstBottom, dstRight, dstTop,
+                                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
                     }
 
                     if (needsFallbackFinalTarget && inst.finalFbo != 0 && inst.finalTexture != 0 && inst.final_w > 0 && inst.final_h > 0) {
                         glBindFramebuffer(GL_READ_FRAMEBUFFER, inst.fbo);
                         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, inst.finalFbo);
-                        glBlitFramebuffer(0, 0, inst.fbo_w, inst.fbo_h, 0, 0, inst.final_w, inst.final_h, GL_COLOR_BUFFER_BIT,
-                                          GL_NEAREST);
+                        BlitFramebufferDirect(0, 0, inst.fbo_w, inst.fbo_h, 0, 0, inst.final_w, inst.final_h, GL_COLOR_BUFFER_BIT,
+                                              GL_NEAREST);
                     }
 
                     glBindFramebuffer(GL_FRAMEBUFFER, inst.fbo);

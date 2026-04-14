@@ -389,7 +389,7 @@ void CaptureBackbufferForObs(int width, int height) {
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_sameThreadObsCaptureFBOs[captureIndex]);
-    ObsBlitFramebufferDirect(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    BlitFramebufferDirect(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFBO);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFBO);
 
@@ -1904,13 +1904,7 @@ void APIENTRY hkglNamedFramebufferTexture(GLuint framebuffer, GLenum attachment,
     }
 }
 
-void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
-                                     GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) {
-    if (drawFramebuffer != 0) {
-        return oglBlitNamedFramebuffer(readFramebuffer, drawFramebuffer, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask,
-                                       filter);
-    }
-
+bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, int& outDstY1) {
     const ViewportTransitionSnapshot& transitionSnap =
         g_viewportTransitionSnapshots[g_viewportTransitionSnapshotIndex.load(std::memory_order_acquire)];
     auto hookConfigSnap = GetConfigSnapshot();
@@ -1945,38 +1939,55 @@ void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuf
         stretchWidth = cachedMode.stretchWidth;
         stretchHeight = cachedMode.stretchHeight;
     } else {
-        return oglBlitNamedFramebuffer(readFramebuffer, drawFramebuffer, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask,
-                                       filter);
+        return false;
     }
 
     const int screenW = GetCachedWindowWidth();
     const int screenH = GetCachedWindowHeight();
-    if (screenW > 0 && screenH > 0) {
-        if (transitionSnap.active && !cutGameViewportTransition) {
-            if (hideAnimationsInGame) {
-                stretchX = transitionSnap.toX;
-                stretchY = transitionSnap.toY;
-                stretchWidth = transitionSnap.toWidth;
-                stretchHeight = transitionSnap.toHeight;
-            } else {
-                stretchX = transitionSnap.currentX;
-                stretchY = transitionSnap.currentY;
-                stretchWidth = transitionSnap.currentWidth;
-                stretchHeight = transitionSnap.currentHeight;
-            }
-        } else if (!stretchEnabled) {
-            stretchX = GetCenteredAxisOffset(screenW, modeWidth);
-            stretchY = GetCenteredAxisOffset(screenH, modeHeight);
-            stretchWidth = modeWidth;
-            stretchHeight = modeHeight;
+    if (screenW <= 0 || screenH <= 0) {
+        return false;
+    }
+
+    if (transitionSnap.active && !cutGameViewportTransition) {
+        if (hideAnimationsInGame) {
+            stretchX = transitionSnap.toX;
+            stretchY = transitionSnap.toY;
+            stretchWidth = transitionSnap.toWidth;
+            stretchHeight = transitionSnap.toHeight;
+        } else {
+            stretchX = transitionSnap.currentX;
+            stretchY = transitionSnap.currentY;
+            stretchWidth = transitionSnap.currentWidth;
+            stretchHeight = transitionSnap.currentHeight;
         }
+    } else if (!stretchEnabled) {
+        stretchX = GetCenteredAxisOffset(screenW, modeWidth);
+        stretchY = GetCenteredAxisOffset(screenH, modeHeight);
+        stretchWidth = modeWidth;
+        stretchHeight = modeHeight;
+    }
 
-        int screenH = GetCachedWindowHeight();
-        int destY0_screen = screenH - stretchY - stretchHeight;
-        int destY1_screen = screenH - stretchY;
+    outDstX0 = stretchX;
+    outDstY0 = screenH - stretchY - stretchHeight;
+    outDstX1 = stretchX + stretchWidth;
+    outDstY1 = screenH - stretchY;
+    return true;
+}
 
-        return oglBlitNamedFramebuffer(readFramebuffer, drawFramebuffer, srcX0, srcY0, srcX1, srcY1, stretchX, destY0_screen,
-                                       stretchX + stretchWidth, destY1_screen, mask, filter);
+void WINAPI hkglBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                                     GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) {
+    if (drawFramebuffer != 0) {
+        return oglBlitNamedFramebuffer(readFramebuffer, drawFramebuffer, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask,
+                                       filter);
+    }
+
+    int resolvedDstX0 = 0;
+    int resolvedDstY0 = 0;
+    int resolvedDstX1 = 0;
+    int resolvedDstY1 = 0;
+    if (ResolvePresentedGameBlitRect(resolvedDstX0, resolvedDstY0, resolvedDstX1, resolvedDstY1)) {
+        return oglBlitNamedFramebuffer(readFramebuffer, drawFramebuffer, srcX0, srcY0, srcX1, srcY1, resolvedDstX0, resolvedDstY0,
+                                       resolvedDstX1, resolvedDstY1, mask, filter);
     }
 
     return oglBlitNamedFramebuffer(readFramebuffer, drawFramebuffer, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
@@ -2170,7 +2181,6 @@ static BOOL SwapBuffersHook_Impl(WGLSWAPBUFFERS next, HDC hDc) {
 
                 AttemptHookGlBlitNamedFramebufferViaGlew();
 
-                // Note: glBlitFramebuffer hook for OBS is now handled by obs_thread.cpp
             } else {
                 Log("[RENDER] ERROR: Failed to initialize GLEW.");
                 return next(hDc);

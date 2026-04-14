@@ -1,4 +1,5 @@
 #include "mirror_thread.h"
+#include "obs_thread.h"
 #include "gui/gui.h"
 #include "runtime/logic_thread.h"
 #include "common/profiler.h"
@@ -1116,7 +1117,7 @@ void SubmitFrameCapture(GLuint gameTexture, int width, int height) {
         return;
     }
 
-    glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    BlitFramebufferDirect(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -2202,7 +2203,7 @@ static void MT_QueueContentReadback(MT_MirrorFbos& fb, GLuint sourceFbo, int sou
     if (useDownsample) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb.contentDownsampleFbo);
-        glBlitFramebuffer(0, 0, sourceW, sourceH, 0, 0, detW, detH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        BlitFramebufferDirect(0, 0, sourceW, sourceH, 0, 0, detW, detH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fb.contentDownsampleFbo);
     } else {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFbo);

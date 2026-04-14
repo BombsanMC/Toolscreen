@@ -49,6 +49,10 @@ static std::atomic<uint64_t> g_obsNextTextureUpdateTickUs{ 0 };
 static std::atomic<uint64_t> g_obsLastGameCaptureSampleTickUs{ 0 };
 static std::atomic<uint64_t> g_obsSmoothedGameCaptureIntervalUs{ 0 };
 
+static bool ShouldRetargetMinecraftBlitFramebuffer(GLint readFBO, GLint drawFBO) {
+    return drawFBO == 0 && readFBO != 0 && IsVersionInRange(g_gameVersion, GameVersion(1, 21, 2), GameVersion(1, 21, 4));
+}
+
 static constexpr int OBS_TARGET_DEFAULT_FPS = 60;
 static constexpr int OBS_TARGET_MIN_FPS = 15;
 static constexpr int OBS_TARGET_MAX_FPS = 360;
@@ -190,10 +194,30 @@ static GLuint SelectObsRedirectTexture(GLsync& outFence, bool& outNeedsFenceWait
 
 static void APIENTRY Hook_glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1,
                                             GLint dstY1, GLbitfield mask, GLenum filter) {
-    if (g_obsOverrideEnabled.load(std::memory_order_acquire)) {
-        GLint readFBO = 0;
-        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFBO);
+    GLint readFBO = 0;
+    GLint drawFBO = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFBO);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFBO);
 
+    if (ShouldRetargetMinecraftBlitFramebuffer(readFBO, drawFBO) && filter == GL_NEAREST) {
+        int resolvedDstX0 = 0;
+        int resolvedDstY0 = 0;
+        int resolvedDstX1 = 0;
+        int resolvedDstY1 = 0;
+        Log("1");
+        if (ResolvePresentedGameBlitRect(resolvedDstX0, resolvedDstY0, resolvedDstX1, resolvedDstY1)) {
+            Log("2");
+            Log("Got a Minecraft blit with readFBO=0 and drawFBO=" + std::to_string(drawFBO) + ", remapping to presented game rect: " +
+                std::to_string(resolvedDstX0) + "," + std::to_string(resolvedDstY0) + " - " + std::to_string(resolvedDstX1) +
+                "," + std::to_string(resolvedDstY1) + " (original dst rect: " + std::to_string(dstX0) + "," + std::to_string(dstY0) + " - " + std::to_string(dstX1) +
+                "," + std::to_string(dstY1) + "), src rect: " + std::to_string(srcX0) + "," + std::to_string(srcY0) + " - " + std::to_string(srcX1) + "," + std::to_string(srcY1));
+            Real_glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, resolvedDstX0, resolvedDstY0, resolvedDstX1, resolvedDstY1, mask,
+                                    filter);
+            return;
+        }
+    }
+
+    if (g_obsOverrideEnabled.load(std::memory_order_acquire)) {
         if (readFBO == 0) {
             RecordObsGameCaptureSample();
 
@@ -274,16 +298,16 @@ static void APIENTRY Hook_glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX
     Real_glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }
 
-void ObsBlitFramebufferDirect(GLint srcX0,
-                              GLint srcY0,
-                              GLint srcX1,
-                              GLint srcY1,
-                              GLint dstX0,
-                              GLint dstY0,
-                              GLint dstX1,
-                              GLint dstY1,
-                              GLbitfield mask,
-                              GLenum filter) {
+void BlitFramebufferDirect(GLint srcX0,
+                           GLint srcY0,
+                           GLint srcX1,
+                           GLint srcY1,
+                           GLint dstX0,
+                           GLint dstY0,
+                           GLint dstX1,
+                           GLint dstY1,
+                           GLbitfield mask,
+                           GLenum filter) {
     if (Real_glBlitFramebuffer) {
         Real_glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
         return;
