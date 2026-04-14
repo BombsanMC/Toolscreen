@@ -27,7 +27,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       actions: read
-      contents: write
+      contents: read
     env:
       TOOLSCREEN_BUILD_DIR: 'out/build-ci'
       TOOLSCREEN_ARTIFACT_DIR: 'out/build-ci/bin/Release'
@@ -136,32 +136,6 @@ jobs:
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         shell: pwsh
         run: cmake --build --preset ci-package --parallel --target jar
-
-      - name: Resolve unsigned release metadata
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        id: release_meta
-        shell: pwsh
-        run: |
-          $versionFile = Join-Path $env:GITHUB_WORKSPACE 'ToolscreenVersion.cmake'
-          $versionContent = Get-Content $versionFile -Raw
-
-          $majorMatch = [regex]::Match($versionContent, 'set\(TOOLSCREEN_VERSION_MAJOR\s+(\d+)\)')
-          $minorMatch = [regex]::Match($versionContent, 'set\(TOOLSCREEN_VERSION_MINOR\s+(\d+)\)')
-          $patchMatch = [regex]::Match($versionContent, 'set\(TOOLSCREEN_VERSION_PATCH\s+(\d+)\)')
-
-          if (-not $majorMatch.Success -or -not $minorMatch.Success -or -not $patchMatch.Success) {
-            throw "Failed to parse version from $versionFile"
-          }
-
-          $version = '{0}.{1}.{2}' -f $majorMatch.Groups[1].Value, $minorMatch.Groups[1].Value, $patchMatch.Groups[1].Value
-          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
-          $tag = "unsigned-v$version-run-$env:GITHUB_RUN_NUMBER-$shortSha"
-          $title = "Unsigned CI build $version ($shortSha)"
-
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "short_sha=$shortSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "title=$title" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Assemble unsigned release inputs
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -286,46 +260,6 @@ jobs:
             ${{ env.TOOLSCREEN_RELEASE_DIR }}/Toolscreen-not-legal-for-speedruns.pdb
             ${{ env.TOOLSCREEN_RELEASE_DIR }}/liblogger_x64-not-legal-for-speedruns.dll
             ${{ env.TOOLSCREEN_RELEASE_DIR }}/Toolscreen-*-double-click-me-not-legal-for-speedruns.jar
-
-      - name: Publish unsigned artifacts to GitHub release
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $repo = $env:GITHUB_REPOSITORY
-          $tag = '${{ steps.release_meta.outputs.tag }}'
-          $title = '${{ steps.release_meta.outputs.title }}'
-          $notesPath = Join-Path $env:RUNNER_TEMP 'unsigned-release-notes.md'
-          $artifactDir = Join-Path $env:GITHUB_WORKSPACE $env:TOOLSCREEN_RELEASE_DIR
-
-          @"
-          Unsigned CI archive for Toolscreen.
-
-          Version: ${{ steps.release_meta.outputs.version }}
-          Branch: ${{ github.ref_name }}
-          Commit: ${{ github.sha }}
-          Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-          These assets are the regular unsigned build outputs from the Build workflow.
-          "@ | Set-Content -Path $notesPath -Encoding utf8
-
-          gh release view $tag -R $repo *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release edit $tag -R $repo --title $title --notes-file $notesPath --prerelease
-          } else {
-            gh release create $tag -R $repo --title $title --notes-file $notesPath --prerelease --target $env:GITHUB_SHA
-          }
-
-          $assets = @(
-            (Join-Path $artifactDir 'Toolscreen-not-legal-for-speedruns.dll'),
-            (Join-Path $artifactDir 'Toolscreen-not-legal-for-speedruns.pdb'),
-            (Join-Path $artifactDir 'liblogger_x64-not-legal-for-speedruns.dll')
-          )
-
-          $assets += (Get-ChildItem $artifactDir -File -Filter 'Toolscreen-*-double-click-me-not-legal-for-speedruns.jar').FullName
-
-          gh release upload $tag -R $repo --clobber $assets
 
       - name: Show sccache stats
         if: ${{ always() }}
