@@ -1962,10 +1962,10 @@ InputHandlerResult HandleMouseCoordinateTranslationPhase(HWND hWnd, UINT uMsg, W
 
     PROFILE_SCOPE("HandleMouseCoordinateTranslation");
 
-    // Prefer live viewport geometry for correctness during/after resize.
-    // Cached mode viewport may lag by a tick and can desync mouse mapping.
-    ModeViewportInfo geo = GetCurrentModeViewport();
-    if (!geo.valid) {
+    // Resolve against the same presented viewport geometry the GL hooks use.
+    // This keeps cursor translation aligned with what is actually on screen.
+    ModeViewportInfo geo;
+    if (!ResolvePresentedGameViewport(geo)) {
         const CachedModeViewport& cachedMode = g_viewportModeCache[g_viewportModeCacheIndex.load(std::memory_order_acquire)];
         if (cachedMode.valid) {
             geo.valid = true;

@@ -77,6 +77,17 @@ void PublishConfigSnapshot(const Config& config) {
     g_configSnapshotVersion.fetch_add(1, std::memory_order_release);
 }
 
+bool PublishConfigSnapshotIfUnchanged(const std::shared_ptr<const Config>& expectedSnapshot, const Config& config) {
+    auto snapshot = std::make_shared<const Config>(config);
+    auto expected = expectedSnapshot;
+    if (!g_configSnapshot.compare_exchange_strong(expected, std::move(snapshot), std::memory_order_acq_rel, std::memory_order_acquire)) {
+        return false;
+    }
+
+    g_configSnapshotVersion.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
 std::shared_ptr<const Config> GetConfigSnapshot() {
     // Lock-free read: atomic load of shared_ptr.
     return g_configSnapshot.load(std::memory_order_acquire);
@@ -2268,7 +2279,13 @@ void APIENTRY hkglNamedFramebufferTexture(GLuint framebuffer, GLenum attachment,
     }
 }
 
-bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, int& outDstY1) {
+static bool ResolvePresentedGameViewportGeometry(int& outModeWidth,
+                                                 int& outModeHeight,
+                                                 bool& outStretchEnabled,
+                                                 int& outStretchX,
+                                                 int& outStretchY,
+                                                 int& outStretchWidth,
+                                                 int& outStretchHeight) {
     const ViewportTransitionSnapshot& transitionSnap =
         g_viewportTransitionSnapshots[g_viewportTransitionSnapshotIndex.load(std::memory_order_acquire)];
     auto hookConfigSnap = GetConfigSnapshot();
@@ -2308,9 +2325,7 @@ bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, i
 
     const int screenW = GetCachedWindowWidth();
     const int screenH = GetCachedWindowHeight();
-    if (screenW <= 0 || screenH <= 0) {
-        return false;
-    }
+    if (screenW <= 0 || screenH <= 0) { return false; }
 
     if (transitionSnap.active && !cutGameViewportTransition) {
         if (hideAnimationsInGame) {
@@ -2330,6 +2345,59 @@ bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, i
         stretchWidth = modeWidth;
         stretchHeight = modeHeight;
     }
+
+    outModeWidth = modeWidth;
+    outModeHeight = modeHeight;
+    outStretchEnabled = stretchEnabled;
+    outStretchX = stretchX;
+    outStretchY = stretchY;
+    outStretchWidth = stretchWidth;
+    outStretchHeight = stretchHeight;
+
+    return true;
+}
+
+bool ResolvePresentedGameViewport(ModeViewportInfo& outViewport) {
+    int modeWidth = 0;
+    int modeHeight = 0;
+    bool stretchEnabled = false;
+    int stretchX = 0;
+    int stretchY = 0;
+    int stretchWidth = 0;
+    int stretchHeight = 0;
+
+    if (!ResolvePresentedGameViewportGeometry(modeWidth, modeHeight, stretchEnabled, stretchX, stretchY, stretchWidth, stretchHeight)) {
+        return false;
+    }
+
+    outViewport.valid = true;
+    outViewport.x = 0;
+    outViewport.y = 0;
+    outViewport.width = modeWidth;
+    outViewport.height = modeHeight;
+    outViewport.stretchEnabled = stretchEnabled;
+    outViewport.stretchX = stretchX;
+    outViewport.stretchY = stretchY;
+    outViewport.stretchWidth = stretchWidth;
+    outViewport.stretchHeight = stretchHeight;
+    return true;
+}
+
+bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, int& outDstY1) {
+    int modeWidth = 0;
+    int modeHeight = 0;
+    bool stretchEnabled = false;
+    int stretchX = 0;
+    int stretchY = 0;
+    int stretchWidth = 0;
+    int stretchHeight = 0;
+
+    if (!ResolvePresentedGameViewportGeometry(modeWidth, modeHeight, stretchEnabled, stretchX, stretchY, stretchWidth, stretchHeight)) {
+        return false;
+    }
+
+    const int screenH = GetCachedWindowHeight();
+    if (screenH <= 0) { return false; }
 
     outDstX0 = stretchX;
     outDstY0 = screenH - stretchY - stretchHeight;

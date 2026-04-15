@@ -11,6 +11,8 @@
 #include <unordered_set>
 #include <thread>
 
+bool PublishConfigSnapshotIfUnchanged(const std::shared_ptr<const Config>& expectedSnapshot, const Config& config);
+
 std::atomic<bool> g_logicThreadRunning{ false };
 static std::thread g_logicThread;
 static std::atomic<bool> g_logicThreadShouldStop{ false };
@@ -357,7 +359,7 @@ void UpdateCachedScreenMetrics() {
         const bool shouldEnforceModeSize = !fullscreenStretchMode && (modeSizeChanged || shouldEnforceForExternalResize);
         const bool shouldSendWmSize = shouldSendStartupWmSize || shouldSendFullscreenModeSize || shouldEnforceModeSize;
 
-        const bool sourceSnapshotStillCurrent = (GetConfigSnapshot() == baseSnapshot);
+        const bool sourceSnapshotStillCurrent = PublishConfigSnapshotIfUnchanged(baseSnapshot, resolvedConfig);
         const bool sameModeStillActive = (GetPublishedCurrentModeId() == currentModeId);
 
         if (sourceSnapshotStillCurrent && sameModeStillActive && afterModeW > 0 && afterModeH > 0 && shouldSendWmSize &&
@@ -366,8 +368,16 @@ void UpdateCachedScreenMetrics() {
             if (hwnd) { RequestWindowClientResize(hwnd, afterModeW, afterModeH, "logic_thread:screen_metrics"); }
         }
 
-        // Publish updated snapshot so reader threads see the recalculated dimensions.
-        if (sourceSnapshotStillCurrent) { PublishConfigSnapshot(resolvedConfig); }
+        if (sourceSnapshotStillCurrent) {
+            const std::string activeModeIdAfterPublish = GetPublishedCurrentModeId();
+            if (const ModeConfig* activeMode = GetModeFromSnapshot(resolvedConfig, activeModeIdAfterPublish)) {
+                RetargetActiveModeTransition(*activeMode);
+            }
+        } else {
+            // A concurrent publish won the snapshot race. Retry next tick against
+            // the newer config so resize-driven mode dimensions do not stay stale.
+            s_screenMetricsRecalcRequested.store(true, std::memory_order_relaxed);
+        }
 
         if (startupShouldRunNow) { s_startupMetricsResyncPending.store(false, std::memory_order_relaxed); }
     }

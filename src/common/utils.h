@@ -397,6 +397,7 @@ const MirrorConfig* GetMirrorFromSnapshot(const Config& config, const std::strin
 bool isWallTitleOrWaiting(const std::string& state);
 ModeViewportInfo GetCurrentModeViewport();
 ModeViewportInfo GetCurrentModeViewport_Internal(); // Lock-free implementation using double-buffered mode ID
+bool ResolvePresentedGameViewport(ModeViewportInfo& outViewport);
 bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, int& outDstY1);
 
 GLuint CompileShader(GLenum type, const char* source);
