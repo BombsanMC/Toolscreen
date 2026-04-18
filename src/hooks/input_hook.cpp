@@ -447,6 +447,13 @@ static void ResendCurrentModeWmSize(HWND hWnd, const char* source) {
     const ModeConfig* mode = GetModeFromSnapshotOrFallback(*cfgSnap, currentModeId);
     if (!mode || mode->width <= 0 || mode->height <= 0) { return; }
 
+    if (EqualsIgnoreCase(mode->id, "Fullscreen") && mode->useRelativeSize) {
+        // Real window-size changes will trigger a logic-thread recalculation that reposts
+        // WM_SIZE with the freshly recomputed internal size. Avoid sending the stale
+        // pre-recalc fullscreen-relative dimensions here.
+        return;
+    }
+
     RequestWindowClientResize(hWnd, mode->width, mode->height, source);
 }
 

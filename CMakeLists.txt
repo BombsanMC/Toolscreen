@@ -1072,6 +1072,9 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     key-rebind-gui-keyboard-layout-scan-picker-filter
     key-rebind-gui-keyboard-layout-scan-picker-reset-to-default
     config-load-fullscreen-stretch-repaired
+    config-load-fullscreen-manual-dimensions-preserved
+    config-load-fullscreen-relative-dimensions-preserved
+    fullscreen-relative-external-resize-skips-stale-resend
     config-load-preemptive-sync-existing-mode
     config-load-thin-min-width-enforced
     config-load-browser-overlay-defaults
