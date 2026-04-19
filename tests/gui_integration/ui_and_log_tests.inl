@@ -534,19 +534,47 @@ void ExpectPublishedViewportMatchesMode(const std::string& expectedModeId, const
         Expect(GetCachedWindowHeight() == clientHeight + 180,
             "Expected the mouse translation regression test to stage a stale cached client height.");
 
-        ScopedLatestGameViewportSizeOverride liveViewport(640, 480);
+        {
+            ScopedCursorVisibilityOverride cursorVisible(true);
+            ScopedLatestGameViewportSizeOverride liveViewport(640, 480);
 
-        LPARAM translatedLParam = MAKELPARAM(clientWidth / 2, clientHeight / 2);
-        const InputHandlerResult result = HandleMouseCoordinateTranslationPhase(window.hwnd(), WM_MOUSEMOVE, 0, translatedLParam);
+            g_showGui.store(false, std::memory_order_release);
+
+            LPARAM translatedLParam = MAKELPARAM(clientWidth / 2, clientHeight / 2);
+            const InputHandlerResult result = HandleMouseCoordinateTranslationPhase(window.hwnd(), WM_MOUSEMOVE, 0, translatedLParam);
             const int translatedX = static_cast<int>(static_cast<short>(LOWORD(translatedLParam)));
             const int translatedY = static_cast<int>(static_cast<short>(HIWORD(translatedLParam)));
 
-        Expect(!result.consumed,
-            "Expected mouse coordinate translation to adjust WM_MOUSEMOVE in-place without consuming the message.");
+            Expect(!result.consumed,
+                "Expected mouse coordinate translation to adjust WM_MOUSEMOVE in-place without consuming the message.");
             Expect(translatedX == 320,
-            "Expected mouse coordinate translation to use the live game viewport width instead of a stale cached mode width.");
+                "Expected mouse coordinate translation to use the live game viewport width instead of a stale cached mode width.");
             Expect(translatedY == 240,
-            "Expected mouse coordinate translation to use the live game viewport height instead of a stale cached mode height.");
+                "Expected mouse coordinate translation to use the live game viewport height instead of a stale cached mode height.");
+
+            ScopedLatestGameViewportSizeOverride staleGuiViewport(1024, 768);
+
+            g_showGui.store(true, std::memory_order_release);
+            CloseSettingsGuiWindow();
+
+            int viewportAfterCloseW = 0;
+            int viewportAfterCloseH = 0;
+            Expect(!GetLatestGameViewportSize(viewportAfterCloseW, viewportAfterCloseH),
+                "Expected closing the settings GUI to invalidate any GUI-era latest game viewport size.");
+
+            LPARAM translatedAfterClose = MAKELPARAM(clientWidth / 2, clientHeight / 2);
+            const InputHandlerResult resultAfterClose =
+                HandleMouseCoordinateTranslationPhase(window.hwnd(), WM_MOUSEMOVE, 0, translatedAfterClose);
+            const int translatedAfterCloseX = static_cast<int>(static_cast<short>(LOWORD(translatedAfterClose)));
+            const int translatedAfterCloseY = static_cast<int>(static_cast<short>(HIWORD(translatedAfterClose)));
+
+            Expect(!resultAfterClose.consumed,
+                "Expected post-close mouse translation to keep adjusting WM_MOUSEMOVE in-place without consuming the message.");
+            Expect(translatedAfterCloseX == 400,
+                "Expected post-close mouse translation to fall back to the mode width instead of a stale GUI-era viewport width.");
+            Expect(translatedAfterCloseY == 300,
+                "Expected post-close mouse translation to fall back to the mode height instead of a stale GUI-era viewport height.");
+        }
     }
 
 void RunProfileApplyFieldsRoundtripTest(TestRunMode runMode = TestRunMode::Automated) {

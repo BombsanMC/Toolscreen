@@ -1601,10 +1601,13 @@ static inline void ViewportHook_Impl(GLVIEWPORTPROC next, GLint x, GLint y, GLsi
         return next(x, y, width, height);
     }
 
-    // Track the actual incoming viewport dimensions so tolerant matching remains in sync
-    // even when mode dimensions and driver calls update on slightly different frames.
-    lastViewportW.store(static_cast<int>(width), std::memory_order_relaxed);
-    lastViewportH.store(static_cast<int>(height), std::memory_order_relaxed);
+    if (!g_showGui.load(std::memory_order_acquire)) {
+        // Track the latest verified in-game viewport only while the settings GUI is closed.
+        // GUI rendering can issue its own viewport calls, and carrying those sizes into
+        // post-close mouse translation can desync cursor mapping from the game surface.
+        lastViewportW.store(static_cast<int>(width), std::memory_order_relaxed);
+        lastViewportH.store(static_cast<int>(height), std::memory_order_relaxed);
+    }
 
     const int screenW = GetCachedWindowWidth();
     const int screenH = GetCachedWindowHeight();
@@ -2384,6 +2387,12 @@ bool ResolvePresentedGameViewport(ModeViewportInfo& outViewport) {
 }
 
 bool GetLatestGameViewportSize(int& outWidth, int& outHeight) {
+    if (g_showGui.load(std::memory_order_acquire)) {
+        outWidth = 0;
+        outHeight = 0;
+        return false;
+    }
+
     const int width = lastViewportW.load(std::memory_order_relaxed);
     const int height = lastViewportH.load(std::memory_order_relaxed);
     if (width <= 0 || height <= 0) {
@@ -2395,6 +2404,11 @@ bool GetLatestGameViewportSize(int& outWidth, int& outHeight) {
     outWidth = width;
     outHeight = height;
     return true;
+}
+
+void InvalidateLatestGameViewportSize() {
+    lastViewportW.store(0, std::memory_order_relaxed);
+    lastViewportH.store(0, std::memory_order_relaxed);
 }
 
 #ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS

@@ -2272,6 +2272,7 @@ void ResetGuiTransientInteractionState() {
 void CloseSettingsGuiWindow() {
     g_showGui = false;
     InvalidateImGuiCache();
+    InvalidateLatestGameViewportSize();
 
     HWND hwnd = g_minecraftHwnd.load(std::memory_order_relaxed);
     ImGuiInputQueue_Clear();

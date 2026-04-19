@@ -402,6 +402,7 @@ ModeViewportInfo GetCurrentModeViewport_Internal(); // Lock-free implementation 
 bool ResolvePresentedGameViewport(ModeViewportInfo& outViewport);
 bool ResolvePresentedGameBlitRect(int& outDstX0, int& outDstY0, int& outDstX1, int& outDstY1);
 bool GetLatestGameViewportSize(int& outWidth, int& outHeight);
+void InvalidateLatestGameViewportSize();
 #ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
 void SetLatestGameViewportSizeForTests(int width, int height);
 #endif
