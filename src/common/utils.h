@@ -378,6 +378,7 @@ BOOL ClipCursorDirect(const RECT* lpRect);
 bool ApplyConfineCursorToGameWindow();
 
 UINT GetToolscreenBorderlessToggleMessageId();
+void RememberRequestedWindowClientResize(int width, int height);
 bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* source = nullptr);
 bool GetRecentRequestedWindowClientResizes(int& outCurrentW, int& outCurrentH, int& outPreviousW, int& outPreviousH);
 bool CenterWindowedRestoreOnCurrentMonitor(HWND hwnd, const char* source = nullptr);

@@ -2985,6 +2985,23 @@ static std::atomic<int> s_lastRequestedClientH{ 0 };
 static std::atomic<int> s_prevRequestedClientW{ 0 };
 static std::atomic<int> s_prevRequestedClientH{ 0 };
 
+static void RememberRequestedWindowClientResize_Internal(int width, int height) {
+    if (width <= 0 || height <= 0) { return; }
+
+    const int lastRequestedW = s_lastRequestedClientW.load(std::memory_order_relaxed);
+    const int lastRequestedH = s_lastRequestedClientH.load(std::memory_order_relaxed);
+    if (lastRequestedW != width || lastRequestedH != height) {
+        s_prevRequestedClientW.store(lastRequestedW, std::memory_order_relaxed);
+        s_prevRequestedClientH.store(lastRequestedH, std::memory_order_relaxed);
+        s_lastRequestedClientW.store(width, std::memory_order_relaxed);
+        s_lastRequestedClientH.store(height, std::memory_order_relaxed);
+    }
+}
+
+void RememberRequestedWindowClientResize(int width, int height) {
+    RememberRequestedWindowClientResize_Internal(width, height);
+}
+
 bool GetRecentRequestedWindowClientResizes(int& outCurrentW, int& outCurrentH, int& outPreviousW, int& outPreviousH) {
     outCurrentW = s_lastRequestedClientW.load(std::memory_order_relaxed);
     outCurrentH = s_lastRequestedClientH.load(std::memory_order_relaxed);
@@ -3060,14 +3077,7 @@ bool RequestWindowClientResize(HWND hwnd, int width, int height, const char* sou
 
     std::lock_guard<std::mutex> lock(s_resizeRequestMutex);
 
-    const int lastRequestedW = s_lastRequestedClientW.load(std::memory_order_relaxed);
-    const int lastRequestedH = s_lastRequestedClientH.load(std::memory_order_relaxed);
-    if (lastRequestedW != width || lastRequestedH != height) {
-        s_prevRequestedClientW.store(lastRequestedW, std::memory_order_relaxed);
-        s_prevRequestedClientH.store(lastRequestedH, std::memory_order_relaxed);
-        s_lastRequestedClientW.store(width, std::memory_order_relaxed);
-        s_lastRequestedClientH.store(height, std::memory_order_relaxed);
-    }
+    RememberRequestedWindowClientResize_Internal(width, height);
 
     if (s_lastHwnd == hwnd && s_lastWidth == width && s_lastHeight == height && (nowMs - s_lastPostedMs) <= 50) { return true; }
 

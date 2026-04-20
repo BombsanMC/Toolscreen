@@ -114,6 +114,9 @@ const auto& GetTestCaseDefinitions() {
         {"config-load-fullscreen-manual-dimensions-preserved", &RunConfigLoadFullscreenManualDimensionsPreservedTest},
         {"config-load-fullscreen-relative-dimensions-preserved", &RunConfigLoadFullscreenRelativeDimensionsPreservedTest},
         {"fullscreen-relative-external-resize-skips-stale-resend", &RunFullscreenRelativeExternalResizeSkipsStaleResendTest},
+        {"fullscreen-relative-os-wmsize-overrides-computed-dimensions", &RunFullscreenRelativeOsWmSizeOverridesComputedDimensionsTest},
+        {"fullscreen-relative-display-dimensions-follow-window-resize", &RunFullscreenRelativeDisplayDimensionsFollowWindowResizeTest},
+        {"fullscreen-relative-gui-publish-preserves-recalculated-size", &RunFullscreenRelativeGuiPublishPreservesRecalculatedSizeTest},
         {"config-load-preemptive-sync-existing-mode", &RunConfigLoadPreemptiveSyncExistingModeTest},
         {"config-load-thin-min-width-enforced", &RunConfigLoadThinMinWidthEnforcedTest},
         {"config-load-browser-overlay-defaults", &RunConfigLoadBrowserOverlayDefaultsTest},
@@ -228,7 +231,10 @@ bool GroupIncludesTestCaseName(const TestGroupDefinition& testGroup, std::string
 
 const auto& GetTestGroupDefinitions() {
     static const std::vector<TestGroupDefinition> testGroups = {
-        {"config", {"config-default-", "config-roundtrip", "config-load-"}, {"fullscreen-relative-external-resize-skips-stale-resend"}},
+        {"config", {"config-default-", "config-roundtrip", "config-load-"},
+            {"fullscreen-relative-external-resize-skips-stale-resend", "fullscreen-relative-os-wmsize-overrides-computed-dimensions",
+             "fullscreen-relative-display-dimensions-follow-window-resize",
+             "fullscreen-relative-gui-publish-preserves-recalculated-size"}},
         {"rebind", {"key-rebind-"}, {}},
         {"render", {"mode-"}, {"rebind-indicator-renders-below-settings-gui", "render-ninjabrain-information-message-translation-spans"}},
         {"settings-and-ui", {"settings-"}, {"config-error-gui", "profiler-unspecified-breakdown"}},

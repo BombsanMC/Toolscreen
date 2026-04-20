@@ -1075,6 +1075,9 @@ set(TOOLSCREEN_GUI_INTEGRATION_TEST_CASES
     config-load-fullscreen-manual-dimensions-preserved
     config-load-fullscreen-relative-dimensions-preserved
     fullscreen-relative-external-resize-skips-stale-resend
+    fullscreen-relative-os-wmsize-overrides-computed-dimensions
+    fullscreen-relative-display-dimensions-follow-window-resize
+    fullscreen-relative-gui-publish-preserves-recalculated-size
     config-load-preemptive-sync-existing-mode
     config-load-thin-min-width-enforced
     config-load-browser-overlay-defaults

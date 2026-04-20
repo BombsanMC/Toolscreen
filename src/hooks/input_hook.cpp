@@ -2,6 +2,7 @@
 
 #include "features/fake_cursor.h"
 #include "features/virtual_camera.h"
+#include "common/mode_dimensions.h"
 #include "gui/gui.h"
 #include "gui/imgui_cache.h"
 #include "runtime/logic_thread.h"
@@ -1460,20 +1461,37 @@ InputHandlerResult HandleWmSizeModeDimensions(HWND hWnd, UINT uMsg, WPARAM wPara
     const ModeConfig* mode = cfgSnap ? GetModeFromSnapshotOrFallback(*cfgSnap, currentModeId) : nullptr;
     if (!mode || mode->width <= 0 || mode->height <= 0) { return { false, 0 }; }
 
-    if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
-        // Fullscreen custom sizing is an internal render size with a live stretch
-        // rect over the current client area. Let WM_SIZE keep the real client size.
-        return { false, 0 };
-    }
+    int liveClientW = 0;
+    int liveClientH = 0;
+    const bool haveLiveClientSize = TryGetClientSize(hWnd, liveClientW, liveClientH);
+    const bool messageMatchesLiveClient = haveLiveClientSize && liveClientW == msgW && liveClientH == msgH;
 
-    // IMPORTANT: use already-recalculated mode dimensions as authoritative target.
-    // Re-applying relative/expression math against WM_SIZE repeatedly causes compounding
-    // shrink (e.g. 98.4% of 900 -> 885, then 98.4% of 885 -> 870).
     int targetW = mode->width;
     int targetH = mode->height;
 
+    if (EqualsIgnoreCase(mode->id, "Fullscreen")) {
+        if (!messageMatchesLiveClient) {
+            // Toolscreen-posted WM_SIZE already carries the computed internal render size.
+            // Recomputing from the live client here would compound relative sizing.
+            return { false, 0 };
+        }
+
+        // OS WM_SIZE reports the live client area after a real resize/maximize. Rewrite it
+        // to the computed internal render size immediately so the game never races ahead
+        // with the raw client dimensions.
+        targetW = ResolveModeDisplayWidth(*mode, liveClientW, liveClientH);
+        targetH = ResolveModeDisplayHeight(*mode, liveClientW, liveClientH);
+    } else {
+        // IMPORTANT: use already-recalculated mode dimensions as authoritative target.
+        // Re-applying relative/expression math against WM_SIZE repeatedly causes compounding
+        // shrink (e.g. 98.4% of 900 -> 885, then 98.4% of 885 -> 870).
+        targetW = mode->width;
+        targetH = mode->height;
+    }
+
     if (targetW <= 0 || targetH <= 0 || (msgW == targetW && msgH == targetH)) { return { false, 0 }; }
 
+    RememberRequestedWindowClientResize(targetW, targetH);
     const LPARAM adjustedSize = MAKELPARAM(targetW, targetH);
     InvalidateTrackedGameTextureId(false, false);
     LRESULT forwarded = CallWindowProc(g_originalWndProc, hWnd, uMsg, wParam, adjustedSize);
