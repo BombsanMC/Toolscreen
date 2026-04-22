@@ -253,6 +253,16 @@ if (BeginSelectableSettingsNestedTabItem(trc("ninjabrain.title"))) {
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", trc("ninjabrain.tooltip_only_on_obs"));
+        if (ImGui::Checkbox((std::string(trc("ninjabrain.hide_if_stale")) + "##nb").c_str(), &nb.hideIfStale)) {
+            changed = true;
+        }
+        if (nb.hideIfStale) {
+            ImGui::Text("%s", trc("ninjabrain.hide_if_stale_delay"));
+            ImGui::SameLine();
+            if (Spinner("##nbHideIfStaleDelay", &nb.hideIfStaleDelaySeconds, 1, 1, 3600, 80.0f, 1.0f)) {
+                changed = true;
+            }
+        }
 
         ImGui::Columns(2, "nb_render_cols", false);
         ImGui::SetColumnWidth(0, kNinjabrainLabelColumnWidth);
@@ -919,7 +929,12 @@ if (BeginSelectableSettingsNestedTabItem(trc("ninjabrain.title"))) {
             ImGui::Text("%s", trc("ninjabrain.reset_confirm"));
             ImGui::Separator();
             if (ImGui::Button(trc("button.confirm_reset"), ImVec2(120, 0))) {
-                nb = NinjabrainOverlayConfig{};
+                Config defaultConfig;
+                if (LoadEmbeddedDefaultConfig(defaultConfig)) {
+                    nb = std::move(defaultConfig.ninjabrainOverlay);
+                } else {
+                    nb = NinjabrainOverlayConfig{};
+                }
                 changed = true;
                 s_pendingNinjabrainPresetId.clear();
                 s_ninjabrainFontPickerState = {};

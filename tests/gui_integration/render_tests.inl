@@ -1256,6 +1256,7 @@ void RunModeNinjabrainOverlayRenderTest(TestRunMode runMode = TestRunMode::Autom
 
     g_config.defaultMode = kModeId;
     g_config.modes = { mode };
+    g_ninjabrainOverlayVisible.store(true, std::memory_order_release);
 
     auto& nb = g_config.ninjabrainOverlay;
     nb.enabled = true;
@@ -1346,29 +1347,58 @@ void RunModeNinjabrainOverlayRenderTest(TestRunMode runMode = TestRunMode::Autom
     data.informationMessages[1].message =
         "Go left 1 blocks, or right 1 blocks, for ~95% certainty after next measurement.";
 
-    PublishNinjabrainData(std::move(data));
+    PublishNinjabrainData(data);
+
+        auto configSnapshot = GetConfigSnapshot();
+        Expect(configSnapshot != nullptr, "Expected the Ninjabrain render fixture to publish a config snapshot.");
+        Expect(configSnapshot->ninjabrainOverlay.enabled,
+            "Expected the published Ninjabrain overlay config snapshot to stay enabled.");
+        Expect(configSnapshot->ninjabrainOverlay.allowedModes.size() == 1 &&
+             configSnapshot->ninjabrainOverlay.allowedModes.front() == kModeId,
+            "Expected the published Ninjabrain overlay config snapshot to keep its allowed mode.");
+
+        auto dataSnapshot = GetNinjabrainDataSnapshot();
+        Expect(dataSnapshot != nullptr, "Expected the Ninjabrain render fixture to publish a data snapshot.");
+        Expect(dataSnapshot->validPrediction && dataSnapshot->resultType == "TRIANGULATION",
+            "Expected the published Ninjabrain render fixture data to contain triangulation results.");
+        Expect(dataSnapshot->lastUpdateTime != std::chrono::steady_clock::time_point{},
+            "Expected the published Ninjabrain render fixture data to record a freshness timestamp.");
+        if (const char* renderFailure = GetNinjabrainOverlayRenderEligibilityFailureForIntegrationTest(kModeId)) {
+            Expect(false, std::string("Expected the Ninjabrain render fixture to be eligible for rendering, but it was blocked: ") +
+                              renderFailure);
+        }
 
     const SurfaceSize surface = GetWindowClientSize(window.hwnd());
     const int sampleX = nb.x + 24;
     const int sampleY = nb.y + 24;
 
-    auto renderAndAssert = [&](DummyWindow& targetWindow) {
+    auto renderAndSample = [&](DummyWindow& targetWindow) {
         RenderModeOverlayFrame(targetWindow, g_config, g_config.modes.front());
-        if (runMode == TestRunMode::Automated) {
-            glFinish();
-            const Color sample = ReadFramebufferPixelColor(sampleX, sampleY, surface.height);
-            Expect(!IsColorNear(sample, kExpectedRenderSurfaceClear),
-                   "Expected the NinjaBrain overlay preview fixture to draw an opaque panel into the test surface.");
-        }
+        glFinish();
+        return ReadFramebufferPixelColor(sampleX, sampleY, surface.height);
     };
 
     if (runMode == TestRunMode::Visual) {
         RunVisualLoop(window, "mode-ninjabrain-overlay-render", [&](DummyWindow& visualWindow) {
-            renderAndAssert(visualWindow);
+            (void)renderAndSample(visualWindow);
             visualWindow.PresentSurface();
         });
     } else {
-        renderAndAssert(window);
+        const Color sample = renderAndSample(window);
+        Expect(!IsColorNear(sample, kExpectedRenderSurfaceClear),
+               "Expected the NinjaBrain overlay preview fixture to draw an opaque panel into the test surface.");
+
+        nb.hideIfStale = true;
+        nb.hideIfStaleDelaySeconds = 5;
+        PublishConfigSnapshot();
+
+        NinjabrainData staleData = data;
+        staleData.lastUpdateTime = std::chrono::steady_clock::now() - std::chrono::seconds(nb.hideIfStaleDelaySeconds + 1);
+        PublishNinjabrainData(std::move(staleData));
+
+        const Color staleSample = renderAndSample(window);
+        Expect(IsColorNear(staleSample, kExpectedRenderSurfaceClear),
+               "Expected the Ninjabrain overlay preview fixture to hide when its data is stale.");
     }
 
     PublishNinjabrainData(NinjabrainData{});

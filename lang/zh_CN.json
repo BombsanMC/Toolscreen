@@ -755,6 +755,8 @@
     "ninjabrain.predictions": "预测",
     "ninjabrain.relative_to": "相对于",
     "ninjabrain.rendering": "渲染",
+    "ninjabrain.hide_if_stale": "若覆盖层长时间未更新则隐藏",
+    "ninjabrain.hide_if_stale_delay": "隐藏前延迟（秒）",
     "ninjabrain.reset_button": "重置 NinjabrainBot 覆盖层至默认",
     "ninjabrain.reset_confirm": "重置所有 NinjabrainBot 覆盖层设置至默认？",
     "ninjabrain.reset_title": "重置 NinjabrainBot 覆盖层？",

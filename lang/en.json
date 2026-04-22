@@ -739,6 +739,8 @@
     "ninjabrain.side_padding": "Side padding",
     "ninjabrain.only_on_my_screen": "Only on my screen",
     "ninjabrain.only_on_obs": "Only on OBS",
+    "ninjabrain.hide_if_stale": "Hide overlay if it has not updated for a while",
+    "ninjabrain.hide_if_stale_delay": "Delay before hiding (seconds)",
     "ninjabrain.opacity": "Opacity",
     "ninjabrain.outline_width": "Text outline",
     "ninjabrain.preset_ninjabrainbot": "Ninjabrain Bot",

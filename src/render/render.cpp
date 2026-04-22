@@ -4339,22 +4339,46 @@ static bool HasNinjabrainOverlayContent(const NinjabrainOverlayConfig& nb, const
            nb.alwaysShow;
 }
 
-static bool ShouldRenderNinjabrainOverlayForRequest(const SameThreadOverlayState& request) {
+static bool IsNinjabrainOverlayStale(const NinjabrainOverlayConfig& nb, const NinjabrainData& data) {
+    if (!nb.hideIfStale) { return false; }
+    if (data.lastUpdateTime == std::chrono::steady_clock::time_point{}) { return true; }
+
+    const auto hideDelay = std::chrono::seconds((std::max)(1, nb.hideIfStaleDelaySeconds));
+    return (std::chrono::steady_clock::now() - data.lastUpdateTime) >= hideDelay;
+}
+
+static const char* GetNinjabrainOverlayRenderEligibilityFailure(const SameThreadOverlayState& request) {
     auto configSnapshot = GetConfigSnapshot();
-    if (!configSnapshot) { return false; }
+    if (!configSnapshot) { return "config snapshot missing"; }
 
     const auto& nb = configSnapshot->ninjabrainOverlay;
-    if (!nb.enabled) { return false; }
-    if (!g_ninjabrainOverlayVisible.load(std::memory_order_acquire)) { return false; }
-    if (request.excludeOnlyOnMyScreen && nb.onlyOnMyScreen) { return false; }
-    if (!request.excludeOnlyOnMyScreen && nb.onlyOnObs) { return false; }
-    if (!IsNinjabrainOverlayModeAllowed(nb, request.modeId)) { return false; }
+    if (!nb.enabled) { return "overlay disabled"; }
+    if (!g_ninjabrainOverlayVisible.load(std::memory_order_acquire)) { return "overlay visibility toggle disabled"; }
+    if (request.excludeOnlyOnMyScreen && nb.onlyOnMyScreen) { return "only-on-my-screen filtered out"; }
+    if (!request.excludeOnlyOnMyScreen && nb.onlyOnObs) { return "only-on-obs filtered out"; }
+    if (!IsNinjabrainOverlayModeAllowed(nb, request.modeId)) { return "mode not allowed"; }
 
     const auto dataSnapshot = GetNinjabrainDataSnapshot();
-    if (!dataSnapshot) { return false; }
+    if (!dataSnapshot) { return "data snapshot missing"; }
+    if (IsNinjabrainOverlayStale(nb, *dataSnapshot)) { return "data snapshot stale"; }
+    if (!HasNinjabrainOverlayContent(nb, *dataSnapshot)) { return "data snapshot has no renderable content"; }
 
-    return HasNinjabrainOverlayContent(nb, *dataSnapshot);
+    return nullptr;
 }
+
+static bool ShouldRenderNinjabrainOverlayForRequest(const SameThreadOverlayState& request) {
+    return GetNinjabrainOverlayRenderEligibilityFailure(request) == nullptr;
+}
+
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+const char* GetNinjabrainOverlayRenderEligibilityFailureForIntegrationTest(const std::string& modeId,
+                                                                           bool excludeOnlyOnMyScreen) {
+    SameThreadOverlayState request;
+    request.modeId = modeId;
+    request.excludeOnlyOnMyScreen = excludeOnlyOnMyScreen;
+    return GetNinjabrainOverlayRenderEligibilityFailure(request);
+}
+#endif
 
 static bool HasSameThreadOverlayWork(const SameThreadOverlayState& request, const Config& cfg, bool renderNinjabrainOverlay) {
     if (request.modeHasMirrors || request.modeHasImages || request.modeHasWindowOverlays || request.modeHasBrowserOverlays ||

@@ -271,6 +271,10 @@ bool RenderModeOverlaysForIntegrationTest(const Config& config, const ModeConfig
                                           int fullH, int gameX, int gameY, int gameW, int gameH,
                                           bool excludeOnlyOnMyScreen = false, GLuint gameTextureId = 0,
                                           bool renderGui = false);
+#ifdef TOOLSCREEN_GUI_INTEGRATION_TESTS
+const char* GetNinjabrainOverlayRenderEligibilityFailureForIntegrationTest(const std::string& modeId,
+                                                                           bool excludeOnlyOnMyScreen = false);
+#endif
 void RenderMode(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH, bool skipAnimation = false,
                 bool excludeOnlyOnMyScreen = false);
 bool RenderSameThreadObsFrame(const ModeConfig* modeToRender, const GLState& s, int current_gameW, int current_gameH,

@@ -886,8 +886,10 @@ struct NinjabrainOverlayConfig {
     std::vector<std::string> allowedModes;
     float overlayOpacity = 1.0f;
     float overlayScale = 0.56f;
-    bool onlyOnMyScreen = true;
+    bool onlyOnMyScreen = false;
     bool onlyOnObs = false;
+    bool hideIfStale = false;
+    int hideIfStaleDelaySeconds = 30;
     bool showEyeOverlay = true;
     int shownPredictions = 5;
     bool showAllPreds = false;

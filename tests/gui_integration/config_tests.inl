@@ -14,6 +14,18 @@ void RunConfigDefaultLoadTest(TestRunMode runMode = TestRunMode::Automated) {
     Expect(!g_config.defaultMode.empty(), "Expected loaded config to have a default mode.");
     Expect(g_config.keyRebinds.indicatorMode == 0,
            "Expected default config load to leave the key rebind indicator disabled.");
+        Expect(g_config.ninjabrainOverlay.relativeTo == "topLeftScreen",
+            "Expected default config load to take the Ninjabrain overlay anchor from embedded default.toml.");
+        Expect(g_config.ninjabrainOverlay.x == 0 && g_config.ninjabrainOverlay.y == 0,
+            "Expected default config load to reset the Ninjabrain overlay position to the preset defaults.");
+        Expect(g_config.ninjabrainOverlay.customFontPath == "fonts/OpenSans-Regular.ttf",
+            "Expected default config load to use the bundled OpenSans Ninjabrain overlay font.");
+        ExpectFloatNear(g_config.ninjabrainOverlay.overlayScale, 0.30000001192092896f,
+                  "Expected default config load to apply the Ninjabrain Bot preset overlay scale.");
+        Expect(!g_config.ninjabrainOverlay.onlyOnMyScreen && !g_config.ninjabrainOverlay.onlyOnObs,
+            "Expected default config load to leave both Ninjabrain visibility filters disabled.");
+        Expect(!g_config.ninjabrainOverlay.hideIfStale && g_config.ninjabrainOverlay.hideIfStaleDelaySeconds == 10,
+            "Expected default config load to use the default stale-hide Ninjabrain settings.");
 
     if (runMode == TestRunMode::Visual) {
         RunVisualLoop(window, "config-default-load", &RenderInteractiveSettingsFrame);
@@ -119,6 +131,8 @@ void RunConfigLoadEmbeddedNinjabrainPresetsTest(TestRunMode runMode = TestRunMod
         "Expected the compact preset to define the current five-column layout.");
     Expect(!compactPreset->overlay.showBoatStateInTopBar,
         "Expected the compact preset to keep the top-bar boat state disabled by default.");
+    Expect(!compactPreset->overlay.hideIfStale && compactPreset->overlay.hideIfStaleDelaySeconds == 10,
+        "Expected the compact preset to define the stale-hide defaults.");
     Expect(compactPreset->overlay.columns.front().header == "Location",
         "Expected the compact preset to rename the coords column header to Location.");
 
@@ -140,6 +154,10 @@ void RunConfigLoadEmbeddedNinjabrainPresetsTest(TestRunMode runMode = TestRunMod
               "Expected the Ninjabrain Bot preset failed-result left margin to come from TOML.");
     Expect(!ninjabrainBotPreset->overlay.onlyOnMyScreen,
         "Expected the Ninjabrain Bot preset to render outside the local-only path.");
+    Expect(!ninjabrainBotPreset->overlay.onlyOnObs,
+        "Expected the Ninjabrain Bot preset to keep the OBS-only filter disabled by default.");
+    Expect(!ninjabrainBotPreset->overlay.hideIfStale && ninjabrainBotPreset->overlay.hideIfStaleDelaySeconds == 10,
+        "Expected the Ninjabrain Bot preset to define the stale-hide defaults.");
 
     if (runMode == TestRunMode::Visual) {
      RunVisualLoop(window, "config-load-embedded-ninjabrain-presets", &RenderInteractiveSettingsFrame);

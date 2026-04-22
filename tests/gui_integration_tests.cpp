@@ -1725,6 +1725,8 @@ void PopulateRichConfigFixture() {
     g_config.ninjabrainOverlay.showBoatStateInTopBar = true;
     g_config.ninjabrainOverlay.boatStateSize = 26.0f;
     g_config.ninjabrainOverlay.boatStateMarginRight = 14.0f;
+    g_config.ninjabrainOverlay.hideIfStale = true;
+    g_config.ninjabrainOverlay.hideIfStaleDelaySeconds = 37;
 
     MirrorConfig verifierMirror;
     verifierMirror.name = kVerifierMirrorName;
@@ -2272,6 +2274,9 @@ void VerifyRichWindowOverlays() {
     Expect(ninjabrain.showBoatStateInTopBar, "Expected Ninjabrain showBoatStateInTopBar to roundtrip.");
     ExpectFloatNear(ninjabrain.boatStateSize, 26.0f, "Expected Ninjabrain boatStateSize to roundtrip.");
     ExpectFloatNear(ninjabrain.boatStateMarginRight, 14.0f, "Expected Ninjabrain boatStateMarginRight to roundtrip.");
+    Expect(ninjabrain.hideIfStale, "Expected Ninjabrain hideIfStale to roundtrip.");
+    Expect(ninjabrain.hideIfStaleDelaySeconds == 37,
+           "Expected Ninjabrain hideIfStaleDelaySeconds to roundtrip.");
 }
 
 void VerifyRichBrowserOverlays() {
